@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Whatnot Pokémon Card ID (Free)",
+  "version": "0.1.0",
+  "description": "Identify the Pokémon card on screen during a Whatnot livestream and see estimated TCGPlayer condition pricing. Free, DIY clone of Pallet's core feature.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "https://*.whatnot.com/*",
+    "https://whatnot-pokemon-identify.vercel.app/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://*.whatnot.com/live/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

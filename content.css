@@ -1,0 +1,244 @@
+#wnpk-root {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  width: 260px;
+  /* Cap the panel's total height to the viewport and lay its children out
+     as a column so the title bar, controls, and the Identify Card button
+     always stay visible — only #wnpk-body (the part that grows/shrinks
+     with scan results) scrolls internally. Added 2026-08-23: a tall
+     result (e.g. an ambiguous-match warning + full condition table) could
+     otherwise push the last child, #wnpk-identify-btn, below the visible
+     viewport with no way to reach it, especially once the panel could be
+     dragged near the top of the page. */
+  max-height: calc(100vh - 20px);
+  display: flex;
+  flex-direction: column;
+  background: #17181c;
+  color: #f2f2f2;
+  border-radius: 10px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  z-index: 2147483647;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+#wnpk-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #ff8c1a;
+  color: #17181c;
+  font-weight: 700;
+  cursor: grab;
+  /* Dragging selects page text otherwise (the bar sits over the stream
+     page) — added 2026-08-23 alongside making the panel movable. */
+  user-select: none;
+}
+
+#wnpk-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #17181c;
+  opacity: 0.6;
+}
+
+#wnpk-title {
+  flex: 1;
+}
+
+#wnpk-close {
+  background: none;
+  border: none;
+  color: #17181c;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+#wnpk-controls {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+
+#wnpk-controls button {
+  flex: 1;
+  background: #26272e;
+  color: #f2f2f2;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+#wnpk-controls button:hover {
+  background: #33343c;
+}
+
+#wnpk-body {
+  padding: 10px;
+  min-height: 40px;
+  overflow-y: auto;
+}
+
+#wnpk-empty {
+  color: #a3a4ab;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#wnpk-cost {
+  padding: 0 10px 6px;
+  color: #a3a4ab;
+  font-size: 10px;
+  text-align: right;
+  min-height: 12px;
+}
+
+#wnpk-identify-btn {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 0 10px 10px;
+  background: #ff8c1a;
+  color: #17181c;
+  border: none;
+  border-radius: 6px;
+  padding: 9px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#wnpk-identify-btn:hover {
+  filter: brightness(1.05);
+}
+
+.wnpk-card-name {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.wnpk-set-name {
+  color: #a3a4ab;
+  margin-bottom: 6px;
+}
+
+.wnpk-card-img {
+  display: block;
+  max-width: 100%;
+  border-radius: 6px;
+  margin: 6px 0;
+}
+
+.wnpk-market-price {
+  font-weight: 700;
+  margin: 6px 0;
+}
+
+.wnpk-confidence-row {
+  display: flex;
+  justify-content: space-between;
+  color: #a3a4ab;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.wnpk-lang-badge {
+  display: inline-block;
+  background: #2a1a3a;
+  color: #d9a9ff;
+  border: 1px solid #4a2a63;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.wnpk-slab-badge {
+  display: inline-block;
+  background: #1a2b3a;
+  color: #7ec8ff;
+  border: 1px solid #2a4a63;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.wnpk-warning {
+  background: #3a2a12;
+  color: #ffc266;
+  border: 1px solid #6b4a1a;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+
+.wnpk-cond-label {
+  margin-top: 8px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: #a3a4ab;
+}
+
+.wnpk-variant-select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  background: #26272e;
+  color: #f2f2f2;
+  border: 1px solid #3a3b44;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.wnpk-variant-select:hover {
+  background: #2e2f38;
+}
+
+.wnpk-estimate-note {
+  font-style: italic;
+}
+
+.wnpk-cond-list {
+  margin-top: 4px;
+}
+
+.wnpk-cond-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  border-bottom: 1px solid #26272e;
+}
+
+.wnpk-link {
+  display: block;
+  margin-top: 10px;
+  color: #ff8c1a;
+  text-decoration: none;
+  font-size: 12px;
+}
+
+#wnpk-zone-overlay {
+  position: fixed;
+  z-index: 2147483646;
+  cursor: crosshair;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+#wnpk-zone-box {
+  position: absolute;
+  border: 2px dashed #ff8c1a;
+  background: rgba(255, 140, 26, 0.15);
+}
