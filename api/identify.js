@@ -343,7 +343,27 @@ function ambiguousNoteText() {
 // isn't viable and why this is not actually a downgrade).
 // ---------------------------------------------------------------------------
 
-const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracker.com/api/v2/prices";
+// FIX (2026-08-26, ROOT CAUSE of "everything stopped matching"): this was
+// pointed at `/api/v2/prices`, which is not a real PokemonPriceTracker
+// endpoint at all — confirmed by fetching PPT's own live API docs
+// (pokemontcg.io/api page), which document exactly three v2 endpoints:
+// /api/v2/cards, /api/v2/sets, /api/v2/sealed-products. There is no
+// /api/v2/prices. That wrong path is why EVERY search (including trivial,
+// certainly-in-the-database English commons like "Scorbunny", "Timburr",
+// "Carbink") came back as a 404/zero-results — it wasn't that any specific
+// card couldn't be found, the endpoint itself didn't exist, so PPT 404'd
+// every single request regardless of the search term. This bug shipped
+// with the 2026-08-26 part-3 rewrite (the one that dropped pokemontcg.io),
+// so it affected every scan since then, including the very first
+// Toxtricity VMAX test case — the subtype-suffix retry fix from that test
+// was real and still worth keeping, but it was never the actual blocker.
+// Confirmed correct endpoint + query params from PPT's live docs:
+// GET /api/v2/cards?search=<name>&limit=<n>&includeEbay=<bool>&language=<EN|JP>
+// (a `language` filter param also exists now, confirmed from docs, but is
+// NOT wired in yet — see build-status doc for why: it's a further
+// accuracy improvement, not needed for this fix, and untested behavior
+// with mixed-region data shouldn't be changed at the same time as this fix).
+const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracker.com/api/v2/cards";
 
 async function fetchPokemonPriceTracker(name, { graded = false } = {}) {
   const params = new URLSearchParams({ search: name, limit: "100" });
