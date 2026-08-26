@@ -1,61 +1,64 @@
 // api/identify.js
 //
 // REBUILT 2026-08-24 after the original source was lost to a dropped chat
-// session; see the project's build-status doc for that history. That
-// rewrite used pokemontcg.io (free) for English cards and PokemonPriceTracker
-// (paid, $9.99/mo) for Japanese cards + graded slabs.
+// session; see the project's build-status doc for that history.
 //
-// CONSOLIDATED 2026-08-26, then PARTIALLY REVERTED same day: pokemontcg.io
-// was briefly dropped entirely in favor of PokemonPriceTracker for both
-// languages, trading away the Normal/Holofoil/Reverse Holofoil/1st-Edition
-// print-variant picker for reliability. User feedback made clear that
-// trade-off is unacceptable for this use case: this tool exists to make a
-// real-money buy/bid decision on live cards, and losing per-finish pricing
-// costs real accuracy. So the architecture is now:
+// ARCHITECTURE HISTORY (all same day, 2026-08-26 — see build-status doc for
+// full narrative):
+//   1. Consolidated onto PokemonPriceTracker only, dropping pokemontcg.io
+//      (which was unreliable at real usage volume) — but this also dropped
+//      the Normal/Holofoil/Reverse-Holo/1st-Edition print-variant picker,
+//      which turned out to be essential, not optional, for this project's
+//      real use case (making real-money buy/bid decisions off the price
+//      shown).
+//   2. Restored pokemontcg.io as the English-card source specifically to
+//      get the variant picker back, with PokemonPriceTracker as an
+//      automatic fallback.
+//   3. THIS VERSION: discovered pokemontcg.io itself has been folded into
+//      Scrydex (Pallet Trade's own paid data source) and is no longer a
+//      free/standalone API at all — it now requires a $29+/mo Scrydex
+//      plan, more than Pallet itself charges. Dead end. BUT: deeper
+//      research into PokemonPriceTracker's own docs (not just its
+//      marketing page, which is all the 2026-08-26-step-1 research
+//      looked at) found it actually DOES expose per-variant pricing via a
+//      `variants` object on each card (e.g. `variants.Holofoil.marketPrice`,
+//      `variants["Reverse Holofoil"]`, etc.) plus real CDN image URLs
+//      (`imageCdnUrl`/`imageCdnUrl200`) — fields the earlier research
+//      simply never looked for. So the FINAL architecture is: ONE data
+//      source (PokemonPriceTracker, the subscription already being paid
+//      for) for English, Japanese, AND graded slabs, using its real
+//      variants + image fields to keep the print-variant picker and card
+//      thumbnail without needing a second API at all.
 //
-//   ENGLISH cards -> pokemontcg.io FIRST (variant picker + card image),
-//                    falling back to PokemonPriceTracker automatically if
-//                    pokemontcg.io fails or times out (never silently
-//                    returning nothing just because one source hiccuped).
-//   JAPANESE cards -> PokemonPriceTracker only (pokemontcg.io's dataset is
-//                    English-market only).
-//   GRADED SLABS   -> PokemonPriceTracker eBay-comp lookup either way, with
-//                    the raw-card lookup above (which now also tries
-//                    pokemontcg.io first) as the underlying estimate.
-//
-// This keeps the reliability win from the 2026-08-26 consolidation (a
-// pokemontcg.io outage no longer means "couldn't identify the card" — it
-// falls through to the paid source instead) while restoring the accuracy
-// win of per-finish pricing for the common case. pokemontcg.io's own
-// reliability is also meaningfully improved by setting POKEMONTCG_API_KEY
-// (free registration at pokemontcg.io/register raises the rate limit from
-// 1,000/day & 30/min to 20,000/day) — recommended, not required, since the
-// PPT fallback covers the gap either way.
+// This is simpler (one source, no cross-API fallback dance), faster (no
+// double network round-trip when a fallback triggers), and costs nothing
+// new. The exact `variants` key names (e.g. is it "Holofoil" or
+// "holofoil"? does every card have a "Reverse Holofoil" key?) are taken
+// from PokemonPriceTracker's documentation examples, NOT yet confirmed
+// against a live API response with a real key — this file is defensive
+// about it (case-insensitive key matching, falls back to the old flat
+// `prices.market` aggregate if `variants` is missing or empty) and logs
+// the raw variants object on every request so a real scan will reveal the
+// true shape and this can be corrected fast if the docs were imprecise.
 //
 // SPEED: this tool needs to return in ~2-5s so it's useful for a live
-// buy/bid decision, not just eventually-correct. Timeouts below are tuned
-// tight on that assumption: pokemontcg.io gets ONE fast attempt with NO
-// retry (a slow/failing English lookup should fall through to PPT
-// immediately, not burn time retrying the same flaky source first).
-// PokemonPriceTracker (no fallback available for it) keeps one retry on a
-// real 5xx since there's nowhere else to fall through to. Gemini's own
-// timeout was trimmed from 6.5s to 5s for the same reason. These are
-// timeout CEILINGS (safety nets against a hung request), not the expected
-// latency — actual latency depends on how fast Gemini + the card APIs
-// respond, which hasn't been benchmarked against a live stream yet. Watch
-// `usage`/response time on real scans and tighten further if needed.
+// buy/bid decision, not just eventually-correct. Timeouts below are
+// tuned tight on that assumption — see the constants just below. These
+// are timeout CEILINGS (safety nets against a hung request), not the
+// expected latency — actual latency depends on how fast Gemini + PPT
+// respond, which hasn't been benchmarked against a live stream yet.
+// Watch `usage`/response time on real scans (log to test-cases.md in the
+// project) and tighten further if needed.
 //
 // PokemonPriceTracker's base URL, endpoint path, and Bearer-auth header
-// format were confirmed correct against its live docs during the
-// 2026-08-26 work.
+// format were confirmed correct against its live docs on 2026-08-26.
 //
 // Also fixed 2026-08-26: fetchPokemonPriceTracker used to treat a plain 404
 // from PokemonPriceTracker (which, per its docs, just means "no results
 // matched this search" — normal, not an outage) the same as a real 5xx
 // failure, surfacing a scary "couldn't reach our card database" message
 // instead of the correct "couldn't confidently match a printing" one. Now a
-// 404 returns an explicit empty result set instead. This fix is unaffected
-// by the pokemontcg.io restoration above.
+// 404 returns an explicit empty result set instead.
 //
 // PRIOR FIX (2026-08-24 rewrite, still in effect): the confirmed bug where
 // a Japanese lookup picked a completely wrong candidate (a "369/742"
@@ -66,9 +69,7 @@
 // formatting noise (leading zeros, missing "/total", stray whitespace)
 // instead of requiring an exact string match, since Gemini's own OCR of the
 // printed number is itself somewhat noisy across rescans of the same
-// physical card. This shared scoring function is now used by THREE lookup
-// paths (pokemontcg.io, PokemonPriceTracker, and the graded-slab path) —
-// still the single source of truth for "which candidate is the real card."
+// physical card.
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const GEMINI_TIMEOUT_MS = 5000;
@@ -85,7 +86,11 @@ const GEMINI_OUTPUT_USD_PER_1M = 2.50;
 // Condition-price multipliers applied to a variant's market price to build
 // the NM/LP/MP/HP/DMG table content.js renders. Reverse-engineered from the
 // exact figures shown in the build-status doc's live examples (e.g.
-// Market $1.00 -> NM $1.00 / LP $0.85 / MP $0.70).
+// Market $1.00 -> NM $1.00 / LP $0.85 / MP $0.70). If a variant already
+// carries its own conditionUsed-specific price from PPT, this is still
+// used to build the full condition SPREAD around that single number,
+// since PPT's `variants` object gives one price per printing, not a full
+// per-condition table.
 const CONDITION_MULTIPLIERS = { NM: 1.00, LP: 0.85, MP: 0.70, HP: 0.55, DMG: 0.40 };
 
 // Scoring weights per the build-status doc's "accuracy pass" section.
@@ -207,14 +212,12 @@ async function identifyWithGemini(imageBase64, apiKey) {
 }
 
 // ---------------------------------------------------------------------------
-// Shared scoring — ONE function used by EVERY lookup path (pokemontcg.io,
-// PokemonPriceTracker, and the graded-slab path). Consolidating this
-// (previously two independently-maintained copies, per the build-status
-// doc's flagged "code-quality risk") is a direct part of the Medicham-bug
-// fix: divergence between copies is the leading theory for how the
-// Japanese path stopped correctly rewarding an exact number match. Keeping
-// it as ONE function even as sources multiplied (2026-08-26) is deliberate
-// — every new lookup path reuses this instead of growing its own copy.
+// Shared scoring — ONE function used by every lookup (raw-card and
+// graded-slab). Consolidating this (previously two independently-
+// maintained copies, per the build-status doc's flagged "code-quality
+// risk") is a direct part of the Medicham-bug fix: divergence between
+// copies is the leading theory for how the Japanese path stopped
+// correctly rewarding an exact number match.
 // ---------------------------------------------------------------------------
 
 // Pull the leading numeric part out of a "NNN/TTT" or bare "NNN" collector
@@ -282,7 +285,7 @@ function scoreCandidate(candidate, read) {
 // Runs candidates through scoreCandidate, picks the best, and detects ties
 // among DISTINCT candidates (different id/number — not just duplicate
 // objects) at the top score, exactly like the ambiguous-match fix described
-// in the build-status doc. Shared by every lookup path.
+// in the build-status doc.
 function pickBestCandidate(candidates, read, logPrefix) {
   let best = null;
   let bestScore = -1;
@@ -335,174 +338,9 @@ function ambiguousNoteText() {
 }
 
 // ---------------------------------------------------------------------------
-// Card lookup + pricing, ENGLISH path — pokemontcg.io (free, variant-aware)
-//
-// Restored 2026-08-26 (see top-of-file comment) specifically to keep the
-// Normal/Holofoil/Reverse Holofoil/1st-Edition print-variant picker, which
-// PokemonPriceTracker's response shape doesn't support (one aggregate
-// market price per card, not a per-finish breakdown).
-// ---------------------------------------------------------------------------
-
-const POKEMONTCG_BASE_URL = "https://api.pokemontcg.io/v2/cards";
-
-// NO retry here on purpose — see the SPEED comment at the top of the file.
-// A slow/failing pokemontcg.io request should fall through to the
-// PokemonPriceTracker fallback (lookupCardEnglish below) immediately
-// rather than burning another ~1-2s retrying the same flaky source first.
-async function fetchPokemonTcgIo(name) {
-  const q = encodeURIComponent(`name:"${name}"`);
-  const url = `${POKEMONTCG_BASE_URL}?q=${q}&pageSize=100`;
-  const headers = {};
-  if (process.env.POKEMONTCG_API_KEY) headers["X-Api-Key"] = process.env.POKEMONTCG_API_KEY;
-
-  let resp;
-  try {
-    resp = await fetchWithTimeout(url, { headers }, CARDDB_TIMEOUT_MS);
-  } catch (e) {
-    console.error("[lookup:en] pokemontcg.io request threw:", e && e.message, "name=", name);
-    return null;
-  }
-
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    console.error("[lookup:en] pokemontcg.io request FAILED — status=", resp.status, "body=", body.slice(0, 300), "name=", name);
-    return null;
-  }
-
-  try {
-    return await resp.json();
-  } catch (e) {
-    console.error("[lookup:en] pokemontcg.io returned unparseable JSON:", e && e.message);
-    return null;
-  }
-}
-
-// pokemontcg.io's tcgplayer.prices object has one entry per print
-// finish/edition (normal, holofoil, reverseHolofoil, 1stEditionNormal,
-// 1stEditionHolofoil, unlimited, unlimitedHolofoil — not every card has
-// every key). Build one priced+labeled variant object per key so the
-// frontend's dropdown (priceVariants/priceVariantUsed, see content.js) can
-// show ALL of them and let the user override the AI's guess.
-const VARIANT_LABELS = {
-  normal: "Normal",
-  holofoil: "Holofoil",
-  reverseHolofoil: "Reverse Holofoil",
-  "1stEditionNormal": "1st Edition",
-  "1stEditionHolofoil": "1st Edition Holofoil",
-  unlimited: "Unlimited",
-  unlimitedHolofoil: "Unlimited Holofoil",
-};
-
-function buildPriceVariants(tcgplayer) {
-  if (!tcgplayer || !tcgplayer.prices) return null;
-  const variants = {};
-  for (const [key, p] of Object.entries(tcgplayer.prices)) {
-    if (!p) continue;
-    const basePrice = p.market ?? p.mid ?? p.high ?? p.low;
-    if (basePrice == null) continue;
-    const conditions = {};
-    for (const [tier, mult] of Object.entries(CONDITION_MULTIPLIERS)) {
-      conditions[tier] = Math.round(basePrice * mult * 100) / 100;
-    }
-    variants[key] = {
-      label: VARIANT_LABELS[key] || key,
-      printEdition: VARIANT_LABELS[key] || key,
-      basePrice,
-      conditions,
-    };
-  }
-  return Object.keys(variants).length ? variants : null;
-}
-
-// Picks which variant is pre-selected in the dropdown. Gemini's stampType
-// read is the main signal (did the card actually show a legible "1st
-// Edition" stamp) — everything else defaults to preferring the
-// highest-quality finish PokemonTCG actually has data for, on the
-// assumption that's the most commonly relevant one for a live-stream
-// buy/sell decision. This is a reasonable reconstruction, not a confirmed-
-// original algorithm; the whole point of a manual dropdown is that a wrong
-// guess here costs nothing — the user just switches it.
-function pickDefaultVariantKey(priceVariants, read) {
-  const keys = Object.keys(priceVariants);
-  if (!keys.length) return null;
-  const is1st = String(read.stampType || "").toLowerCase() === "1st edition";
-  const preferenceOrder = is1st
-    ? ["1stEditionHolofoil", "1stEditionNormal", "holofoil", "reverseHolofoil", "normal", "unlimitedHolofoil", "unlimited"]
-    : ["holofoil", "reverseHolofoil", "normal", "unlimitedHolofoil", "unlimited", "1stEditionHolofoil", "1stEditionNormal"];
-  for (const k of preferenceOrder) {
-    if (keys.includes(k)) return k;
-  }
-  return keys[0];
-}
-
-function normalizeTcgIoCard(raw) {
-  return {
-    id: raw.id,
-    name: raw.name,
-    number: raw.number || null,
-    hp: raw.hp || null,
-    subtypes: Array.isArray(raw.subtypes) ? raw.subtypes : [],
-    setName: raw.set?.name || null,
-    attackName: raw.attacks?.[0]?.name || null,
-    tcgPlayerUrl: raw.tcgplayer?.url || null,
-    cardImageUrl: raw.images?.large || raw.images?.small || null,
-    _tcgplayer: raw.tcgplayer || null,
-    _priceSource: "pokemontcg.io",
-  };
-}
-
-async function lookupCardEnglish(read) {
-  const data = await fetchPokemonTcgIo(read.cardName);
-  if (!data) return { error: "card-db-unavailable" };
-
-  const rawList = Array.isArray(data.data) ? data.data : [];
-  console.log("[lookup:en] search=", read.cardName, "raw candidate count=", rawList.length);
-
-  if (rawList.length === 0) {
-    return { notFound: true };
-  }
-
-  const candidates = rawList.map(normalizeTcgIoCard);
-  const { best, bestScore, tieCount } = pickBestCandidate(candidates, read, "[lookup:en]");
-  if (!best) return { notFound: true };
-
-  let matchConfidence = confidenceForScore(bestScore);
-  let ambiguousNote = null;
-  if (tieCount >= 2) {
-    matchConfidence = "Low";
-    ambiguousNote = ambiguousNoteText();
-    console.log(`[lookup:en] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}`);
-  }
-
-  const priceVariants = buildPriceVariants(best._tcgplayer);
-  const priceVariantUsed = priceVariants ? pickDefaultVariantKey(priceVariants, read) : null;
-  const chosenVariant = priceVariantUsed ? priceVariants[priceVariantUsed] : null;
-
-  let noPriceNote = null;
-  if (!priceVariants) {
-    noPriceNote = "This printing hasn't synced a price into pokemontcg.io/TCGPlayer yet. Check the link below for current listings.";
-  }
-
-  return {
-    found: true,
-    cardName: best.name,
-    setName: best.setName,
-    cardImageUrl: best.cardImageUrl,
-    matchConfidence,
-    ambiguousNote,
-    noPriceNote,
-    tcgplayerUrl: best.tcgPlayerUrl,
-    marketPrice: chosenVariant ? chosenVariant.basePrice : null,
-    conditionPrices: chosenVariant ? chosenVariant.conditions : null,
-    priceVariants,
-    priceVariantUsed,
-    _tcgSearchName: best.name,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Card lookup + pricing, JAPANESE path (and English FALLBACK) —
-// PokemonPriceTracker
+// Card lookup + pricing — PokemonPriceTracker, the ONLY data source as of
+// 2026-08-26 step 3 (see top-of-file comment for why pokemontcg.io/Scrydex
+// isn't viable and why this is not actually a downgrade).
 // ---------------------------------------------------------------------------
 
 const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracker.com/api/v2/prices";
@@ -517,7 +355,7 @@ async function fetchPokemonPriceTracker(name, { graded = false } = {}) {
   try {
     resp = await fetchWithTimeout(url, { headers }, CARDDB_TIMEOUT_MS);
   } catch (e) {
-    console.error("[lookup:ppt] PokemonPriceTracker request threw:", e && e.message);
+    console.error("[lookup] PokemonPriceTracker request threw:", e && e.message);
     return null;
   }
 
@@ -530,18 +368,20 @@ async function fetchPokemonPriceTracker(name, { graded = false } = {}) {
     // the correct "couldn't confidently match a printing" one. Only a real
     // 5xx counts as a transient failure worth retrying/logging as an error.
     if (resp.status === 404) {
-      console.log("[lookup:ppt] PokemonPriceTracker returned 404 (no match) for name=", name);
+      console.log("[lookup] PokemonPriceTracker returned 404 (no match) for name=", name);
       return { data: [] };
     }
 
     const body = await resp.text().catch(() => "");
-    console.error(`[lookup:ppt] PokemonPriceTracker request FAILED — status=`, resp.status, "body=", body.slice(0, 300), "name=", name);
+    console.error(`[lookup] PokemonPriceTracker request FAILED — status=`, resp.status, "body=", body.slice(0, 300), "name=", name);
     if (resp.status >= 500) {
+      // Single source now (no cross-API fallback), so a real 5xx is worth
+      // one fast retry rather than giving up immediately.
       try {
         const retryResp = await fetchWithTimeout(url, { headers }, CARDDB_RETRY_TIMEOUT_MS);
         if (retryResp.ok) return await retryResp.json();
       } catch (e2) {
-        console.error("[lookup:ppt] PokemonPriceTracker retry threw:", e2 && e2.message, "name=", name);
+        console.error("[lookup] PokemonPriceTracker retry threw:", e2 && e2.message, "name=", name);
       }
     }
     return null;
@@ -575,15 +415,73 @@ function normalizePptCard(raw) {
     setName: raw.setName || null,
     attackName: raw.attackName || null, // PPT doesn't appear to expose move data — kept for forward-compat
     tcgPlayerUrl: raw.tcgPlayerUrl || null,
-    // UNCONFIRMED: no image field was visible in PokemonPriceTracker's
-    // documented response shape, unlike pokemontcg.io's `images.large`.
-    // Checking a few plausible field names defensively — if none of these
-    // are real, cardImageUrl just stays null and the frontend already
-    // handles that (no thumbnail shown).
-    cardImageUrl: raw.imageUrl || raw.image || raw.images?.large || raw.images?.small || null,
+    // CONFIRMED (2026-08-26 step 3, from PPT's own docs): real CDN image
+    // fields. Checked in priority order, with the earlier guesses kept as
+    // further fallbacks in case a given card response omits the CDN
+    // fields for some reason.
+    cardImageUrl: raw.imageCdnUrl || raw.imageCdnUrl200 || raw.imageUrl || raw.image || raw.images?.large || raw.images?.small || null,
+    // Aggregate single-price fallback (used only if the per-variant
+    // `variants` object below is missing/empty for this card).
     prices: raw.prices || null,
+    // CONFIRMED (2026-08-26 step 3, from PPT's own docs): per-printing
+    // pricing object, e.g. { "Holofoil": { marketPrice, lowPrice,
+    // conditionUsed }, "Normal": {...}, "Reverse Holofoil": {...} }. Exact
+    // key casing/naming not yet confirmed against a live response — see
+    // buildPriceVariantsFromPPT below for the defensive handling.
+    _rawVariants: raw.variants && typeof raw.variants === "object" ? raw.variants : null,
     _priceSource: "PokemonPriceTracker",
   };
+}
+
+// Builds the priceVariants object the frontend's dropdown expects (see
+// content.js) from PPT's per-printing `variants` object. Defensive about
+// exact field names since this is based on documentation examples, not a
+// live-confirmed response — logs the raw shape so a real scan will reveal
+// the truth fast if this needs correcting.
+function buildPriceVariantsFromPPT(rawVariants) {
+  if (!rawVariants) return null;
+  const variants = {};
+  for (const [key, v] of Object.entries(rawVariants)) {
+    if (!v) continue;
+    const basePrice = v.marketPrice ?? v.market ?? v.lowPrice ?? v.low;
+    if (basePrice == null) continue;
+    const conditions = {};
+    for (const [tier, mult] of Object.entries(CONDITION_MULTIPLIERS)) {
+      conditions[tier] = Math.round(basePrice * mult * 100) / 100;
+    }
+    variants[key] = { label: key, printEdition: key, basePrice, conditions };
+  }
+  return Object.keys(variants).length ? variants : null;
+}
+
+// Picks which variant is pre-selected in the dropdown. Prefers PPT's own
+// stated `primaryPrinting` (from the aggregate `prices` object) if it
+// matches one of the actual variant keys, since that's PPT's own signal
+// for "the printing most of our data represents." Falls back to Gemini's
+// stampType read (did the card actually show a legible "1st Edition"
+// stamp) with a Holofoil > Reverse Holo > Normal preference order
+// otherwise. Case-insensitive matching throughout since the exact key
+// casing PPT uses isn't confirmed. The whole point of a manual dropdown
+// is that a wrong guess here costs nothing — the user just switches it.
+function pickDefaultVariantKey(priceVariants, read, primaryPrinting) {
+  const keys = Object.keys(priceVariants);
+  if (!keys.length) return null;
+
+  const lowerToActual = {};
+  for (const k of keys) lowerToActual[k.toLowerCase()] = k;
+
+  if (primaryPrinting && lowerToActual[String(primaryPrinting).toLowerCase()]) {
+    return lowerToActual[String(primaryPrinting).toLowerCase()];
+  }
+
+  const is1st = String(read.stampType || "").toLowerCase() === "1st edition";
+  const preferenceOrder = is1st
+    ? ["1st edition holofoil", "1st edition normal", "holofoil", "reverse holofoil", "normal", "unlimited holofoil", "unlimited"]
+    : ["holofoil", "reverse holofoil", "normal", "unlimited holofoil", "unlimited", "1st edition holofoil", "1st edition normal"];
+  for (const pref of preferenceOrder) {
+    if (lowerToActual[pref]) return lowerToActual[pref];
+  }
+  return keys[0];
 }
 
 function buildAggregatePricing(card) {
@@ -596,33 +494,26 @@ function buildAggregatePricing(card) {
   return { basePrice, conditions };
 }
 
-// Used for Japanese scans always, and as the automatic fallback for
-// English scans when pokemontcg.io fails/times out/has no match (see
-// lookupCard below). No explicit language filter is applied to the
-// PokemonPriceTracker search — its dataset appears to store the
-// English-translated species name in `name` regardless of which region a
-// printing is actually from (confirmed from logs: a Japanese "Start Deck
-// 100 Battle Collection" printing still had name="Medicham", not a
-// Japanese string), so a plain name search already returns both regions
-// mixed together. The existing number/HP/set scoring below — proven
-// correct against a 33-candidate, single-language pool for the Medicham
-// bug fix — should disambiguate the SPECIFIC printing the same way
-// whether the pool has one region or two. Watch for wrong-region matches
-// in logs; add an explicit `language` request param (PPT's marketing
-// pages mention one, e.g. `language=japanese`, but the exact accepted
-// values weren't confirmed in its docs) if that turns out to be a real
-// problem.
-//
-// NOTE: this path returns a single aggregate market price, NOT a
-// priceVariants object — that's the accuracy trade-off PokemonPriceTracker
-// doesn't let us avoid for Japanese cards specifically (its response shape
-// has one `prices.market` per card entry, not a per-finish breakdown).
+// Used for BOTH English and Japanese scans. No explicit language filter is
+// applied to the PokemonPriceTracker search — its dataset appears to store
+// the English-translated species name in `name` regardless of which
+// region a printing is actually from (confirmed from logs: a Japanese
+// "Start Deck 100 Battle Collection" printing still had name="Medicham",
+// not a Japanese string), so a plain name search already returns both
+// regions mixed together. The existing number/HP/set scoring below —
+// proven correct against a 33-candidate, single-language pool for the
+// Medicham bug fix — should disambiguate the SPECIFIC printing the same
+// way whether the pool has one region or two. Watch for wrong-region
+// matches in logs; add an explicit `language` request param (PPT's
+// marketing pages mention one, e.g. `language=japanese`, but the exact
+// accepted values weren't confirmed in its docs) if that turns out to be
+// a real problem.
 async function lookupCardPPT(read) {
   const data = await fetchPokemonPriceTracker(read.cardName);
   if (!data) return { error: "card-db-unavailable" };
 
   const rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
-  console.log("[lookup:ppt] search=", read.cardName, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 8)).slice(0, 2000));
+  console.log("[lookup] search=", read.cardName, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
 
   // Hard name filter — PPT's `search` is fuzzy, not a strict name match
   // (this is the fix for the earlier Arceus-matched-to-Raticate bug
@@ -632,14 +523,14 @@ async function lookupCardPPT(read) {
   const filtered = rawList.filter((c) => String(c.name || "").toLowerCase().includes(wantedName));
 
   if (filtered.length === 0) {
-    console.log("[lookup:ppt] zero candidates survived the name filter for name=", read.cardName);
+    console.log("[lookup] zero candidates survived the name filter for name=", read.cardName);
     return { notFound: true };
   }
 
   const candidates = filtered.map(normalizePptCard);
-  console.log("[lookup:ppt] scored candidates=", JSON.stringify(candidates.map((c) => ({ name: c.name, number: c.number, hp: c.hp, subtypes: c.subtypes }))).slice(0, 3000));
+  console.log("[lookup] scored candidates=", JSON.stringify(candidates.map((c) => ({ name: c.name, number: c.number, hp: c.hp, subtypes: c.subtypes, hasVariants: !!c._rawVariants }))).slice(0, 3000));
 
-  const { best, bestScore, tieCount } = pickBestCandidate(candidates, read, "[lookup:ppt]");
+  const { best, bestScore, tieCount } = pickBestCandidate(candidates, read, "[lookup]");
   if (!best) return { notFound: true };
 
   let matchConfidence = confidenceForScore(bestScore);
@@ -647,12 +538,22 @@ async function lookupCardPPT(read) {
   if (tieCount >= 2) {
     matchConfidence = "Low";
     ambiguousNote = ambiguousNoteText();
-    console.log(`[lookup:ppt] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}`);
+    console.log(`[lookup] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}`);
   }
 
-  const pricing = buildAggregatePricing(best);
+  console.log("[lookup] raw variants object for best match:", JSON.stringify(best._rawVariants).slice(0, 1500));
+
+  const priceVariants = buildPriceVariantsFromPPT(best._rawVariants);
+  const priceVariantUsed = priceVariants ? pickDefaultVariantKey(priceVariants, read, best.prices?.primaryPrinting) : null;
+  const chosenVariant = priceVariantUsed ? priceVariants[priceVariantUsed] : null;
+
+  // Fall back to the old flat aggregate price if there's no usable
+  // per-variant data for this specific card (e.g. a lower-traffic
+  // printing PPT hasn't broken down by finish yet).
+  const aggregatePricing = !chosenVariant ? buildAggregatePricing(best) : null;
+
   let noPriceNote = null;
-  if (!pricing) {
+  if (!chosenVariant && !aggregatePricing) {
     noPriceNote = "This printing hasn't synced a price into PokemonPriceTracker yet. Check the link below for current listings.";
   }
 
@@ -667,57 +568,12 @@ async function lookupCardPPT(read) {
     ambiguousNote,
     noPriceNote,
     tcgplayerUrl: best.tcgPlayerUrl || null,
-    marketPrice: pricing ? pricing.basePrice : null,
-    conditionPrices: pricing ? pricing.conditions : null,
-    priceVariants: null,
-    priceVariantUsed: null,
+    marketPrice: chosenVariant ? chosenVariant.basePrice : aggregatePricing ? aggregatePricing.basePrice : null,
+    conditionPrices: chosenVariant ? chosenVariant.conditions : aggregatePricing ? aggregatePricing.conditions : null,
+    priceVariants,
+    priceVariantUsed,
     _tcgSearchName: tcgSearchName,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Top-level lookup dispatcher — routes by language, with automatic
-// cross-source fallback for English cards (2026-08-26).
-// ---------------------------------------------------------------------------
-
-async function lookupCard(read) {
-  if (read.language === "Japanese") {
-    return lookupCardPPT(read);
-  }
-
-  let result;
-  try {
-    result = await lookupCardEnglish(read);
-  } catch (e) {
-    console.error("[lookup] pokemontcg.io path threw:", e && e.message);
-    result = { error: "lookup-failed" };
-  }
-
-  if (!result || result.error || result.notFound) {
-    console.log(
-      "[lookup] pokemontcg.io path did not produce a usable match (",
-      result && (result.error || "notFound"),
-      ") — falling back to PokemonPriceTracker for name=",
-      read.cardName
-    );
-    let pptResult;
-    try {
-      pptResult = await lookupCardPPT(read);
-    } catch (e) {
-      console.error("[lookup] PokemonPriceTracker fallback threw:", e && e.message);
-      pptResult = null;
-    }
-    if (pptResult && pptResult.found) {
-      pptResult._usedFallback = true;
-      return pptResult;
-    }
-    // Neither source produced a match — return whichever failure shape the
-    // primary attempt had, so the handler's existing error messaging still
-    // applies correctly (card-db-unavailable vs. notFound).
-    return result;
-  }
-
-  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -733,20 +589,37 @@ async function lookupGradedPrice(read) {
   const filtered = rawList.filter((c) => String(c.name || "").toLowerCase().includes(wantedName));
   if (filtered.length === 0) return null;
 
-  // Look for a sold-comp entry matching the read grader+grade.
   for (const c of filtered) {
-    const comps = c.gradedSales || c.ebayComps || [];
+    const rawComps = c.gradedSales || c.ebayComps || c.ebay || [];
+
+    // Docs suggest `ebay` may be a plain object keyed by grade (e.g.
+    // { psa10: { count, avgPrice }, psa9: {...} }) rather than an array of
+    // individual comps like the earlier reconstruction assumed. Handle
+    // both shapes defensively — this whole path remains unconfirmed
+    // against a real graded slab scan either way (see build-status doc).
+    const comps = Array.isArray(rawComps)
+      ? rawComps
+      : Object.entries(rawComps).map(([key, v]) => {
+          const m = String(key).match(/^([a-zA-Z]+)\s*(\d+(?:\.\d+)?)$/);
+          return {
+            grader: m ? m[1].toUpperCase() : key,
+            grade: m ? m[2] : null,
+            price: v && (v.avgPrice ?? v.averagePrice ?? v.price ?? v.market),
+          };
+        });
+
     for (const comp of comps) {
       if (
         read.grader &&
         read.grade &&
         String(comp.grader || "").toLowerCase() === String(read.grader).toLowerCase() &&
-        String(comp.grade || "") === String(read.grade || "")
+        String(comp.grade || "") === String(read.grade || "") &&
+        comp.price != null
       ) {
         return {
           gradedPrice: comp.price,
           nearbyGradedPrices: comps
-            .filter((x) => x !== comp)
+            .filter((x) => x !== comp && x.price != null)
             .slice(0, 5)
             .map((x) => ({ label: `${x.grader} ${x.grade}`, price: x.price })),
         };
@@ -812,11 +685,8 @@ module.exports = async function handler(req, res) {
     }
 
     // Still need the underlying raw-card estimate as a fallback / for the
-    // "this under-values a slab" warning path. Goes through the same
-    // pokemontcg.io-first dispatcher as a normal scan, so a graded English
-    // card still gets its variant picker + image when a raw-card estimate
-    // is shown.
-    const baseLookup = await lookupCard(read);
+    // "this under-values a slab" warning path.
+    const baseLookup = await lookupCardPPT(read);
 
     if (gradedResult && gradedResult.gradedPrice != null) {
       result = {
@@ -849,7 +719,7 @@ module.exports = async function handler(req, res) {
     }
   } else {
     try {
-      result = await lookupCard(read);
+      result = await lookupCardPPT(read);
     } catch (e) {
       console.error("[identify] lookup threw:", e && e.message);
       result = { error: "lookup-failed" };
