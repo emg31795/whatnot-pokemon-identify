@@ -494,6 +494,20 @@ function buildAggregatePricing(card) {
   return { basePrice, conditions };
 }
 
+// Strips a trailing subtype tag (VMAX/VSTAR/GX/EX/ex/V/BREAK) off a card
+// name. FIX (2026-08-26, first live test): a real scan of a Japanese
+// "Toxtricity VMAX" got a perfect Gemini read (name, number, HP, set,
+// attack all correct) but PokemonPriceTracker's search returned a hard
+// 404 (zero results) for the exact string "Toxtricity VMAX" — not a
+// scoring/matching failure, the search itself found nothing. Read.subtype
+// already carries "VMAX" as its own field and is already a scoring
+// signal (see scoreCandidate), so nothing is lost by searching on just
+// the base species name and letting scoring do the disambiguation, if
+// that's what PPT's search wants. See lookupCardPPT's retry logic below.
+function stripSubtypeSuffix(name) {
+  return String(name || "").replace(/\s+(VMAX|VSTAR|GX|EX|ex|V|BREAK)\s*$/i, "").trim();
+}
+
 // Used for BOTH English and Japanese scans. No explicit language filter is
 // applied to the PokemonPriceTracker search — its dataset appears to store
 // the English-translated species name in `name` regardless of which
@@ -509,17 +523,34 @@ function buildAggregatePricing(card) {
 // accepted values weren't confirmed in its docs) if that turns out to be
 // a real problem.
 async function lookupCardPPT(read) {
-  const data = await fetchPokemonPriceTracker(read.cardName);
+  let data = await fetchPokemonPriceTracker(read.cardName);
   if (!data) return { error: "card-db-unavailable" };
 
-  const rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
+  let rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
   console.log("[lookup] search=", read.cardName, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
+
+  // Base species name to filter/match against — updated below if a
+  // subtype-stripped retry is needed and succeeds.
+  let matchName = read.cardName;
+
+  if (rawList.length === 0) {
+    const stripped = stripSubtypeSuffix(read.cardName);
+    if (stripped && stripped.toLowerCase() !== String(read.cardName || "").toLowerCase()) {
+      console.log("[lookup] zero raw results for full name, retrying search with base species name=", stripped);
+      const retryData = await fetchPokemonPriceTracker(stripped);
+      if (retryData) {
+        rawList = Array.isArray(retryData.data) ? retryData.data : Array.isArray(retryData) ? retryData : [];
+        console.log("[lookup] retry search=", stripped, "raw candidate count=", rawList.length);
+        if (rawList.length > 0) matchName = stripped;
+      }
+    }
+  }
 
   // Hard name filter — PPT's `search` is fuzzy, not a strict name match
   // (this is the fix for the earlier Arceus-matched-to-Raticate bug
   // documented in the build-status doc). Keep only candidates whose name
   // actually contains the read species name.
-  const wantedName = String(read.cardName || "").toLowerCase();
+  const wantedName = String(matchName || "").toLowerCase();
   const filtered = rawList.filter((c) => String(c.name || "").toLowerCase().includes(wantedName));
 
   if (filtered.length === 0) {
