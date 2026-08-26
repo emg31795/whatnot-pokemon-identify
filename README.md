@@ -8,15 +8,19 @@ feature, built as a Chrome extension + serverless backend for Whatnot livestream
 - **`api/identify.js`** — the backend, deployed as a Vercel serverless
   function at `/api/identify`. Takes a base64 video frame, identifies the
   Pokémon card with Gemini vision, looks up the exact printing (English via
-  pokemontcg.io, Japanese via PokemonPriceTracker), and returns pricing by
-  condition.
+  pokemontcg.io — with a Normal/Holofoil/Reverse-Holo/1st-Edition variant
+  picker — falling back to PokemonPriceTracker if pokemontcg.io fails;
+  Japanese and graded slabs via PokemonPriceTracker), and returns pricing
+  by condition. Tuned to answer in a few seconds — this is meant to inform
+  a real-time buy/bid decision on a live stream, not just eventually be
+  correct.
 
 This file was rebuilt from scratch on 2026-08-24 after the original source
 was lost (the chat session that wrote it never got saved to a repo — see
-"History" below). It's live in production and reproduces all documented
-behavior, but a few specifics are best-effort reconstructions rather than
-confirmed originals — see the comments at the top of `api/identify.js`
-for exactly which parts to double check if something misbehaves.
+"History" below). On 2026-08-26 it was briefly consolidated onto
+PokemonPriceTracker only, then partially reverted the same day after
+testing made clear the print-variant picker is essential, not optional —
+see the top-of-file comment in `api/identify.js` for the full history.
 
 **Not included here yet:** the Chrome extension frontend (`manifest.json`,
 `content.js`, the draggable panel UI). Only the backend source survived
@@ -37,30 +41,44 @@ Set these in the Vercel project's Environment Variables settings (see
 
 - `GEMINI_API_KEY` — required
 - `GEMINI_MODEL` — optional, defaults to `gemini-3.6-flash`
-- `POKEMONTCG_API_KEY` — optional but recommended (English-card lookups
-  are unreliable without it — see Known Issues)
-- `POKEMONPRICETRACKER_API_KEY` — required for Japanese cards + graded slabs
+- `POKEMONTCG_API_KEY` — optional but recommended (raises pokemontcg.io's
+  rate limit; English lookups still work and auto-fall-back without it)
+- `POKEMONPRICETRACKER_API_KEY` — required (Japanese cards, graded slabs,
+  and the English fallback path)
 - `PPT_BASE_URL` — optional override
 
 ## Known issues / open items
 
-- `POKEMONTCG_API_KEY` is not currently set in production. Confirmed
-  frequent 5xx errors from pokemontcg.io without one (15+ separate 502s,
-  30+ separate 500s logged in one ~4hr window). Setting this key is the
-  top priority fix.
-- The PokemonPriceTracker request URL and auth header format
-  (`Authorization: Bearer <key>`) are best-effort reconstructions, not
-  confirmed against the real original code. Watch for Japanese-lookup
-  failures and check these first.
+- pokemontcg.io was briefly dropped entirely on 2026-08-26, then restored
+  the same day — the print-variant picker it provides turned out to be
+  essential for this project's actual use case (accurate per-finish
+  pricing to inform real-money buy/bid decisions), not a nice-to-have.
+  English lookups now try pokemontcg.io first and automatically fall back
+  to PokemonPriceTracker (single aggregate price, no variant picker) if
+  it fails — see the top-of-file comment in `api/identify.js`.
+- pokemontcg.io's free tier is rate-limited without a key (1,000/day,
+  30/min) — 35 separate error groups were logged in one week prior to
+  this fallback being added. Getting a free `POKEMONTCG_API_KEY` (no
+  payment, just registration at pokemontcg.io/register) raises that to
+  20,000/day and should reduce how often the fallback triggers at all.
+- The English-card thumbnail (`cardImageUrl`) and TCGPlayer link come
+  from pokemontcg.io directly when that path succeeds; if it falls back
+  to PokemonPriceTracker, the image field is unconfirmed (see
+  `normalizePptCard`'s defensive field-name checks).
+- A 404 from PokemonPriceTracker (fixed 2026-08-26) now correctly means
+  "no match found" instead of being treated as a database outage.
 - Graded-slab (PSA/BGS/CGC/SGC) pricing has never been empirically
   verified against a real slab scan.
 - A confirmed scoring bug (Japanese lookup picking a completely wrong
   printing even when the correct one was in the candidate pool) was fixed
-  in this rewrite by unifying the English/Japanese scoring into one
-  shared function with fuzzier number matching. Deployed, but not yet
-  live-tested against a real rescan — next step is to rescan a
-  many-printing Japanese card and confirm the right one wins, then check
-  Vercel logs for the `[JP lookup] best=` line.
+  by unifying all lookup paths into one shared scoring function with
+  fuzzier number matching. Deployed, but not yet confirmed against a real
+  rescan in an actual live stream — check Vercel logs for the
+  `[lookup:*] best=` lines next time.
+- Timeouts are tuned for a ~2-5s target response but that's a ceiling,
+  not a benchmarked number — actual latency against a real stream hasn't
+  been measured yet. See "Test cases" tracking doc in the Claude project
+  for real numbers once testing resumes.
 
 ## History
 
