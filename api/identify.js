@@ -3,62 +3,44 @@
 // REBUILT 2026-08-24 after the original source was lost to a dropped chat
 // session; see the project's build-status doc for that history.
 //
-// ARCHITECTURE HISTORY (all same day, 2026-08-26 — see build-status doc for
-// full narrative):
-//   1. Consolidated onto PokemonPriceTracker only, dropping pokemontcg.io
-//      (which was unreliable at real usage volume) — but this also dropped
-//      the Normal/Holofoil/Reverse-Holo/1st-Edition print-variant picker,
-//      which turned out to be essential, not optional, for this project's
-//      real use case (making real-money buy/bid decisions off the price
-//      shown).
-//   2. Restored pokemontcg.io as the English-card source specifically to
-//      get the variant picker back, with PokemonPriceTracker as an
-//      automatic fallback.
-//   3. THIS VERSION: discovered pokemontcg.io itself has been folded into
-//      Scrydex (Pallet Trade's own paid data source) and is no longer a
-//      free/standalone API at all — it now requires a $29+/mo Scrydex
-//      plan, more than Pallet itself charges. Dead end. BUT: deeper
-//      research into PokemonPriceTracker's own docs (not just its
-//      marketing page, which is all the 2026-08-26-step-1 research
-//      looked at) found it actually DOES expose per-variant pricing via a
-//      `variants` object on each card (e.g. `variants.Holofoil.marketPrice`,
-//      `variants["Reverse Holofoil"]`, etc.) plus real CDN image URLs
-//      (`imageCdnUrl`/`imageCdnUrl200`) — fields the earlier research
-//      simply never looked for. So the FINAL architecture is: ONE data
-//      source (PokemonPriceTracker, the subscription already being paid
-//      for) for English, Japanese, AND graded slabs, using its real
-//      variants + image fields to keep the print-variant picker and card
-//      thumbnail without needing a second API at all.
+// ARCHITECTURE HISTORY: consolidated onto PokemonPriceTracker as the sole
+// data source (English, Japanese, graded slabs) after pokemontcg.io was
+// found to have been folded into paid-only Scrydex. Fixed a critical
+// endpoint-URL bug (was calling nonexistent /api/v2/prices, corrected to
+// /api/v2/cards) that made 100% of scans fail for a period on 2026-08-26.
+// See build-status doc for full narrative.
 //
-// This is simpler (one source, no cross-API fallback dance), faster (no
-// double network round-trip when a fallback triggers), and costs nothing
-// new. The exact `variants` key names (e.g. is it "Holofoil" or
-// "holofoil"? does every card have a "Reverse Holofoil" key?) are taken
-// from PokemonPriceTracker's documentation examples, NOT yet confirmed
-// against a live API response with a real key — this file is defensive
-// about it (case-insensitive key matching, falls back to the old flat
-// `prices.market` aggregate if `variants` is missing or empty) and logs
-// the raw variants object on every request so a real scan will reveal the
-// true shape and this can be corrected fast if the docs were imprecise.
+// LIVE-TEST FIXES (2026-08-27), most recent first:
+//   - Brock's Onix: Gemini read cardNumber "21/132" (matched a real
+//     candidate) but ALSO read hp "100 HP", which only belongs to a
+//     DIFFERENT candidate (069/132). The number match won with false High
+//     confidence, showing the wrong printing. Root cause #1: HP comparison
+//     did exact string match, so "100 HP" never matched a candidate's bare
+//     "100" — HP was silently contributing nothing. Fixed by comparing
+//     digits-only. Root cause #2: no safeguard existed for "number matches
+//     but HP contradicts, while a DIFFERENT candidate's HP matches
+//     exactly" — a strong signal one of Gemini's OCR fields is wrong
+//     (likely on a card partially obscured by others in frame). Added a
+//     conflict check that downgrades to Low confidence with an explicit
+//     warning instead of presenting a specific wrong card with false
+//     certainty. Also nudged the Gemini prompt to explicitly warn against
+//     mixing fields from different cards visible in the same frame.
+//   - Koffing/1st-Edition default: a PRIOR fix here (same day) excluded
+//     "1st Edition"-labeled variants whenever Gemini's stampType read was
+//     "none", assuming Gemini's own visual read was more trustworthy than
+//     PPT's `primaryPrinting` field. The very next live test proved this
+//     backwards — the user physically confirmed a card WAS 1st Edition
+//     (visible stamp) that Gemini had read as "none" (a false negative on
+//     stamp detection, not a code bug). REVERTED: back to trusting
+//     `primaryPrinting` first, since it was correct on every card checked
+//     against a physical original so far. Neither signal is fully
+//     reliable on its own — the manual variant dropdown remains the real
+//     safety net.
 //
 // SPEED: this tool needs to return in ~2-5s so it's useful for a live
 // buy/bid decision, not just eventually-correct. Timeouts below are
-// tuned tight on that assumption — see the constants just below. These
-// are timeout CEILINGS (safety nets against a hung request), not the
-// expected latency — actual latency depends on how fast Gemini + PPT
-// respond, which hasn't been benchmarked against a live stream yet.
-// Watch `usage`/response time on real scans (log to test-cases.md in the
-// project) and tighten further if needed.
-//
-// PokemonPriceTracker's base URL, endpoint path, and Bearer-auth header
-// format were confirmed correct against its live docs on 2026-08-26.
-//
-// Also fixed 2026-08-26: fetchPokemonPriceTracker used to treat a plain 404
-// from PokemonPriceTracker (which, per its docs, just means "no results
-// matched this search" — normal, not an outage) the same as a real 5xx
-// failure, surfacing a scary "couldn't reach our card database" message
-// instead of the correct "couldn't confidently match a printing" one. Now a
-// 404 returns an explicit empty result set instead.
+// tuned tight on that assumption. These are timeout CEILINGS (safety nets
+// against a hung request), not the expected latency.
 //
 // PRIOR FIX (2026-08-24 rewrite, still in effect): the confirmed bug where
 // a Japanese lookup picked a completely wrong candidate (a "369/742"
@@ -66,36 +48,19 @@
 // exactly (number "054/083") was present in the pool. Fixed by (a) using
 // ONE shared scoring function for every lookup path instead of independently
 // -maintained copies, and (b) making the number comparison robust to
-// formatting noise (leading zeros, missing "/total", stray whitespace)
-// instead of requiring an exact string match, since Gemini's own OCR of the
-// printed number is itself somewhat noisy across rescans of the same
-// physical card.
+// formatting noise (leading zeros, missing "/total", stray whitespace).
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const GEMINI_TIMEOUT_MS = 5000;
 const CARDDB_TIMEOUT_MS = 2500;
 const CARDDB_RETRY_TIMEOUT_MS = 1200;
 
-// Per-token estimate, see build-status doc's "Tracking $ spend per scan"
-// section. Adjust if Google changes pricing — Google AI Studio / Cloud
-// Console billing is the source of truth, this is just for the running
-// on-screen estimate.
 const GEMINI_INPUT_USD_PER_1M = 0.30;
 const GEMINI_OUTPUT_USD_PER_1M = 2.50;
 
-// Condition-price multipliers applied to a variant's market price to build
-// the NM/LP/MP/HP/DMG table content.js renders. Reverse-engineered from the
-// exact figures shown in the build-status doc's live examples (e.g.
-// Market $1.00 -> NM $1.00 / LP $0.85 / MP $0.70). If a variant already
-// carries its own conditionUsed-specific price from PPT, this is still
-// used to build the full condition SPREAD around that single number,
-// since PPT's `variants` object gives one price per printing, not a full
-// per-condition table.
 const CONDITION_MULTIPLIERS = { NM: 1.00, LP: 0.85, MP: 0.70, HP: 0.55, DMG: 0.40 };
 
-// Scoring weights per the build-status doc's "accuracy pass" section.
 const SCORE = { number: 10, hp: 6, subtype: 5, set: 2, attackName: 4 };
-// Below this, we don't consider a candidate a real match at all.
 const MATCH_FLOOR = 3;
 const HIGH_THRESHOLD = 10;
 const MEDIUM_THRESHOLD = 5;
@@ -156,7 +121,7 @@ const GEMINI_SCHEMA = {
 
 const GEMINI_PROMPT = `You are looking at a single video frame of a Pokemon trading card, held up on a live shopping stream. Transcribe ONLY what is literally printed and legible in this frame — do not guess a card's exact set/number from general trivia or memory. If a field isn't clearly legible, return null for it rather than guessing.
 
-cardNumber and hp are the two most important fields — they're the strongest signals for telling apart printings that otherwise look identical, so spend extra effort trying to find them even if other parts of the card are unclear or at an angle.
+cardNumber and hp are the two most important fields — they're the strongest signals for telling apart printings that otherwise look identical, so spend extra effort trying to find them even if other parts of the card are unclear or at an angle. If multiple cards are visible in the frame, make sure cardNumber, hp, and every other field describe the SAME single card being held up or highlighted — do not mix a number from one card with the HP or name of a different card in the background.
 
 If the card text is in Japanese, translate the species name to its standard English name for cardName (e.g. チャーレム -> Medicham), and set language to "Japanese". Otherwise language is "English".
 
@@ -213,16 +178,9 @@ async function identifyWithGemini(imageBase64, apiKey) {
 
 // ---------------------------------------------------------------------------
 // Shared scoring — ONE function used by every lookup (raw-card and
-// graded-slab). Consolidating this (previously two independently-
-// maintained copies, per the build-status doc's flagged "code-quality
-// risk") is a direct part of the Medicham-bug fix: divergence between
-// copies is the leading theory for how the Japanese path stopped
-// correctly rewarding an exact number match.
+// graded-slab).
 // ---------------------------------------------------------------------------
 
-// Pull the leading numeric part out of a "NNN/TTT" or bare "NNN" collector
-// number string, stripping leading zeros and whitespace, so "054/083",
-// "54/083", " 54 / 083", and "54" can all be recognized as the same number.
 function normalizeNumber(raw) {
   if (raw == null) return null;
   const str = String(raw).trim();
@@ -236,10 +194,6 @@ function numbersMatch(readRaw, candRaw) {
   const b = normalizeNumber(candRaw);
   if (!a || !b) return { match: false, points: 0 };
   if (a.num !== b.num) return { match: false, points: 0 };
-  // Leading number matches. Full points if totals agree or either side is
-  // missing a total to compare; a small deduction (not zero — the number
-  // itself is still the strongest signal) if both totals are present and
-  // disagree, since that's more likely a genuinely different printing.
   if (a.total && b.total && a.total !== b.total) {
     return { match: true, points: SCORE.number * 0.7 };
   }
@@ -256,7 +210,14 @@ function scoreCandidate(candidate, read) {
     detail.number = match;
   }
 
-  if (read.hp && candidate.hp && String(read.hp).trim() === String(candidate.hp).trim()) {
+  // FIX (2026-08-27, live test — Brock's Onix): compared hp as exact
+  // trimmed strings, so a read of "100 HP" never matched a candidate's
+  // bare "100" — HP was silently contributing zero points whenever
+  // Gemini included the "HP" suffix (which it does inconsistently).
+  // Strip to digits-only on both sides, same approach as normalizeNumber.
+  const readHpDigits = read.hp ? String(read.hp).match(/\d+/) : null;
+  const candHpDigits = candidate.hp ? String(candidate.hp).match(/\d+/) : null;
+  if (readHpDigits && candHpDigits && readHpDigits[0] === candHpDigits[0]) {
     score += SCORE.hp;
     detail.hp = true;
   }
@@ -282,10 +243,6 @@ function scoreCandidate(candidate, read) {
   return { score, detail };
 }
 
-// Runs candidates through scoreCandidate, picks the best, and detects ties
-// among DISTINCT candidates (different id/number — not just duplicate
-// objects) at the top score, exactly like the ambiguous-match fix described
-// in the build-status doc.
 function pickBestCandidate(candidates, read, logPrefix) {
   let best = null;
   let bestScore = -1;
@@ -338,31 +295,9 @@ function ambiguousNoteText() {
 }
 
 // ---------------------------------------------------------------------------
-// Card lookup + pricing — PokemonPriceTracker, the ONLY data source as of
-// 2026-08-26 step 3 (see top-of-file comment for why pokemontcg.io/Scrydex
-// isn't viable and why this is not actually a downgrade).
+// Card lookup + pricing — PokemonPriceTracker, the ONLY data source.
 // ---------------------------------------------------------------------------
 
-// FIX (2026-08-26, ROOT CAUSE of "everything stopped matching"): this was
-// pointed at `/api/v2/prices`, which is not a real PokemonPriceTracker
-// endpoint at all — confirmed by fetching PPT's own live API docs
-// (pokemontcg.io/api page), which document exactly three v2 endpoints:
-// /api/v2/cards, /api/v2/sets, /api/v2/sealed-products. There is no
-// /api/v2/prices. That wrong path is why EVERY search (including trivial,
-// certainly-in-the-database English commons like "Scorbunny", "Timburr",
-// "Carbink") came back as a 404/zero-results — it wasn't that any specific
-// card couldn't be found, the endpoint itself didn't exist, so PPT 404'd
-// every single request regardless of the search term. This bug shipped
-// with the 2026-08-26 part-3 rewrite (the one that dropped pokemontcg.io),
-// so it affected every scan since then, including the very first
-// Toxtricity VMAX test case — the subtype-suffix retry fix from that test
-// was real and still worth keeping, but it was never the actual blocker.
-// Confirmed correct endpoint + query params from PPT's live docs:
-// GET /api/v2/cards?search=<name>&limit=<n>&includeEbay=<bool>&language=<EN|JP>
-// (a `language` filter param also exists now, confirmed from docs, but is
-// NOT wired in yet — see build-status doc for why: it's a further
-// accuracy improvement, not needed for this fix, and untested behavior
-// with mixed-region data shouldn't be changed at the same time as this fix).
 const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracker.com/api/v2/cards";
 
 async function fetchPokemonPriceTracker(name, { graded = false } = {}) {
@@ -380,13 +315,6 @@ async function fetchPokemonPriceTracker(name, { graded = false } = {}) {
   }
 
   if (!resp.ok) {
-    // FIX (2026-08-26): a plain 404 from PokemonPriceTracker means "no
-    // results matched this search" (confirmed against its docs) — that's a
-    // normal, expected outcome (e.g. an obscure or newly-scanned name), not
-    // an outage. Treating it as a hard failure (the old behavior) surfaced
-    // a misleading "couldn't reach our card database" message instead of
-    // the correct "couldn't confidently match a printing" one. Only a real
-    // 5xx counts as a transient failure worth retrying/logging as an error.
     if (resp.status === 404) {
       console.log("[lookup] PokemonPriceTracker returned 404 (no match) for name=", name);
       return { data: [] };
@@ -395,8 +323,6 @@ async function fetchPokemonPriceTracker(name, { graded = false } = {}) {
     const body = await resp.text().catch(() => "");
     console.error(`[lookup] PokemonPriceTracker request FAILED — status=`, resp.status, "body=", body.slice(0, 300), "name=", name);
     if (resp.status >= 500) {
-      // Single source now (no cross-API fallback), so a real 5xx is worth
-      // one fast retry rather than giving up immediately.
       try {
         const retryResp = await fetchWithTimeout(url, { headers }, CARDDB_RETRY_TIMEOUT_MS);
         if (retryResp.ok) return await retryResp.json();
@@ -410,12 +336,6 @@ async function fetchPokemonPriceTracker(name, { graded = false } = {}) {
   return await resp.json();
 }
 
-// PPT bakes the collector number into `name` for variant-disambiguation
-// entries (e.g. "Medicham - 207/193"), but the AUTHORITATIVE number field
-// is `cardNumber` on the raw object itself — confirmed from logs showing
-// multiple distinct raw candidates that all share the bare name "Medicham"
-// but have different `cardNumber` values. Prefer that field; only fall
-// back to parsing the name suffix if it's missing.
 function normalizePptCard(raw) {
   const nameSuffixMatch = String(raw.name || "").match(/-\s*(\d+\/\d+)\s*(?:\(.*\))?\s*$/);
   const number = raw.cardNumber || raw.number || (nameSuffixMatch ? nameSuffixMatch[1] : null);
@@ -433,31 +353,15 @@ function normalizePptCard(raw) {
     hp: raw.hp || null,
     subtypes,
     setName: raw.setName || null,
-    attackName: raw.attackName || null, // PPT doesn't appear to expose move data — kept for forward-compat
+    attackName: raw.attackName || null,
     tcgPlayerUrl: raw.tcgPlayerUrl || null,
-    // CONFIRMED (2026-08-26 step 3, from PPT's own docs): real CDN image
-    // fields. Checked in priority order, with the earlier guesses kept as
-    // further fallbacks in case a given card response omits the CDN
-    // fields for some reason.
     cardImageUrl: raw.imageCdnUrl || raw.imageCdnUrl200 || raw.imageUrl || raw.image || raw.images?.large || raw.images?.small || null,
-    // Aggregate single-price fallback (used only if the per-variant
-    // `variants` object below is missing/empty for this card).
     prices: raw.prices || null,
-    // CONFIRMED (2026-08-26 step 3, from PPT's own docs): per-printing
-    // pricing object, e.g. { "Holofoil": { marketPrice, lowPrice,
-    // conditionUsed }, "Normal": {...}, "Reverse Holofoil": {...} }. Exact
-    // key casing/naming not yet confirmed against a live response — see
-    // buildPriceVariantsFromPPT below for the defensive handling.
     _rawVariants: raw.variants && typeof raw.variants === "object" ? raw.variants : null,
     _priceSource: "PokemonPriceTracker",
   };
 }
 
-// Builds the priceVariants object the frontend's dropdown expects (see
-// content.js) from PPT's per-printing `variants` object. Defensive about
-// exact field names since this is based on documentation examples, not a
-// live-confirmed response — logs the raw shape so a real scan will reveal
-// the truth fast if this needs correcting.
 function buildPriceVariantsFromPPT(rawVariants) {
   if (!rawVariants) return null;
   const variants = {};
@@ -474,55 +378,38 @@ function buildPriceVariantsFromPPT(rawVariants) {
   return Object.keys(variants).length ? variants : null;
 }
 
-// Picks which variant is pre-selected in the dropdown. Prefers PPT's own
-// stated `primaryPrinting` (from the aggregate `prices` object) if it
-// matches one of the actual variant keys, since that's PPT's own signal
-// for "the printing most of our data represents." Falls back to Gemini's
-// stampType read (did the card actually show a legible "1st Edition"
-// stamp) with a Holofoil > Reverse Holo > Normal preference order
-// otherwise. Case-insensitive matching throughout since the exact key
-// casing PPT uses isn't confirmed. The whole point of a manual dropdown
-// is that a wrong guess here costs nothing — the user just switches it.
+// Picks which variant is pre-selected in the dropdown.
 function pickDefaultVariantKey(priceVariants, read, primaryPrinting) {
   const keys = Object.keys(priceVariants);
   if (!keys.length) return null;
 
-  const is1st = String(read.stampType || "").toLowerCase() === "1st edition";
-
-  // FIX (2026-08-26, live test #7 — Koffing, Team Rocket): a real scan
-  // where Gemini explicitly read NO 1st-edition stamp (stampType: "none")
-  // still got auto-selected onto the "1st Edition" variant ($2.20) over
-  // "Unlimited" ($0.58) — a 4x price difference — because the OLD logic
-  // trusted PPT's `primaryPrinting` field unconditionally, ahead of
-  // Gemini's own read of the physical card. `primaryPrinting` just means
-  // "the printing PPT happens to have the most tracked data for" — it is
-  // NOT a claim about what's in the user's hand, and blindly following it
-  // for the 1st-Edition question specifically risks a bad buy/bid call on
-  // vintage cards where that distinction is often a 2-4x price swing.
-  // Gemini's stampType is a required field (always "none" or a specific
-  // stamp, never null) and is a direct visual read of the actual card, so
-  // it's the stronger signal here. Fix: when Gemini did NOT see a 1st
-  // Edition stamp, exclude "1st Edition"-labeled variants from
-  // consideration entirely (including ignoring primaryPrinting if it
-  // points at one) unless that's literally the only pricing data
-  // available for this card.
-  const nonFirstEdKeys = keys.filter((k) => !k.toLowerCase().includes("1st edition"));
-  const usableKeys = !is1st && nonFirstEdKeys.length ? nonFirstEdKeys : keys;
-
+  // REVERTED (2026-08-27): a fix here on 2026-08-26 excluded "1st
+  // Edition"-labeled variants whenever Gemini's stampType read was
+  // "none", on the theory that Gemini's own visual read was more
+  // trustworthy than PPT's `primaryPrinting` field. The very next live
+  // test proved that theory backwards: the user physically confirmed a
+  // card WAS 1st Edition (visible stamp) that Gemini had read as "none"
+  // — a false negative on stamp detection, not the code being wrong.
+  // `primaryPrinting` was correct on every card checked against a
+  // physical original so far. Back to trusting it first — the dropdown's
+  // "AI's best guess — switch if it looks wrong" caption plus the manual
+  // selector remain the real safety net, since neither signal alone is
+  // fully reliable.
   const lowerToActual = {};
-  for (const k of usableKeys) lowerToActual[k.toLowerCase()] = k;
+  for (const k of keys) lowerToActual[k.toLowerCase()] = k;
 
   if (primaryPrinting && lowerToActual[String(primaryPrinting).toLowerCase()]) {
     return lowerToActual[String(primaryPrinting).toLowerCase()];
   }
 
+  const is1st = String(read.stampType || "").toLowerCase() === "1st edition";
   const preferenceOrder = is1st
     ? ["1st edition holofoil", "1st edition normal", "holofoil", "reverse holofoil", "normal", "unlimited holofoil", "unlimited"]
     : ["holofoil", "reverse holofoil", "normal", "unlimited holofoil", "unlimited", "1st edition holofoil", "1st edition normal"];
   for (const pref of preferenceOrder) {
     if (lowerToActual[pref]) return lowerToActual[pref];
   }
-  return usableKeys[0];
+  return keys[0];
 }
 
 function buildAggregatePricing(card) {
@@ -535,34 +422,10 @@ function buildAggregatePricing(card) {
   return { basePrice, conditions };
 }
 
-// Strips a trailing subtype tag (VMAX/VSTAR/GX/EX/ex/V/BREAK) off a card
-// name. FIX (2026-08-26, first live test): a real scan of a Japanese
-// "Toxtricity VMAX" got a perfect Gemini read (name, number, HP, set,
-// attack all correct) but PokemonPriceTracker's search returned a hard
-// 404 (zero results) for the exact string "Toxtricity VMAX" — not a
-// scoring/matching failure, the search itself found nothing. Read.subtype
-// already carries "VMAX" as its own field and is already a scoring
-// signal (see scoreCandidate), so nothing is lost by searching on just
-// the base species name and letting scoring do the disambiguation, if
-// that's what PPT's search wants. See lookupCardPPT's retry logic below.
 function stripSubtypeSuffix(name) {
   return String(name || "").replace(/\s+(VMAX|VSTAR|GX|EX|ex|V|BREAK)\s*$/i, "").trim();
 }
 
-// Used for BOTH English and Japanese scans. No explicit language filter is
-// applied to the PokemonPriceTracker search — its dataset appears to store
-// the English-translated species name in `name` regardless of which
-// region a printing is actually from (confirmed from logs: a Japanese
-// "Start Deck 100 Battle Collection" printing still had name="Medicham",
-// not a Japanese string), so a plain name search already returns both
-// regions mixed together. The existing number/HP/set scoring below —
-// proven correct against a 33-candidate, single-language pool for the
-// Medicham bug fix — should disambiguate the SPECIFIC printing the same
-// way whether the pool has one region or two. Watch for wrong-region
-// matches in logs; add an explicit `language` request param (PPT's
-// marketing pages mention one, e.g. `language=japanese`, but the exact
-// accepted values weren't confirmed in its docs) if that turns out to be
-// a real problem.
 async function lookupCardPPT(read) {
   let data = await fetchPokemonPriceTracker(read.cardName);
   if (!data) return { error: "card-db-unavailable" };
@@ -570,8 +433,6 @@ async function lookupCardPPT(read) {
   let rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
   console.log("[lookup] search=", read.cardName, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
 
-  // Base species name to filter/match against — updated below if a
-  // subtype-stripped retry is needed and succeeds.
   let matchName = read.cardName;
 
   if (rawList.length === 0) {
@@ -587,10 +448,6 @@ async function lookupCardPPT(read) {
     }
   }
 
-  // Hard name filter — PPT's `search` is fuzzy, not a strict name match
-  // (this is the fix for the earlier Arceus-matched-to-Raticate bug
-  // documented in the build-status doc). Keep only candidates whose name
-  // actually contains the read species name.
   const wantedName = String(matchName || "").toLowerCase();
   const filtered = rawList.filter((c) => String(c.name || "").toLowerCase().includes(wantedName));
 
@@ -613,15 +470,43 @@ async function lookupCardPPT(read) {
     console.log(`[lookup] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}`);
   }
 
+  // FIX (2026-08-27, live test — Brock's Onix): a real scan read
+  // cardNumber "21/132" (which exactly matched a real candidate) but
+  // ALSO read hp "100 HP" — and HP 100 only belongs to a DIFFERENT
+  // candidate (069/132, HP 100) than the one the number pointed to
+  // (021/132, HP 70). The number match outscored HP and won with false
+  // "High" confidence, showing the wrong printing's price and image.
+  // Gemini's cardNumber OCR can simply misread a digit (especially with
+  // multiple cards visible in frame, as here), and pure number-string
+  // matching has no way to catch that on its own. Detect the conflict:
+  // if the winning candidate's own hp contradicts what was read, AND a
+  // DIFFERENT candidate's hp matches exactly, that's a strong signal one
+  // of Gemini's fields is wrong — downgrade to Low confidence and warn
+  // rather than present a specific wrong card with false certainty.
+  if (!ambiguousNote && read.hp && best.hp) {
+    const readHpDigits = String(read.hp).match(/\d+/);
+    const bestHpDigits = String(best.hp).match(/\d+/);
+    if (readHpDigits && bestHpDigits && readHpDigits[0] !== bestHpDigits[0]) {
+      const hpMatchElsewhere = candidates.some((c) => {
+        if (c === best || !c.hp) return false;
+        const cHpDigits = String(c.hp).match(/\d+/);
+        return cHpDigits && cHpDigits[0] === readHpDigits[0];
+      });
+      if (hpMatchElsewhere) {
+        matchConfidence = "Low";
+        ambiguousNote =
+          "The matched printing's HP doesn't match what was read off the card, but a different printing's HP does — the card number may have been misread (especially if multiple cards were visible in frame). Verify the exact printing before trusting this match or price.";
+        console.log(`[lookup] NUMBER/HP CONFLICT: best=${best.name} ${best.number} hp=${best.hp}, read hp=${read.hp}, matches elsewhere`);
+      }
+    }
+  }
+
   console.log("[lookup] raw variants object for best match:", JSON.stringify(best._rawVariants).slice(0, 1500));
 
   const priceVariants = buildPriceVariantsFromPPT(best._rawVariants);
   const priceVariantUsed = priceVariants ? pickDefaultVariantKey(priceVariants, read, best.prices?.primaryPrinting) : null;
   const chosenVariant = priceVariantUsed ? priceVariants[priceVariantUsed] : null;
 
-  // Fall back to the old flat aggregate price if there's no usable
-  // per-variant data for this specific card (e.g. a lower-traffic
-  // printing PPT hasn't broken down by finish yet).
   const aggregatePricing = !chosenVariant ? buildAggregatePricing(best) : null;
 
   let noPriceNote = null;
@@ -664,11 +549,6 @@ async function lookupGradedPrice(read) {
   for (const c of filtered) {
     const rawComps = c.gradedSales || c.ebayComps || c.ebay || [];
 
-    // Docs suggest `ebay` may be a plain object keyed by grade (e.g.
-    // { psa10: { count, avgPrice }, psa9: {...} }) rather than an array of
-    // individual comps like the earlier reconstruction assumed. Handle
-    // both shapes defensively — this whole path remains unconfirmed
-    // against a real graded slab scan either way (see build-status doc).
     const comps = Array.isArray(rawComps)
       ? rawComps
       : Object.entries(rawComps).map(([key, v]) => {
@@ -756,8 +636,6 @@ module.exports = async function handler(req, res) {
       console.error("[identify] graded lookup threw:", e && e.message);
     }
 
-    // Still need the underlying raw-card estimate as a fallback / for the
-    // "this under-values a slab" warning path.
     const baseLookup = await lookupCardPPT(read);
 
     if (gradedResult && gradedResult.gradedPrice != null) {
