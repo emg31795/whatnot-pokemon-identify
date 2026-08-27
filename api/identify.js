@@ -11,6 +11,16 @@
 // See build-status doc for full narrative.
 //
 // LIVE-TEST FIXES (2026-08-27), most recent first:
+//   - Latency fix: Gemini calls were defaulting to thinkingLevel "medium"
+//     (undocumented default when thinkingConfig is omitted), burning
+//     400-600+ internal reasoning tokens per call before any output was
+//     produced — confirmed via real Vercel logs. Also confirmed 16 real
+//     requests in a 24h window that got fully aborted by the 5000ms
+//     Gemini timeout. Set thinkingConfig.thinkingLevel to "minimal" — this
+//     task (transcribe visible fields from one image into a fixed schema)
+//     doesn't need deep reasoning. Should cut Gemini response time
+//     substantially; needs a live rescan with real timing to confirm.
+//   - Hitmontop/attackName: see extractFirstAttackName below.
 //   - Brock's Onix: Gemini read cardNumber "21/132" (matched a real
 //     candidate) but ALSO read hp "100 HP", which only belongs to a
 //     DIFFERENT candidate (069/132). The number match won with false High
@@ -147,6 +157,21 @@ async function identifyWithGemini(imageBase64, apiKey) {
     generationConfig: {
       responseMimeType: "application/json",
       responseSchema: GEMINI_SCHEMA,
+      // FIX (2026-08-27, latency): Gemini 3.x models default to
+      // thinkingLevel "medium" when this isn't set at all, which burns
+      // 400-600+ internal "thinking" tokens per call BEFORE producing any
+      // output — confirmed in real Vercel logs (usageMetadata.thoughtsTokenCount
+      // regularly 400-600 on a simple single-image structured-extraction
+      // call that needs none of that reasoning depth). This was the
+      // dominant latency cost, and logs also showed 16 real requests in a
+      // 24h window where the Gemini call was aborted outright by our own
+      // 5000ms timeout ("This operation was aborted") — meaning some
+      // fraction of scans were failing completely, not just slow.
+      // "minimal" is Google's documented lowest-latency thinking level
+      // ("matches the 'no thinking' setting for most queries") — this task
+      // is exactly that case: transcribe visible text/fields from one
+      // image into a fixed schema, not something requiring deep reasoning.
+      thinkingConfig: { thinkingLevel: "minimal" },
     },
   };
 
@@ -639,6 +664,13 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  // TIMING (added 2026-08-27): real end-to-end latency has never been
+  // measured against the 2-5s target — every prior "speed pass" tuned
+  // timeout ceilings, not actual response time. Log + return real
+  // wall-clock splits so this can finally be checked from real scans
+  // instead of guessed at.
+  const tStart = Date.now();
+
   const { imageBase64 } = req.body || {};
   if (!imageBase64) {
     res.status(400).json({ error: "Missing imageBase64" });
@@ -656,10 +688,13 @@ module.exports = async function handler(req, res) {
     read = await identifyWithGemini(imageBase64, geminiKey);
     console.log("[identify] Gemini read:", JSON.stringify(read));
   } catch (e) {
-    console.error("[identify] Gemini call failed:", e && e.message);
+    console.error("[identify] Gemini call failed:", e && e.message, "after ms=", Date.now() - tStart);
     res.status(200).json({ found: false, error: "gemini-failed", detail: e && e.message });
     return;
   }
+
+  const tGemini = Date.now();
+  console.log("[timing] gemini ms=", tGemini - tStart);
 
   const usage = estimateGeminiCostUsd(read._geminiUsage);
 
@@ -746,6 +781,10 @@ module.exports = async function handler(req, res) {
     };
   }
 
+  const tEnd = Date.now();
+  console.log("[timing] lookup ms=", tEnd - tGemini, "total ms=", tEnd - tStart);
+
   result.usage = usage;
+  result.timingMs = { gemini: tGemini - tStart, lookup: tEnd - tGemini, total: tEnd - tStart };
   res.status(200).json(result);
 };
