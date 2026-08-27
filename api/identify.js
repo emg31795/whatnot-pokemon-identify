@@ -542,10 +542,11 @@ const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracke
 // and returning an honest, actionable message instead of the generic
 // "flaky" one — the user deserves to know it's a real rate limit from
 // scanning quickly, not a mystery outage, and roughly how long to wait.
-async function fetchPokemonPriceTracker(name, { graded = false, language = "English" } = {}) {
+async function fetchPokemonPriceTracker(name, { graded = false, language = "English", cardNumber = null } = {}) {
   const params = new URLSearchParams({ search: name, limit: "30" });
   if (graded) params.set("includeEbay", "true");
   if (String(language).toLowerCase() === "japanese") params.set("language", "japanese");
+  if (cardNumber) params.set("cardNumber", cardNumber);
   const url = `${PPT_BASE_URL}?${params.toString()}`;
   const headers = { Authorization: `Bearer ${process.env.POKEMONPRICETRACKER_API_KEY}` };
 
@@ -701,7 +702,39 @@ function stripSubtypeSuffix(name) {
 }
 
 async function lookupCardPPT(read) {
-  let data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
+  // FIX (2026-08-27, live test — Squirtle, SV2a "151" Japanese AR
+  // 170/165): read Gemini's cardNumber/hp/set correctly (confirmed for
+  // real via web search — this is a genuine, well-known card), but the
+  // raw pool from a plain `search=Squirtle` came back capped at our
+  // limit=30 with mostly UNRELATED "Intro Pack (Squirtle)" filler cards
+  // (Poliwag, basic energy, etc. — PPT's relevance ranking, not ours) —
+  // the real 170/165 AR card never made it into the pool at all. This is
+  // exactly the regression the rate-limit fix earlier today risked:
+  // lowering `limit` from 100->30 to cut PPT credit spend meant a
+  // popular/rare card can get crowded out by irrelevant bulk cards
+  // sharing the same species name, well before we'd ever raise the limit
+  // back to something that costs real credits. PPT's own docs (WebFetch,
+  // api-docs) document a `cardNumber` filter param that narrows the
+  // search server-side instead of us hoping the right card lands in the
+  // first N results — so when Gemini read a specific number, try that
+  // FIRST (cheap: fewer candidates returned = fewer credits, not more),
+  // and only fall back to the old plain-name search (unchanged below) if
+  // the number-filtered attempt comes back empty (covers cases where
+  // Gemini's OCR'd number doesn't match PPT's stored format exactly).
+  let data = null;
+  if (read.cardNumber) {
+    const narrowed = await fetchPokemonPriceTracker(read.cardName, { language: read.language, cardNumber: read.cardNumber });
+    if (narrowed && narrowed.error === "rate-limited") return { error: "rate-limited", retryAfter: narrowed.retryAfter };
+    const narrowedList = narrowed ? (Array.isArray(narrowed.data) ? narrowed.data : Array.isArray(narrowed) ? narrowed : []) : [];
+    if (narrowedList.length > 0) {
+      console.log("[lookup] number-narrowed search hit — search=", read.cardName, "cardNumber=", read.cardNumber, "count=", narrowedList.length);
+      data = narrowed;
+    } else {
+      console.log("[lookup] number-narrowed search returned nothing, falling back to plain search — search=", read.cardName, "cardNumber=", read.cardNumber);
+    }
+  }
+
+  if (!data) data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
   if (!data) return { error: "card-db-unavailable" };
   if (data.error === "rate-limited") return { error: "rate-limited", retryAfter: data.retryAfter };
 
