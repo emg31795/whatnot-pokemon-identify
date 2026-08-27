@@ -11,6 +11,12 @@
 // See build-status doc for full narrative.
 //
 // LIVE-TEST FIXES (2026-08-27), most recent first:
+//   - Cramorant V / Shaymin V — number weight + oddity tie-break: see
+//     SCORE and pickBestCandidate below for the fix and the real-log
+//     evidence (a normal card matched to a "Jumbo Cards" oversized promo
+//     and a "Prize Pack Series" repackaging, both because the number
+//     signal could tie with weaker combined signals and there was no
+//     preference against oddity product lines in a tie).
 //   - Silvally GX / alphanumeric card numbers: normalizeNumber's regex
 //     required the number to start with a digit, so promo-style numbers
 //     ("SM91", "SV79/SV94", etc) never parsed on either side and the
@@ -77,7 +83,21 @@ const GEMINI_OUTPUT_USD_PER_1M = 2.50;
 
 const CONDITION_MULTIPLIERS = { NM: 1.00, LP: 0.85, MP: 0.70, HP: 0.55, DMG: 0.40 };
 
-const SCORE = { number: 10, hp: 6, subtype: 5, set: 2, attackName: 4 };
+// FIX (2026-08-27, live test — Cramorant V / Shaymin V): number was worth
+// only 10 points, but the OTHER four signals combined (hp 6 + subtype 5 +
+// set 2 + attackName 4 = 17) could already outscore or tie a clean exact
+// number match — and modern V/VMAX/GX/ex reprints very often share
+// identical HP and attack text across many different print runs of the
+// same Pokemon, so "hp + attackName coincidentally match" is a common,
+// weak signal, not a rare one. Real logs showed an exact "SWSH086"
+// number match tie with 3 other candidates that only matched on
+// hp+attackName. Pallet.trade's own API treats the card number as
+// authoritative (a `number_mismatch` error code fails the whole
+// identification rather than soft-scoring around it — see
+// pallet-trade-reverse-engineering.md) — bumping number's weight so it
+// structurally dominates any combination of the weaker signals moves us
+// closer to that same principle without a full rewrite: 20 > 6+5+3+4=18.
+const SCORE = { number: 20, hp: 6, subtype: 5, set: 3, attackName: 4 };
 const MATCH_FLOOR = 3;
 const HIGH_THRESHOLD = 10;
 const MEDIUM_THRESHOLD = 5;
@@ -296,32 +316,61 @@ function scoreCandidate(candidate, read) {
   return { score, detail };
 }
 
+// FIX (2026-08-27, live test — Cramorant V / Shaymin V): PPT's data has
+// two real quirks that were producing bad tie-breaks:
+//   1. Literal duplicate rows for the SAME printing — e.g. real logs
+//      showed both "Shaymin V - 013/172" and "Shaymin V" as separate
+//      candidates, identical number/hp, just a name-suffix difference.
+//      The old id (`name|number`) treated these as 2 distinct
+//      candidates, triggering a false "ambiguous match" warning on a
+//      clean, unambiguous scan.
+//   2. Oddity product lines sharing a real card's number/stats — "Jumbo
+//      Cards" (5x-oversized promotional reprints) and "Prize Pack Series
+//      Cards" (a repackaging line) showed up as literal ties against the
+//      standard printing for the exact same number. These are virtually
+//      never what's actually being held up on a livestream, but with no
+//      preference either way, the pick was arbitrary (whichever PPT
+//      listed first) — which is how a normal card ended up shown as a
+//      "Jumbo" oversized product.
+// Fixed by (a) stripping the "- number" name suffix before computing the
+// dedup key used for both tie-counting and picking, and (b) preferring a
+// non-oddity candidate among whatever's left at the top score.
+const ODDITY_PATTERN = /code card|jumbo|premium collection|prize pack|oversize|\btin\b/i;
+
+function isOddityCandidate(candidate) {
+  return ODDITY_PATTERN.test(candidate.setName || "") || ODDITY_PATTERN.test(candidate.name || "");
+}
+
+function candidateDedupKey(candidate) {
+  const baseName = String(candidate.name || "")
+    .replace(/\s*-\s*\S+\/\S+\s*$/, "")
+    .trim()
+    .toLowerCase();
+  return `${baseName}|${candidate.number}`;
+}
+
 function pickBestCandidate(candidates, read, logPrefix) {
-  let best = null;
-  let bestScore = -1;
   const scored = candidates.map((c) => {
     const { score, detail } = scoreCandidate(c, read);
     return { candidate: c, score, detail };
   });
 
+  let bestScore = -1;
   for (const s of scored) {
-    if (s.score > bestScore) {
-      bestScore = s.score;
-      best = s.candidate;
-    }
+    if (s.score > bestScore) bestScore = s.score;
   }
 
-  const distinctIds = new Set();
-  for (const s of scored) {
-    if (s.score === bestScore) {
-      distinctIds.add(s.candidate.id || `${s.candidate.name}|${s.candidate.number}`);
-    }
-  }
+  const topScorers = scored.filter((s) => s.score === bestScore);
+  const distinctIds = new Set(topScorers.map((s) => candidateDedupKey(s.candidate)));
   const tieCount = distinctIds.size;
+
+  const nonOddityTop = topScorers.filter((s) => !isOddityCandidate(s.candidate));
+  const pickPool = nonOddityTop.length ? nonOddityTop : topScorers;
+  const best = pickPool.length ? pickPool[0].candidate : null;
 
   console.log(
     `${logPrefix} best=`,
-    best ? { name: best.name, number: best.number, hp: best.hp } : null,
+    best ? { name: best.name, number: best.number, hp: best.hp, setName: best.setName } : null,
     "bestScore=",
     bestScore,
     "tieCount=",
