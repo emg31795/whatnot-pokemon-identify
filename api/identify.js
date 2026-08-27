@@ -542,11 +542,33 @@ const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracke
 // and returning an honest, actionable message instead of the generic
 // "flaky" one — the user deserves to know it's a real rate limit from
 // scanning quickly, not a mystery outage, and roughly how long to wait.
-async function fetchPokemonPriceTracker(name, { graded = false, language = "English", cardNumber = null } = {}) {
+// CORRECTED (2026-08-27, live test — Squirtle rescan, same card): the
+// `cardNumber` param added earlier today for the Squirtle/limit=30 fix
+// was WRONG — confirmed via a real 400 response from PPT itself on every
+// single request that included it: `"Unsupported query parameter(s):
+// cardNumber"`, with an `allowedParameters` list straight from PPT's own
+// validator that does NOT include `cardNumber` or `number` at all:
+// tcgPlayerId, cardId, setId, setName, set, search, rarity, cardType,
+// artist, minPrice, maxPrice, sortBy, sortOrder, limit, offset,
+// includeHistory, includeEbay, includeBoth. My earlier WebFetch summary
+// of PPT's docs claiming a `cardNumber` filter existed was simply wrong
+// (a doc-summarization error, not a real documented param) — this is a
+// stronger, more direct signal than any docs page: PPT's own live API
+// validator rejecting the exact param name. The fallback logic already
+// in place caught this gracefully (every request fell through to the
+// old plain-name search with no crash), but that meant the actual
+// crowding-out bug from the original Squirtle report was NEVER fixed —
+// it was just silently failing to apply, on every single request, while
+// also adding one extra wasted round-trip of latency per scan for
+// nothing. Removed entirely. Real fix is below: `offset`-based
+// pagination (confirmed as a REAL accepted param via the same error
+// message), tried only when the first page's best candidate doesn't
+// clear the match floor — see the FIX comment in lookupCardPPT.
+async function fetchPokemonPriceTracker(name, { graded = false, language = "English", offset = null } = {}) {
   const params = new URLSearchParams({ search: name, limit: "30" });
   if (graded) params.set("includeEbay", "true");
   if (String(language).toLowerCase() === "japanese") params.set("language", "japanese");
-  if (cardNumber) params.set("cardNumber", cardNumber);
+  if (offset) params.set("offset", String(offset));
   const url = `${PPT_BASE_URL}?${params.toString()}`;
   const headers = { Authorization: `Bearer ${process.env.POKEMONPRICETRACKER_API_KEY}` };
 
@@ -702,39 +724,7 @@ function stripSubtypeSuffix(name) {
 }
 
 async function lookupCardPPT(read) {
-  // FIX (2026-08-27, live test — Squirtle, SV2a "151" Japanese AR
-  // 170/165): read Gemini's cardNumber/hp/set correctly (confirmed for
-  // real via web search — this is a genuine, well-known card), but the
-  // raw pool from a plain `search=Squirtle` came back capped at our
-  // limit=30 with mostly UNRELATED "Intro Pack (Squirtle)" filler cards
-  // (Poliwag, basic energy, etc. — PPT's relevance ranking, not ours) —
-  // the real 170/165 AR card never made it into the pool at all. This is
-  // exactly the regression the rate-limit fix earlier today risked:
-  // lowering `limit` from 100->30 to cut PPT credit spend meant a
-  // popular/rare card can get crowded out by irrelevant bulk cards
-  // sharing the same species name, well before we'd ever raise the limit
-  // back to something that costs real credits. PPT's own docs (WebFetch,
-  // api-docs) document a `cardNumber` filter param that narrows the
-  // search server-side instead of us hoping the right card lands in the
-  // first N results — so when Gemini read a specific number, try that
-  // FIRST (cheap: fewer candidates returned = fewer credits, not more),
-  // and only fall back to the old plain-name search (unchanged below) if
-  // the number-filtered attempt comes back empty (covers cases where
-  // Gemini's OCR'd number doesn't match PPT's stored format exactly).
-  let data = null;
-  if (read.cardNumber) {
-    const narrowed = await fetchPokemonPriceTracker(read.cardName, { language: read.language, cardNumber: read.cardNumber });
-    if (narrowed && narrowed.error === "rate-limited") return { error: "rate-limited", retryAfter: narrowed.retryAfter };
-    const narrowedList = narrowed ? (Array.isArray(narrowed.data) ? narrowed.data : Array.isArray(narrowed) ? narrowed : []) : [];
-    if (narrowedList.length > 0) {
-      console.log("[lookup] number-narrowed search hit — search=", read.cardName, "cardNumber=", read.cardNumber, "count=", narrowedList.length);
-      data = narrowed;
-    } else {
-      console.log("[lookup] number-narrowed search returned nothing, falling back to plain search — search=", read.cardName, "cardNumber=", read.cardNumber);
-    }
-  }
-
-  if (!data) data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
+  let data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
   if (!data) return { error: "card-db-unavailable" };
   if (data.error === "rate-limited") return { error: "rate-limited", retryAfter: data.retryAfter };
 
@@ -757,17 +747,52 @@ async function lookupCardPPT(read) {
   }
 
   const wantedName = String(matchName || "").toLowerCase();
-  const filtered = rawList.filter((c) => String(c.name || "").toLowerCase().includes(wantedName));
+  let filtered = rawList.filter((c) => String(c.name || "").toLowerCase().includes(wantedName));
 
   if (filtered.length === 0) {
     console.log("[lookup] zero candidates survived the name filter for name=", read.cardName);
     return { notFound: true };
   }
 
-  const candidates = filtered.map(normalizePptCard);
+  let candidates = filtered.map(normalizePptCard);
   console.log("[lookup] scored candidates=", JSON.stringify(candidates.map((c) => ({ name: c.name, number: c.number, hp: c.hp, subtypes: c.subtypes, hasVariants: !!c._rawVariants }))).slice(0, 3000));
 
-  const { best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, "[lookup]");
+  let { best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, "[lookup]");
+
+  // FIX (2026-08-27, live test — the SAME Squirtle rescanned again right
+  // after the earlier "cardNumber" fix, which turned out to be a no-op —
+  // see the correction on fetchPokemonPriceTracker above for why. The
+  // real bug (a valuable card, SV2a "151" Squirtle AR 170/165, crowded
+  // out of a `limit=30` raw pool by irrelevant same-species filler cards
+  // like "Intro Pack (Squirtle)") was STILL happening on this rescan,
+  // confirmed via logs: raw candidate count exactly 30, nothing scored
+  // above the match floor. This is the real fix: when nothing on the
+  // first page clears the match floor AND the page came back completely
+  // full (rawList.length === 30, meaning PPT very likely has more
+  // results beyond it), fetch ONE more page via `offset=30` — confirmed
+  // as a genuinely accepted PPT param via its own 400 error response,
+  // unlike the fabricated `cardNumber` one — merge it in, and re-score
+  // once. This only costs an extra PPT call on the pathological "total
+  // miss" cases that are already failing today, not on ordinary
+  // successful lookups, so the rate-limit fix's credit savings stay
+  // intact for the common case.
+  if (!best && rawList.length === 30) {
+    console.log("[lookup] no match above the floor and page 1 came back full — fetching page 2 via offset=30");
+    const page2 = await fetchPokemonPriceTracker(read.cardName, { language: read.language, offset: 30 });
+    if (page2 && page2.error === "rate-limited") return { error: "rate-limited", retryAfter: page2.retryAfter };
+    const page2List = page2 ? (Array.isArray(page2.data) ? page2.data : Array.isArray(page2) ? page2 : []) : [];
+    console.log("[lookup] page 2 raw candidate count=", page2List.length);
+    if (page2List.length > 0) {
+      const page2Filtered = page2List.filter((c) => String(c.name || "").toLowerCase().includes(wantedName));
+      if (page2Filtered.length > 0) {
+        filtered = filtered.concat(page2Filtered);
+        candidates = filtered.map(normalizePptCard);
+        console.log("[lookup] re-scoring with page 1 + page 2 merged, total candidates=", candidates.length);
+        ({ best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, "[lookup:page1+2]"));
+      }
+    }
+  }
+
   if (!best) return { notFound: true };
 
   let matchConfidence = confidenceForScore(bestScore);
