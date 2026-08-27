@@ -11,34 +11,31 @@
 // See build-status doc for full narrative.
 //
 // LIVE-TEST FIXES (2026-08-27), most recent first:
-//   - STRUCTURAL FINDING — PokemonPriceTracker appears to be English/
-//     TCGPlayer-market data only for modern Japanese special-art-rare
-//     ("AR") and Japan-exclusive promo cards: confirmed via real logs
-//     across FOUR different species in one test batch (Baxcalibur SV2P,
-//     Raichu, Psyduck, Lapras s12a) — every single Japanese-language read
-//     with a specific, legible card number ("077/071", "074/071",
-//     "199/193", "177/172", etc) matched ZERO candidates in PPT's own
-//     returned pool for that species, even though the pool had 9-100
-//     candidates. Every `externalCatalogId` seen in raw PPT data follows
-//     an English-set-slug format (e.g. "sv02-210", "smp-SM199") — no
-//     Japan-specific catalog entries observed for these species. Worse: a
-//     misread Japanese number can coincidentally collide with a REAL
-//     English candidate's number (confirmed: a Psyduck rescan's OCR
-//     landed on "175/165", which is a real but unrelated English SV151
-//     Psyduck, and matched at full High confidence with NO warning at
-//     all, since numbersMatch has no way to know two matching numbers
-//     came from different card pools entirely). See the Japanese-language
-//     caveat added near the end of lookupCardPPT below — since we can't
-//     reliably detect this pool gap from the data returned, every
-//     Japanese-language read now gets a caps-confidence + explicit note
-//     regardless of match strength.
+//   - REAL ROOT CAUSE, CORRECTED BY USER — Japanese scans (Baxcalibur,
+//     Raichu, Psyduck, Lapras) were matching wrong/English printings. I
+//     initially (WRONGLY) concluded this was a structural PPT data gap for
+//     Japanese cards and shipped a blanket "treat as unverified" caveat.
+//     The user corrected this: they specifically pay for PPT's Japanese
+//     card data. Re-checked PPT's own API docs (pokemonpricetracker.com/docs)
+//     and found a documented `language` query parameter
+//     ("language=japanese" vs default "language=english") that
+//     fetchPokemonPriceTracker never set — every "Japanese" scan was
+//     silently searching PPT's ENGLISH database the whole time. Real bug,
+//     real fix: fetchPokemonPriceTracker now accepts and passes a
+//     `language` option, threaded through from every caller (lookupCardPPT,
+//     its retry, lookupGradedPrice). The blanket Japanese caveat and
+//     confidence cap added for the wrong diagnosis have been removed —
+//     see fetchPokemonPriceTracker below for the full story. Lesson: an
+//     absence of evidence for a specific mechanism (no Japanese candidates
+//     returned) doesn't confirm the data doesn't exist upstream — it can
+//     just as easily mean the request never asked for it. Should have
+//     checked the API docs before concluding a data-source limitation.
 //   - Baxcalibur (Japanese SV2P) — misleading warning ordering: see the
 //     comment above the "no number match in pool" check in lookupCardPPT
-//     below for the fix and the real-log evidence (a specific, legible
-//     Japanese read matched NOTHING in the candidate pool — likely a
-//     Japanese-printing data gap — but the generic ambiguous-tie warning
-//     fired first and masked the real, more actionable explanation,
-//     while an unrelated English printing's price was shown).
+//     below for the fix (this ordering fix is still valid/kept — it's
+//     independent of the language-param bug above; a specific, legible
+//     number that matches nothing in the pool is still a more useful
+//     diagnosis than the generic ambiguous-tie note, for any language).
 //   - Mewtwo (SVP 052 promo) — weak/asymmetric number match: see
 //     numbersMatch below for the fix and the real-log evidence (a bare
 //     promo-style number "052" coincidentally matched an unrelated
@@ -469,9 +466,21 @@ function ambiguousNoteText() {
 
 const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracker.com/api/v2/cards";
 
-async function fetchPokemonPriceTracker(name, { graded = false } = {}) {
+// FIX (2026-08-27, user correction — Baxcalibur/Raichu/Psyduck/Lapras):
+// I had wrongly concluded this was a structural data gap ("PPT doesn't
+// carry Japanese cards"). The user pointed out they specifically pay for
+// PPT's Japanese card data — that sent me back to PPT's own API docs
+// (pokemonpricetracker.com/docs), which document a `language` query param
+// ("language=japanese" vs the default "language=english") that this
+// function never set. Every "Japanese" scan was silently searching PPT's
+// ENGLISH card database the whole time, which is why the correct
+// Japanese printing was never in the returned candidate pool — not a
+// data-source limitation at all, just a missing parameter. Now passes
+// language=japanese whenever the Gemini read says language is Japanese.
+async function fetchPokemonPriceTracker(name, { graded = false, language = "English" } = {}) {
   const params = new URLSearchParams({ search: name, limit: "100" });
   if (graded) params.set("includeEbay", "true");
+  if (String(language).toLowerCase() === "japanese") params.set("language", "japanese");
   const url = `${PPT_BASE_URL}?${params.toString()}`;
   const headers = { Authorization: `Bearer ${process.env.POKEMONPRICETRACKER_API_KEY}` };
 
@@ -614,11 +623,11 @@ function stripSubtypeSuffix(name) {
 }
 
 async function lookupCardPPT(read) {
-  let data = await fetchPokemonPriceTracker(read.cardName);
+  let data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
   if (!data) return { error: "card-db-unavailable" };
 
   let rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
-  console.log("[lookup] search=", read.cardName, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
+  console.log("[lookup] search=", read.cardName, "language=", read.language, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
 
   let matchName = read.cardName;
 
@@ -626,7 +635,7 @@ async function lookupCardPPT(read) {
     const stripped = stripSubtypeSuffix(read.cardName);
     if (stripped && stripped.toLowerCase() !== String(read.cardName || "").toLowerCase()) {
       console.log("[lookup] zero raw results for full name, retrying search with base species name=", stripped);
-      const retryData = await fetchPokemonPriceTracker(stripped);
+      const retryData = await fetchPokemonPriceTracker(stripped, { language: read.language });
       if (retryData) {
         rawList = Array.isArray(retryData.data) ? retryData.data : Array.isArray(retryData) ? retryData : [];
         console.log("[lookup] retry search=", stripped, "raw candidate count=", rawList.length);
@@ -675,12 +684,16 @@ async function lookupCardPPT(read) {
       const anyNumberMatch = candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
       if (!anyNumberMatch) {
         matchConfidence = "Low";
-        const languageCaveat =
-          read.language === "Japanese"
-            ? " This looks like it may be a Japanese printing our database doesn't carry separately — the match below is very likely an English-market printing instead, with English pricing."
-            : "";
+        // CORRECTED (2026-08-27): this used to add a Japanese-specific
+        // caveat blaming a "database doesn't carry Japanese cards"
+        // data gap. That diagnosis was wrong — see the FIX comment on
+        // fetchPokemonPriceTracker for the real bug (a missing
+        // `language` query param) — so the language-specific blame is
+        // removed. This generic message (a legible number simply not
+        // present in whatever pool was searched) still applies to both
+        // languages equally.
         ambiguousNote =
-          `No printing in our database has the exact card number that was read ("${read.cardNumber}") — this may be a set, language edition, or promo PokemonPriceTracker doesn't track yet.${languageCaveat} Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact printing before trusting this price.`;
+          `No printing in our database has the exact card number that was read ("${read.cardNumber}") — this may be a set or promo PokemonPriceTracker doesn't track yet. Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact printing before trusting this price.`;
         console.log(`[lookup] NO NUMBER MATCH IN POOL: read number=${read.cardNumber}, language=${read.language}, best=${best.name} ${best.number} (matched on other signals only)`);
       }
     }
@@ -742,30 +755,19 @@ async function lookupCardPPT(read) {
   // Baxcalibur fix comment near the top of this function for why. This
   // spot intentionally left without a duplicate check.
 
-  // FIX (2026-08-27, live test batch — Baxcalibur/Raichu/Psyduck/Lapras,
-  // all Japanese): confirmed via real logs across four different species
-  // that PokemonPriceTracker's candidate pool for these species contains
-  // ZERO genuinely Japanese-market printings — every candidate's
-  // `externalCatalogId` follows an English TCGPlayer set-slug format. This
-  // isn't a single fixable matching bug; it looks like a real gap in this
-  // free data source for modern Japanese special-art-rare/promo cards
-  // specifically. Worse, a misread Japanese number can coincidentally
-  // collide with a real but unrelated ENGLISH candidate's number (a
-  // Psyduck rescan landed on "175/165" — a genuine but wrong English SV151
-  // card — and matched at full High confidence with NO warning at all,
-  // since numbersMatch has no way to know the two numbers came from
-  // completely different card pools). Since we can't reliably detect this
-  // pool gap from the data itself, every Japanese-language read now gets
-  // an explicit caveat and a confidence cap, regardless of how strong the
-  // underlying number/HP/attack match looked — a coincidental exact match
-  // is a real, confirmed failure mode here, not a hypothetical one.
-  if (read.language === "Japanese") {
-    if (matchConfidence === "High") matchConfidence = "Medium";
-    const japaneseCaveat =
-      "This was read as a Japanese card. Our free card database is primarily English/TCGPlayer-market data and often doesn't carry Japan-exclusive promos or special-art-rare printings separately — even a match that looks exact (including the card number) may actually be an unrelated English printing that happens to share a number. Treat this price as a rough estimate only and verify the exact printing on the physical card.";
-    ambiguousNote = ambiguousNote ? `${ambiguousNote} ${japaneseCaveat}` : japaneseCaveat;
-    console.log(`[lookup] JAPANESE READ CAVEAT: read=${read.cardName} ${read.cardNumber}, best=${best.name} ${best.number} (PPT data is English-market; treating as unverified)`);
-  }
+  // CORRECTED (2026-08-27, user correction): a blanket "Japanese reads are
+  // unverified, our data is English-only" caveat + confidence cap USED TO
+  // live here. That was based on a wrong root-cause conclusion — see the
+  // FIX comment on fetchPokemonPriceTracker above. The real bug was that
+  // fetchPokemonPriceTracker never passed PPT's own `language` query
+  // parameter, so every "Japanese" scan was silently searching PPT's
+  // ENGLISH card database. The user (who specifically pays for PPT's
+  // Japanese card data) caught this. Now that the language param is
+  // passed correctly, Japanese reads get no special penalty here — they
+  // go through the exact same scoring/confidence logic as English reads.
+  // Removed rather than left in "just in case," since a blanket caveat
+  // that used to fire on every Japanese scan regardless of match quality
+  // would now just be noise on what should be normal, accurate matches.
 
   console.log("[lookup] raw variants object for best match:", JSON.stringify(best._rawVariants).slice(0, 1500));
 
@@ -804,7 +806,7 @@ async function lookupCardPPT(read) {
 // ---------------------------------------------------------------------------
 
 async function lookupGradedPrice(read) {
-  const data = await fetchPokemonPriceTracker(read.cardName, { graded: true });
+  const data = await fetchPokemonPriceTracker(read.cardName, { graded: true, language: read.language });
   if (!data) return null;
 
   const rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
@@ -961,22 +963,15 @@ module.exports = async function handler(req, res) {
     }
 
     if (result.notFound) {
-      // FIX (2026-08-27, live test — Raichu, Japanese): this generic
-      // message used to be the only thing shown even when the real cause
-      // was the same Japanese-data-gap issue documented above (see the
-      // "STRUCTURAL FINDING" note near the top of this file) — Gemini had
-      // read a specific, legible Japanese number ("074/071") that matched
-      // NOTHING among 100 real candidates, and every one of those
-      // candidates turned out to be an English-market printing. Give the
-      // user the real, actionable explanation instead of a vague "no
-      // confident match."
-      const japaneseHint =
-        read.language === "Japanese"
-          ? " This looks like it may be a Japan-exclusive promo or special-art-rare printing our free card database (English/TCGPlayer-market data) doesn't carry."
-          : "";
+      // CORRECTED (2026-08-27): this used to append a Japanese-specific
+      // hint blaming a database coverage gap for Japan-exclusive cards.
+      // That diagnosis was wrong (see the FIX comment on
+      // fetchPokemonPriceTracker — the real bug was a missing `language`
+      // query param, now fixed), so the hint is removed. This message
+      // applies equally regardless of language now.
       res.status(200).json({
         found: false,
-        reason: `Read the name "${read.cardName}" but couldn't confidently match it to a specific printing.${japaneseHint}`,
+        reason: `Read the name "${read.cardName}" but couldn't confidently match it to a specific printing.`,
         usage,
       });
       return;
