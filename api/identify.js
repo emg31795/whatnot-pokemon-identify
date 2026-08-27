@@ -336,6 +336,24 @@ async function fetchPokemonPriceTracker(name, { graded = false } = {}) {
   return await resp.json();
 }
 
+// FIX (2026-08-27, live test — Hitmontop): PPT never actually returns a
+// plain `attackName` field on a card — it returns an `attacks` array of
+// full move-text strings, e.g. "[F] Triple Kick (20x) Flip 3 coins...".
+// Since normalizePptCard only ever checked `raw.attackName` (which never
+// exists in PPT's real shape), `candidate.attackName` has been null on
+// EVERY card since this rewrite — the attackName scoring signal (4 of the
+// ~27 possible points) has been silently dead the whole time, which made
+// weak matches (like this Hitmontop, which only had HP to go on) even
+// weaker than they needed to be. Extract the first attack's name by
+// stripping the leading "[cost]" bracket and everything from the first
+// "(" or line break onward.
+function extractFirstAttackName(attacks) {
+  if (!Array.isArray(attacks) || !attacks.length) return null;
+  const first = String(attacks[0] || "");
+  const m = first.match(/^\s*\[[^\]]*\]\s*([^(\r\n<]+)/);
+  return m ? m[1].trim() : null;
+}
+
 function normalizePptCard(raw) {
   const nameSuffixMatch = String(raw.name || "").match(/-\s*(\d+\/\d+)\s*(?:\(.*\))?\s*$/);
   const number = raw.cardNumber || raw.number || (nameSuffixMatch ? nameSuffixMatch[1] : null);
@@ -353,7 +371,7 @@ function normalizePptCard(raw) {
     hp: raw.hp || null,
     subtypes,
     setName: raw.setName || null,
-    attackName: raw.attackName || null,
+    attackName: raw.attackName || extractFirstAttackName(raw.attacks) || null,
     tcgPlayerUrl: raw.tcgPlayerUrl || null,
     cardImageUrl: raw.imageCdnUrl || raw.imageCdnUrl200 || raw.imageUrl || raw.image || raw.images?.large || raw.images?.small || null,
     prices: raw.prices || null,
@@ -497,6 +515,29 @@ async function lookupCardPPT(read) {
         ambiguousNote =
           "The matched printing's HP doesn't match what was read off the card, but a different printing's HP does — the card number may have been misread (especially if multiple cards were visible in frame). Verify the exact printing before trusting this match or price.";
         console.log(`[lookup] NUMBER/HP CONFLICT: best=${best.name} ${best.number} hp=${best.hp}, read hp=${read.hp}, matches elsewhere`);
+      }
+    }
+  }
+
+  // FIX (2026-08-27, live test — Hitmontop, Crimson Haze SV5a): Gemini
+  // read a specific number ("067/066") and set ("Crimson Haze") that
+  // didn't match ANY of the 18 real candidates PPT returned — not a
+  // misread digit landing on the WRONG real candidate (that's the Onix
+  // case above), but the read number matching NOTHING at all. The pick
+  // ended up resting entirely on a single HP coincidence (100), which is
+  // much weaker evidence than it looks — PPT may simply not have this
+  // specific set/printing tracked yet (a data-completeness gap, not a
+  // matching bug). Flag it explicitly rather than let a plain "Medium"
+  // badge imply more certainty than a bare HP-only match deserves.
+  if (!ambiguousNote && read.cardNumber && best.number) {
+    const { match: numberMatched } = numbersMatch(read.cardNumber, best.number);
+    if (!numberMatched) {
+      const anyNumberMatch = candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
+      if (!anyNumberMatch) {
+        matchConfidence = "Low";
+        ambiguousNote =
+          "No printing in our database has the exact card number that was read — this may be a set or language edition PokemonPriceTracker doesn't track yet. Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact printing before trusting this price.";
+        console.log(`[lookup] NO NUMBER MATCH IN POOL: read number=${read.cardNumber}, best=${best.name} ${best.number} (matched on other signals only)`);
       }
     }
   }
