@@ -11,6 +11,13 @@
 // See build-status doc for full narrative.
 //
 // LIVE-TEST FIXES (2026-08-27), most recent first:
+//   - Silvally GX / alphanumeric card numbers: normalizeNumber's regex
+//     required the number to start with a digit, so promo-style numbers
+//     ("SM91", "SV79/SV94", etc) never parsed on either side and the
+//     number-match signal silently contributed nothing whenever Gemini
+//     correctly read one. See normalizeNumber below for the fix and the
+//     real-log evidence (a correct "SM91" read lost to a 7-way tie and
+//     picked the wrong printing).
 //   - Latency fix: Gemini calls were defaulting to thinkingLevel "medium"
 //     (undocumented default when thinkingConfig is omitted), burning
 //     400-600+ internal reasoning tokens per call before any output was
@@ -206,20 +213,41 @@ async function identifyWithGemini(imageBase64, apiKey) {
 // graded-slab).
 // ---------------------------------------------------------------------------
 
+// FIX (2026-08-27, live test — Silvally GX): the regex here required the
+// number to START with a digit (`^0*(\d+)`), so it silently failed to
+// parse ANY alphanumeric-prefixed card number — promo formats like
+// "SM91", "SV79/SV94", "XY177", "BW-P" etc, which are common on secret
+// rares and black-star promos. When both sides fail to parse,
+// numbersMatch returns "no match, 0 points" even when the numbers are
+// actually identical. Confirmed via real logs: Gemini read cardNumber
+// "SM91" for a real Silvally GX promo, which exactly matches a real
+// candidate's number field ("SM91") in the pool — but the old regex
+// returned null for both, so the number signal contributed nothing, and
+// the pick fell back to a 7-way tie among every same-HP/same-attack
+// Silvally GX printing (since they're mechanically identical Pokemon
+// cards, just different print runs), landing on the wrong one (Hidden
+// Fates Shiny Vault, first in the raw list) instead of the actual promo.
+// Now captures an optional leading letter prefix on both the number and
+// the total, and requires the prefix to match too (case-insensitive).
 function normalizeNumber(raw) {
   if (raw == null) return null;
   const str = String(raw).trim();
-  const m = str.match(/^0*(\d+)\s*(?:\/\s*0*(\d+))?/);
+  const m = str.match(/^([A-Za-z]*)0*(\d+)(?:\s*\/\s*([A-Za-z]*)0*(\d+))?/);
   if (!m) return null;
-  return { num: m[1], total: m[2] || null };
+  return {
+    prefix: (m[1] || "").toUpperCase(),
+    num: m[2],
+    totalPrefix: (m[3] || "").toUpperCase(),
+    total: m[4] || null,
+  };
 }
 
 function numbersMatch(readRaw, candRaw) {
   const a = normalizeNumber(readRaw);
   const b = normalizeNumber(candRaw);
   if (!a || !b) return { match: false, points: 0 };
-  if (a.num !== b.num) return { match: false, points: 0 };
-  if (a.total && b.total && a.total !== b.total) {
+  if (a.prefix !== b.prefix || a.num !== b.num) return { match: false, points: 0 };
+  if (a.total && b.total && (a.total !== b.total || a.totalPrefix !== b.totalPrefix)) {
     return { match: true, points: SCORE.number * 0.7 };
   }
   return { match: true, points: SCORE.number };
