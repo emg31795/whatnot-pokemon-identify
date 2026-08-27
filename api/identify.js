@@ -524,8 +524,26 @@ const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracke
 // Japanese printing was never in the returned candidate pool — not a
 // data-source limitation at all, just a missing parameter. Now passes
 // language=japanese whenever the Gemini read says language is Japanese.
+//
+// FIX (2026-08-27, live test — Palkia GX "couldn't reach our card
+// database"): a burst of 4 rapid rescans in ~30s all failed with the
+// generic "intermittently flaky" message. Real logs showed the ACTUAL
+// cause: PPT returned a 429 ("Minute rate limit exceeded... required:10,
+// available:8/9"), not a timeout or 5xx. Checked PPT's own docs (WebFetch,
+// pokemonpricetracker.com/api-docs): PPT bills API credits roughly 1-per-
+// card-returned, on TOP OF a per-minute call cap — and this function was
+// requesting `limit=100` on every single search, so ordinary rapid
+// rescanning during a live stream burns through the per-minute credit
+// budget fast even though any real match has only ever needed a fraction
+// of that (18 candidates was the largest raw pool seen in any log this
+// entire session). Fixed by (a) dropping the default limit from 100 to
+// 30 — plenty of headroom over anything actually seen, while cutting
+// credit cost per call roughly 3x, and (b) detecting a 429 specifically
+// and returning an honest, actionable message instead of the generic
+// "flaky" one — the user deserves to know it's a real rate limit from
+// scanning quickly, not a mystery outage, and roughly how long to wait.
 async function fetchPokemonPriceTracker(name, { graded = false, language = "English" } = {}) {
-  const params = new URLSearchParams({ search: name, limit: "100" });
+  const params = new URLSearchParams({ search: name, limit: "30" });
   if (graded) params.set("includeEbay", "true");
   if (String(language).toLowerCase() === "japanese") params.set("language", "japanese");
   const url = `${PPT_BASE_URL}?${params.toString()}`;
@@ -547,6 +565,19 @@ async function fetchPokemonPriceTracker(name, { graded = false, language = "Engl
 
     const body = await resp.text().catch(() => "");
     console.error(`[lookup] PokemonPriceTracker request FAILED — status=`, resp.status, "body=", body.slice(0, 300), "name=", name);
+
+    if (resp.status === 429) {
+      let retryAfter = 15;
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed && parsed.retryAfter) retryAfter = parsed.retryAfter;
+      } catch (e3) {
+        // ignore, use default
+      }
+      console.log(`[lookup] RATE LIMITED by PokemonPriceTracker: retryAfter=${retryAfter}s name=`, name);
+      return { error: "rate-limited", retryAfter };
+    }
+
     if (resp.status >= 500) {
       try {
         const retryResp = await fetchWithTimeout(url, { headers }, CARDDB_RETRY_TIMEOUT_MS);
@@ -672,6 +703,7 @@ function stripSubtypeSuffix(name) {
 async function lookupCardPPT(read) {
   let data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
   if (!data) return { error: "card-db-unavailable" };
+  if (data.error === "rate-limited") return { error: "rate-limited", retryAfter: data.retryAfter };
 
   let rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
   console.log("[lookup] search=", read.cardName, "language=", read.language, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
@@ -854,7 +886,7 @@ async function lookupCardPPT(read) {
 
 async function lookupGradedPrice(read) {
   const data = await fetchPokemonPriceTracker(read.cardName, { graded: true, language: read.language });
-  if (!data) return null;
+  if (!data || data.error) return null;
 
   const rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
   const wantedName = String(read.cardName || "").toLowerCase();
@@ -1001,11 +1033,20 @@ module.exports = async function handler(req, res) {
     }
 
     if (!result || result.error) {
-      res.status(200).json({
-        found: false,
-        reason: "Couldn't reach our card database right now (it's been intermittently flaky) — try again in a moment.",
-        usage,
-      });
+      // FIX (2026-08-27, live test — Palkia GX): a burst of rapid rescans
+      // hit PPT's real per-minute credit limit (confirmed via logs: a 429
+      // with "Minute rate limit exceeded"), but this always showed the
+      // same generic "intermittently flaky" message regardless of cause —
+      // misleading here, since this is a specific, real, and temporary
+      // condition, not a mystery outage. See fetchPokemonPriceTracker
+      // above for the actual fix (lower request limit to use fewer
+      // credits per call); this just makes the user-facing message
+      // honest about what's happening when it does still occur.
+      const reason =
+        result && result.error === "rate-limited"
+          ? `Our card database's per-minute limit was hit from scanning quickly — wait about ${result.retryAfter || 15}s and try again.`
+          : "Couldn't reach our card database right now (it's been intermittently flaky) — try again in a moment.";
+      res.status(200).json({ found: false, reason, usage });
       return;
     }
 
