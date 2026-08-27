@@ -11,6 +11,11 @@
 // See build-status doc for full narrative.
 //
 // LIVE-TEST FIXES (2026-08-27), most recent first:
+//   - Mewtwo (SVP 052 promo) — weak/asymmetric number match: see
+//     numbersMatch below for the fix and the real-log evidence (a bare
+//     promo-style number "052" coincidentally matched an unrelated
+//     numbered-set card "52/108" at FULL number-match strength, winning
+//     with false High confidence and showing the wrong card/price).
 //   - Cramorant V / Shaymin V — number weight + oddity tie-break: see
 //     SCORE and pickBestCandidate below for the fix and the real-log
 //     evidence (a normal card matched to a "Jumbo Cards" oversized promo
@@ -262,15 +267,47 @@ function normalizeNumber(raw) {
   };
 }
 
+// FIX (2026-08-27, live test — Mewtwo/SVP 052): a bare promo-style number
+// with NO "/total" (e.g. "052") matched a totally unrelated numbered-set
+// candidate ("52/108", XY - Evolutions) at FULL number-match strength (20
+// points, same as an exact "52/108"=="52/108" match), and nothing else
+// scored, yet this still won at false "High" confidence and showed the
+// wrong card+price ($10.45 Mewtwo EX instead of the real SVP 052 promo).
+// Real log evidence: read cardNumber "052", winning candidate number
+// "52/108" — matching digits are coincidental (there are dozens of
+// unrelated "Mewtwo" printings whose numerator happens to be in the low
+// 50s), not evidence of the same printing. Distinguish this from the
+// Silvally GX case (test #18), where BOTH the read ("SM91") and the
+// correct candidate ("SM91") lacked a total — that's a true promo-to-promo
+// match and deserves full credit. The bug is specifically the ASYMMETRIC
+// case: one side has a "/total" (a numbered-set card) and the other
+// doesn't (a promo-style bare number) — different numbering schemes
+// entirely, so a shared numerator is weak coincidental evidence, not
+// confirmation. Downgraded to well below MEDIUM_THRESHOLD on its own so a
+// bare-number-only match can no longer surface as a confident answer.
 function numbersMatch(readRaw, candRaw) {
   const a = normalizeNumber(readRaw);
   const b = normalizeNumber(candRaw);
-  if (!a || !b) return { match: false, points: 0 };
-  if (a.prefix !== b.prefix || a.num !== b.num) return { match: false, points: 0 };
-  if (a.total && b.total && (a.total !== b.total || a.totalPrefix !== b.totalPrefix)) {
-    return { match: true, points: SCORE.number * 0.7 };
+  if (!a || !b) return { match: false, points: 0, strength: "none" };
+  if (a.prefix !== b.prefix || a.num !== b.num) return { match: false, points: 0, strength: "none" };
+
+  const bothHaveTotal = a.total && b.total;
+  const neitherHasTotal = !a.total && !b.total;
+
+  if (bothHaveTotal) {
+    if (a.total !== b.total || a.totalPrefix !== b.totalPrefix) {
+      return { match: true, points: SCORE.number * 0.7, strength: "totalMismatch" };
+    }
+    return { match: true, points: SCORE.number, strength: "exact" };
   }
-  return { match: true, points: SCORE.number };
+
+  if (neitherHasTotal) {
+    return { match: true, points: SCORE.number, strength: "exact" };
+  }
+
+  // Asymmetric: one side is a numbered-set card, the other a bare
+  // promo-style number. Weak coincidental evidence only.
+  return { match: true, points: SCORE.number * 0.35, strength: "weak" };
 }
 
 function scoreCandidate(candidate, read) {
@@ -278,9 +315,10 @@ function scoreCandidate(candidate, read) {
   const detail = {};
 
   if (read.cardNumber && candidate.number) {
-    const { match, points } = numbersMatch(read.cardNumber, candidate.number);
+    const { match, points, strength } = numbersMatch(read.cardNumber, candidate.number);
     score += points;
     detail.number = match;
+    detail.numberStrength = strength;
   }
 
   // FIX (2026-08-27, live test — Brock's Onix): compared hp as exact
@@ -383,7 +421,8 @@ function pickBestCandidate(candidates, read, logPrefix) {
     return { best: null, bestScore, tieCount };
   }
 
-  return { best, bestScore, tieCount };
+  const bestDetail = pickPool.length ? pickPool[0].detail : null;
+  return { best, bestScore, tieCount, bestDetail };
 }
 
 function confidenceForScore(score) {
@@ -579,7 +618,7 @@ async function lookupCardPPT(read) {
   const candidates = filtered.map(normalizePptCard);
   console.log("[lookup] scored candidates=", JSON.stringify(candidates.map((c) => ({ name: c.name, number: c.number, hp: c.hp, subtypes: c.subtypes, hasVariants: !!c._rawVariants }))).slice(0, 3000));
 
-  const { best, bestScore, tieCount } = pickBestCandidate(candidates, read, "[lookup]");
+  const { best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, "[lookup]");
   if (!best) return { notFound: true };
 
   let matchConfidence = confidenceForScore(bestScore);
@@ -588,6 +627,19 @@ async function lookupCardPPT(read) {
     matchConfidence = "Low";
     ambiguousNote = ambiguousNoteText();
     console.log(`[lookup] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}`);
+  }
+
+  // FIX (2026-08-27, live test — Mewtwo/SVP 052): a "weak" number match
+  // (see numbersMatch) means the only real signal tying this candidate to
+  // the read card is a numerator that happens to coincide despite the two
+  // using different numbering schemes (promo vs numbered-set) — flag it
+  // explicitly rather than let whatever score it landed at imply more
+  // certainty than that coincidence deserves.
+  if (!ambiguousNote && bestDetail && bestDetail.numberStrength === "weak") {
+    matchConfidence = matchConfidence === "High" ? "Medium" : matchConfidence;
+    ambiguousNote =
+      "The card number that matched uses a different numbering format than this printing normally would (e.g. a promo-style number vs. a numbered-set card) — the shared digits may be coincidental rather than confirming this is the same printing. Verify the exact set/number on the physical card before trusting this match or price.";
+    console.log(`[lookup] WEAK NUMBER MATCH: read=${read.cardNumber}, best=${best.name} ${best.number} (numbering schemes differ, digits may coincide by chance)`);
   }
 
   // FIX (2026-08-27, live test — Brock's Onix): a real scan read
