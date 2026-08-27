@@ -11,6 +11,34 @@
 // See build-status doc for full narrative.
 //
 // LIVE-TEST FIXES (2026-08-27), most recent first:
+//   - STRUCTURAL FINDING — PokemonPriceTracker appears to be English/
+//     TCGPlayer-market data only for modern Japanese special-art-rare
+//     ("AR") and Japan-exclusive promo cards: confirmed via real logs
+//     across FOUR different species in one test batch (Baxcalibur SV2P,
+//     Raichu, Psyduck, Lapras s12a) — every single Japanese-language read
+//     with a specific, legible card number ("077/071", "074/071",
+//     "199/193", "177/172", etc) matched ZERO candidates in PPT's own
+//     returned pool for that species, even though the pool had 9-100
+//     candidates. Every `externalCatalogId` seen in raw PPT data follows
+//     an English-set-slug format (e.g. "sv02-210", "smp-SM199") — no
+//     Japan-specific catalog entries observed for these species. Worse: a
+//     misread Japanese number can coincidentally collide with a REAL
+//     English candidate's number (confirmed: a Psyduck rescan's OCR
+//     landed on "175/165", which is a real but unrelated English SV151
+//     Psyduck, and matched at full High confidence with NO warning at
+//     all, since numbersMatch has no way to know two matching numbers
+//     came from different card pools entirely). See the Japanese-language
+//     caveat added near the end of lookupCardPPT below — since we can't
+//     reliably detect this pool gap from the data returned, every
+//     Japanese-language read now gets a caps-confidence + explicit note
+//     regardless of match strength.
+//   - Baxcalibur (Japanese SV2P) — misleading warning ordering: see the
+//     comment above the "no number match in pool" check in lookupCardPPT
+//     below for the fix and the real-log evidence (a specific, legible
+//     Japanese read matched NOTHING in the candidate pool — likely a
+//     Japanese-printing data gap — but the generic ambiguous-tie warning
+//     fired first and masked the real, more actionable explanation,
+//     while an unrelated English printing's price was shown).
 //   - Mewtwo (SVP 052 promo) — weak/asymmetric number match: see
 //     numbersMatch below for the fix and the real-log evidence (a bare
 //     promo-style number "052" coincidentally matched an unrelated
@@ -623,7 +651,42 @@ async function lookupCardPPT(read) {
 
   let matchConfidence = confidenceForScore(bestScore);
   let ambiguousNote = null;
-  if (tieCount >= 2) {
+
+  // FIX (2026-08-27, live test — Baxcalibur, Japanese SV2P): the generic
+  // tie-break note below ("...the card number is the only thing that
+  // tells them apart, and it wasn't legible this scan") used to fire
+  // FIRST whenever candidates tied, even when the real, more useful
+  // explanation was available: Gemini read a perfectly specific, legible
+  // number ("077/071", set "SV2P", language Japanese) that simply doesn't
+  // exist ANYWHERE in the 9 candidates PPT returned for "Baxcalibur" — all
+  // 9 were English-market printings (SV02: Paldea Evolved, Paldean Fates,
+  // etc), none Japanese. The generic note was actively misleading here
+  // (falsely implying the number "wasn't legible" when it was read fine
+  // and just isn't in our database), and it masked the real, more
+  // actionable explanation: this is very likely a Japanese-printing data
+  // gap in PokemonPriceTracker, and the price/image shown is for an
+  // unrelated ENGLISH printing, not a mere "which similar card is it"
+  // ambiguity. Check for "read a specific number that matches nothing in
+  // the pool at all" FIRST, since when it applies it's a strictly more
+  // accurate diagnosis than a generic tie-break note.
+  if (read.cardNumber && best.number) {
+    const { match: numberMatchedForBest } = numbersMatch(read.cardNumber, best.number);
+    if (!numberMatchedForBest) {
+      const anyNumberMatch = candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
+      if (!anyNumberMatch) {
+        matchConfidence = "Low";
+        const languageCaveat =
+          read.language === "Japanese"
+            ? " This looks like it may be a Japanese printing our database doesn't carry separately — the match below is very likely an English-market printing instead, with English pricing."
+            : "";
+        ambiguousNote =
+          `No printing in our database has the exact card number that was read ("${read.cardNumber}") — this may be a set, language edition, or promo PokemonPriceTracker doesn't track yet.${languageCaveat} Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact printing before trusting this price.`;
+        console.log(`[lookup] NO NUMBER MATCH IN POOL: read number=${read.cardNumber}, language=${read.language}, best=${best.name} ${best.number} (matched on other signals only)`);
+      }
+    }
+  }
+
+  if (!ambiguousNote && tieCount >= 2) {
     matchConfidence = "Low";
     ambiguousNote = ambiguousNoteText();
     console.log(`[lookup] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}`);
@@ -673,27 +736,35 @@ async function lookupCardPPT(read) {
     }
   }
 
-  // FIX (2026-08-27, live test — Hitmontop, Crimson Haze SV5a): Gemini
-  // read a specific number ("067/066") and set ("Crimson Haze") that
-  // didn't match ANY of the 18 real candidates PPT returned — not a
-  // misread digit landing on the WRONG real candidate (that's the Onix
-  // case above), but the read number matching NOTHING at all. The pick
-  // ended up resting entirely on a single HP coincidence (100), which is
-  // much weaker evidence than it looks — PPT may simply not have this
-  // specific set/printing tracked yet (a data-completeness gap, not a
-  // matching bug). Flag it explicitly rather than let a plain "Medium"
-  // badge imply more certainty than a bare HP-only match deserves.
-  if (!ambiguousNote && read.cardNumber && best.number) {
-    const { match: numberMatched } = numbersMatch(read.cardNumber, best.number);
-    if (!numberMatched) {
-      const anyNumberMatch = candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
-      if (!anyNumberMatch) {
-        matchConfidence = "Low";
-        ambiguousNote =
-          "No printing in our database has the exact card number that was read — this may be a set or language edition PokemonPriceTracker doesn't track yet. Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact printing before trusting this price.";
-        console.log(`[lookup] NO NUMBER MATCH IN POOL: read number=${read.cardNumber}, best=${best.name} ${best.number} (matched on other signals only)`);
-      }
-    }
+  // NOTE (2026-08-27): the "read a specific number that matches nothing in
+  // the pool at all" check (originally added for the Hitmontop/Crimson
+  // Haze case) now runs FIRST, above, before the tie-break check — see the
+  // Baxcalibur fix comment near the top of this function for why. This
+  // spot intentionally left without a duplicate check.
+
+  // FIX (2026-08-27, live test batch — Baxcalibur/Raichu/Psyduck/Lapras,
+  // all Japanese): confirmed via real logs across four different species
+  // that PokemonPriceTracker's candidate pool for these species contains
+  // ZERO genuinely Japanese-market printings — every candidate's
+  // `externalCatalogId` follows an English TCGPlayer set-slug format. This
+  // isn't a single fixable matching bug; it looks like a real gap in this
+  // free data source for modern Japanese special-art-rare/promo cards
+  // specifically. Worse, a misread Japanese number can coincidentally
+  // collide with a real but unrelated ENGLISH candidate's number (a
+  // Psyduck rescan landed on "175/165" — a genuine but wrong English SV151
+  // card — and matched at full High confidence with NO warning at all,
+  // since numbersMatch has no way to know the two numbers came from
+  // completely different card pools). Since we can't reliably detect this
+  // pool gap from the data itself, every Japanese-language read now gets
+  // an explicit caveat and a confidence cap, regardless of how strong the
+  // underlying number/HP/attack match looked — a coincidental exact match
+  // is a real, confirmed failure mode here, not a hypothetical one.
+  if (read.language === "Japanese") {
+    if (matchConfidence === "High") matchConfidence = "Medium";
+    const japaneseCaveat =
+      "This was read as a Japanese card. Our free card database is primarily English/TCGPlayer-market data and often doesn't carry Japan-exclusive promos or special-art-rare printings separately — even a match that looks exact (including the card number) may actually be an unrelated English printing that happens to share a number. Treat this price as a rough estimate only and verify the exact printing on the physical card.";
+    ambiguousNote = ambiguousNote ? `${ambiguousNote} ${japaneseCaveat}` : japaneseCaveat;
+    console.log(`[lookup] JAPANESE READ CAVEAT: read=${read.cardName} ${read.cardNumber}, best=${best.name} ${best.number} (PPT data is English-market; treating as unverified)`);
   }
 
   console.log("[lookup] raw variants object for best match:", JSON.stringify(best._rawVariants).slice(0, 1500));
@@ -890,9 +961,22 @@ module.exports = async function handler(req, res) {
     }
 
     if (result.notFound) {
+      // FIX (2026-08-27, live test — Raichu, Japanese): this generic
+      // message used to be the only thing shown even when the real cause
+      // was the same Japanese-data-gap issue documented above (see the
+      // "STRUCTURAL FINDING" note near the top of this file) — Gemini had
+      // read a specific, legible Japanese number ("074/071") that matched
+      // NOTHING among 100 real candidates, and every one of those
+      // candidates turned out to be an English-market printing. Give the
+      // user the real, actionable explanation instead of a vague "no
+      // confident match."
+      const japaneseHint =
+        read.language === "Japanese"
+          ? " This looks like it may be a Japan-exclusive promo or special-art-rare printing our free card database (English/TCGPlayer-market data) doesn't carry."
+          : "";
       res.status(200).json({
         found: false,
-        reason: `Read the name "${read.cardName}" but couldn't confidently match it to a specific printing.`,
+        reason: `Read the name "${read.cardName}" but couldn't confidently match it to a specific printing.${japaneseHint}`,
         usage,
       });
       return;
