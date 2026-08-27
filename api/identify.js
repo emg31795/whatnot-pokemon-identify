@@ -127,10 +127,43 @@ const CONDITION_MULTIPLIERS = { NM: 1.00, LP: 0.85, MP: 0.70, HP: 0.55, DMG: 0.4
 // pallet-trade-reverse-engineering.md) — bumping number's weight so it
 // structurally dominates any combination of the weaker signals moves us
 // closer to that same principle without a full rewrite: 20 > 6+5+3+4=18.
-const SCORE = { number: 20, hp: 6, subtype: 5, set: 3, attackName: 4 };
+const SCORE = { number: 20, hp: 6, subtype: 5, set: 3, attackName: 4, stampMatch: 3, stampMismatch: 8 };
 const MATCH_FLOOR = 3;
 const HIGH_THRESHOLD = 10;
 const MEDIUM_THRESHOLD = 5;
+
+// FIX (2026-08-27, live test — Eevee "173", Pokemon Center Exclusive):
+// Gemini reads a `stampType` field on every scan (enum: none, 1st
+// Edition, Staff, Prerelease, Winner, Pokemon Center, World Championship,
+// other) but nothing in scoring/tie-break ever used it. A tied-score
+// Eevee scan (plain promo "Eevee - 173" vs. "Eevee - 173 (Pokemon Center
+// Exclusive)" — same number, same HP, same attack, PPT carries both as
+// separate rows) landed arbitrarily on the Pokemon Center variant, even
+// though Gemini explicitly read stampType "none" — i.e. it looked at the
+// card and found no such stamp. That's direct, positive evidence the
+// scoring never got to see. Added a soft stamp-keyword signal: a
+// candidate whose name/set advertises a specific stamp variant gets a
+// bonus when it matches the read stampType, and a penalty when Gemini
+// explicitly read "none" and the candidate implies a stamp isn't there.
+// Deliberately a soft penalty (8, less than the number signal) rather
+// than an outright exclusion — the Koffing/1st-Edition case earlier this
+// project proved Gemini's stamp reads can false-negative on a real stamp,
+// so this nudges ties without overriding stronger independent evidence.
+const STAMP_KEYWORDS = [
+  { type: "Pokemon Center", pattern: /pok[ée]mon center/i },
+  { type: "Staff", pattern: /\bstaff\b/i },
+  { type: "Prerelease", pattern: /pre-?release/i },
+  { type: "Winner", pattern: /\bwinner\b/i },
+  { type: "World Championship", pattern: /world championship|\bworlds\b/i },
+];
+
+function candidateStampType(candidate) {
+  const haystack = `${candidate.name || ""} ${candidate.setName || ""}`;
+  for (const { type, pattern } of STAMP_KEYWORDS) {
+    if (pattern.test(haystack)) return type;
+  }
+  return null;
+}
 
 function withCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -374,6 +407,20 @@ function scoreCandidate(candidate, read) {
   if (read.attackName && candidate.attackName && String(candidate.attackName).toLowerCase().trim() === String(read.attackName).toLowerCase().trim()) {
     score += SCORE.attackName;
     detail.attackName = true;
+  }
+
+  const candStamp = candidateStampType(candidate);
+  if (read.stampType && read.stampType !== "none") {
+    if (candStamp && candStamp === read.stampType) {
+      score += SCORE.stampMatch;
+      detail.stampMatch = true;
+    } else if (candStamp && candStamp !== read.stampType) {
+      score -= SCORE.stampMismatch;
+      detail.stampMismatch = true;
+    }
+  } else if (read.stampType === "none" && candStamp) {
+    score -= SCORE.stampMismatch;
+    detail.stampMismatch = true;
   }
 
   return { score, detail };
