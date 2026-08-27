@@ -487,21 +487,42 @@ function pickDefaultVariantKey(priceVariants, read, primaryPrinting) {
   const keys = Object.keys(priceVariants);
   if (!keys.length) return null;
 
+  const is1st = String(read.stampType || "").toLowerCase() === "1st edition";
+
+  // FIX (2026-08-26, live test #7 — Koffing, Team Rocket): a real scan
+  // where Gemini explicitly read NO 1st-edition stamp (stampType: "none")
+  // still got auto-selected onto the "1st Edition" variant ($2.20) over
+  // "Unlimited" ($0.58) — a 4x price difference — because the OLD logic
+  // trusted PPT's `primaryPrinting` field unconditionally, ahead of
+  // Gemini's own read of the physical card. `primaryPrinting` just means
+  // "the printing PPT happens to have the most tracked data for" — it is
+  // NOT a claim about what's in the user's hand, and blindly following it
+  // for the 1st-Edition question specifically risks a bad buy/bid call on
+  // vintage cards where that distinction is often a 2-4x price swing.
+  // Gemini's stampType is a required field (always "none" or a specific
+  // stamp, never null) and is a direct visual read of the actual card, so
+  // it's the stronger signal here. Fix: when Gemini did NOT see a 1st
+  // Edition stamp, exclude "1st Edition"-labeled variants from
+  // consideration entirely (including ignoring primaryPrinting if it
+  // points at one) unless that's literally the only pricing data
+  // available for this card.
+  const nonFirstEdKeys = keys.filter((k) => !k.toLowerCase().includes("1st edition"));
+  const usableKeys = !is1st && nonFirstEdKeys.length ? nonFirstEdKeys : keys;
+
   const lowerToActual = {};
-  for (const k of keys) lowerToActual[k.toLowerCase()] = k;
+  for (const k of usableKeys) lowerToActual[k.toLowerCase()] = k;
 
   if (primaryPrinting && lowerToActual[String(primaryPrinting).toLowerCase()]) {
     return lowerToActual[String(primaryPrinting).toLowerCase()];
   }
 
-  const is1st = String(read.stampType || "").toLowerCase() === "1st edition";
   const preferenceOrder = is1st
     ? ["1st edition holofoil", "1st edition normal", "holofoil", "reverse holofoil", "normal", "unlimited holofoil", "unlimited"]
     : ["holofoil", "reverse holofoil", "normal", "unlimited holofoil", "unlimited", "1st edition holofoil", "1st edition normal"];
   for (const pref of preferenceOrder) {
     if (lowerToActual[pref]) return lowerToActual[pref];
   }
-  return keys[0];
+  return usableKeys[0];
 }
 
 function buildAggregatePricing(card) {
