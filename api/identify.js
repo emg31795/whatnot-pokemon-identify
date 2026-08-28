@@ -723,6 +723,34 @@ function stripSubtypeSuffix(name) {
   return String(name || "").replace(/\s+(VMAX|VSTAR|GX|EX|ex|V|BREAK)\s*$/i, "").trim();
 }
 
+// FIX (2026-08-28, live test — Nidoran♂, blorgotron stream): Gemini reads
+// the gender symbol straight off the card ("Nidoran♂" / "Nidoran ♀"), but
+// PokemonPriceTracker's own card names spell it out as a letter instead
+// ("Nidoran M" / "Nidoran F" in the raw candidate data confirmed via
+// logs). Our own client-side name filter did a strict, case-insensitive
+// substring check (`candidateName.includes(wantedName)`) — "nidoran m"
+// does NOT contain "nidoran♂", so EVERY real candidate (raw candidate
+// count=30, genuine Nidoran cards in the sample) got thrown out by our
+// own filter before scoring ever ran, on 4 separate repeat scans in a
+// row. This has nothing to do with PPT's search itself (it already
+// returns the right raw pool for "Nidoran♂" as the query) — it's purely
+// our own post-filter being too literal about a symbol PPT doesn't use.
+// Fixed by normalizing both sides of the comparison: spell out the
+// gender symbols as letters and strip remaining punctuation before doing
+// the substring check, so "Nidoran♂" and "Nidoran M" (and "Nidoran ♀" /
+// "Nidoran F") line up correctly. This likely also protects other
+// special-character names (e.g. "Mr. Mime", "Farfetch'd", "Type: Null")
+// from the same class of bug going forward, though those haven't
+// actually failed in a live scan yet.
+function normalizeNameForMatch(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/♂/g, " m")
+    .replace(/♀/g, " f")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
 async function lookupCardPPT(read) {
   let data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
   if (!data) return { error: "card-db-unavailable" };
@@ -746,8 +774,8 @@ async function lookupCardPPT(read) {
     }
   }
 
-  const wantedName = String(matchName || "").toLowerCase();
-  let filtered = rawList.filter((c) => String(c.name || "").toLowerCase().includes(wantedName));
+  const wantedName = normalizeNameForMatch(matchName);
+  let filtered = rawList.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
 
   if (filtered.length === 0) {
     console.log("[lookup] zero candidates survived the name filter for name=", read.cardName);
@@ -807,7 +835,7 @@ async function lookupCardPPT(read) {
     const page2List = page2 ? (Array.isArray(page2.data) ? page2.data : Array.isArray(page2) ? page2 : []) : [];
     console.log("[lookup] page 2 raw candidate count=", page2List.length);
     if (page2List.length > 0) {
-      const page2Filtered = page2List.filter((c) => String(c.name || "").toLowerCase().includes(wantedName));
+      const page2Filtered = page2List.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
       if (page2Filtered.length > 0) {
         filtered = filtered.concat(page2Filtered);
         candidates = filtered.map(normalizePptCard);
@@ -971,8 +999,8 @@ async function lookupGradedPrice(read) {
   if (!data || data.error) return null;
 
   const rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
-  const wantedName = String(read.cardName || "").toLowerCase();
-  const filtered = rawList.filter((c) => String(c.name || "").toLowerCase().includes(wantedName));
+  const wantedName = normalizeNameForMatch(read.cardName);
+  const filtered = rawList.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
   if (filtered.length === 0) return null;
 
   for (const c of filtered) {
