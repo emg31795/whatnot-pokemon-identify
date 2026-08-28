@@ -1,3 +1,11 @@
+// content.js — Whatnot Pokémon Card ID (Free) extension
+// Backed up 2026-08-24 from the extension zip the user still had locally
+// (whatnot-pokemon-extension_14) after it was confirmed this was the only
+// surviving copy of the frontend source. See
+// whatnot-pokemon-extension-build-status.md for full context. This is the
+// content script injected on whatnot.com/live/* pages — the draggable
+// panel, frame capture, and result rendering all live here.
+
 (function () {
   const CONDITION_ORDER = ["NM", "LP", "MP", "HP", "DMG"];
 
@@ -520,17 +528,45 @@
       return;
     }
 
+    // FIX (2026-08-28, real-money price-accuracy report — Togepi, Undaunted
+    // 70/90 Reverse Holofoil): the backend used to synthesize EVERY
+    // non-NM condition price from a flat multiplier table applied to the
+    // single Near-Mint market price PPT returned — this label always said
+    // "(estimated from market price above)" for the whole table, even
+    // though (per the user's own TCGplayer screenshots) the estimates
+    // could be off by ~3x for a real card. The backend now requests PPT's
+    // `includeHistory=true` data and uses REAL per-condition prices
+        // wherever PPT actually has them, only falling back to the synthetic
+    // multiplier for whichever specific tier(s) PPT doesn't have real data
+    // for (see the FIX comment on fetchPokemonPriceTracker in identify.js).
+    // `data.conditionPricesEstimated` (and each variant's own `.estimated`
+    // map) tells us, per tier, which numbers are real vs. synthetic — mark
+    // only the synthetic ones with "*" instead of caveating the whole
+    // table, since most of it is now real market data.
+    function conditionRowsHtml(conditions, estimatedMap) {
+      return CONDITION_ORDER.map((tier) => {
+        const price = conditions ? conditions[tier] : null;
+        const isEstimated = estimatedMap ? !!estimatedMap[tier] : true;
+        return `<div class="wnpk-cond-row"><span>${tier}${
+          price != null && isEstimated ? " *" : ""
+        }</span><span>${price != null ? "$" + price.toFixed(2) : "—"}</span></div>`;
+      }).join("");
+    }
+
+    function conditionLabelNote(estimatedMap) {
+      if (!estimatedMap) return "(estimated from market price above)";
+      const tiers = Object.keys(estimatedMap);
+      const anyEstimated = tiers.some((t) => estimatedMap[t]);
+      const allEstimated = tiers.length > 0 && tiers.every((t) => estimatedMap[t]);
+      if (allEstimated) return "(estimated from market price above)";
+      if (!anyEstimated) return "(real per-condition data from PokemonPriceTracker)";
+      return "(* = estimated from market price; others are PokemonPriceTracker's real per-condition data)";
+    }
+
     // Detected as a slab, but no graded-price data available (API key not
     // set up yet, or that exact grade wasn't found) — say so plainly rather
     // than silently showing a misleading raw-card price.
     if (data.isSlab && data.gradedPriceUnavailable) {
-      const conditionRows = CONDITION_ORDER.map((tier) => {
-        const price = data.conditionPrices ? data.conditionPrices[tier] : null;
-        return `<div class="wnpk-cond-row"><span>${tier}</span><span>${
-          price != null ? "$" + price.toFixed(2) : "—"
-        }</span></div>`;
-      }).join("");
-
       $("#wnpk-body").innerHTML = `
         ${header}
         <div class="wnpk-warning">⚠ This looks like a graded slab${
@@ -540,9 +576,9 @@
           Raw market: ${data.marketPrice != null ? "$" + data.marketPrice.toFixed(2) : "—"}
         </div>
         <div class="wnpk-cond-label">
-          RAW CONDITION PRICES <span class="wnpk-estimate-note">(estimated from market price — not graded value)</span>
+          RAW CONDITION PRICES <span class="wnpk-estimate-note">${conditionLabelNote(data.conditionPricesEstimated)} — not graded value</span>
         </div>
-        <div class="wnpk-cond-list">${conditionRows}</div>
+        <div class="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices, data.conditionPricesEstimated)}</div>
         ${footer}
       `;
       return;
@@ -555,14 +591,6 @@
     // particular are easy for a vision model to misread or miss from a
     // video frame, so the user can just switch the dropdown to whatever
     // matches what they're actually holding, no rescan needed.
-    const conditionRowsHtml = (conditions) =>
-      CONDITION_ORDER.map((tier) => {
-        const price = conditions ? conditions[tier] : null;
-        return `<div class="wnpk-cond-row"><span>${tier}</span><span>${
-          price != null ? "$" + price.toFixed(2) : "—"
-        }</span></div>`;
-      }).join("");
-
     const variantPicker = data.priceVariants
       ? `
         <div class="wnpk-cond-label">PRINT VARIANT <span class="wnpk-estimate-note">(AI's best guess — switch if it looks wrong)</span></div>
@@ -590,6 +618,7 @@
       }`;
 
     const initialVariant = data.priceVariants ? data.priceVariants[data.priceVariantUsed] : null;
+    const initialEstimatedMap = initialVariant ? initialVariant.estimated : data.conditionPricesEstimated;
 
     $("#wnpk-body").innerHTML = `
       ${header}
@@ -597,10 +626,10 @@
         ${initialVariant ? marketPriceLine(initialVariant) : marketPriceLine({ basePrice: data.marketPrice })}
       </div>
       ${variantPicker}
-      <div class="wnpk-cond-label">
-        CONDITION PRICES <span class="wnpk-estimate-note">(estimated from market price above)</span>
+      <div class="wnpk-cond-label" id="wnpk-cond-label">
+        CONDITION PRICES <span class="wnpk-estimate-note" id="wnpk-cond-note">${conditionLabelNote(initialEstimatedMap)}</span>
       </div>
-      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices)}</div>
+      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices, initialEstimatedMap)}</div>
       ${footer}
     `;
 
@@ -610,7 +639,8 @@
         const variant = data.priceVariants[select.value];
         if (!variant) return;
         $("#wnpk-market-price").textContent = marketPriceLine(variant);
-        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions);
+        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions, variant.estimated);
+        $("#wnpk-cond-note").textContent = conditionLabelNote(variant.estimated);
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
       });

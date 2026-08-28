@@ -585,8 +585,30 @@ const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracke
 // pagination (confirmed as a REAL accepted param via the same error
 // message), tried only when the first page's best candidate doesn't
 // clear the match floor — see the FIX comment in lookupCardPPT.
+// FIX (2026-08-28, real-money price-accuracy report — Togepi, Undaunted
+// 70/90 Reverse Holofoil): user found our "Lightly Played" estimate
+// ($31.88, from the flat CONDITION_MULTIPLIERS.LP = 0.85 applied to the
+// Near-Mint-only `marketPrice` PPT was returning) was ~3x TCGplayer's
+// actual live LP market ($10.52) for that exact card/printing. Root cause
+// confirmed empirically (not from PPT's docs, which have been wrong
+// before — see the cardNumber FIX above): a live diagnostic added
+// `includeHistory=true` to a real request and logged the raw response
+// across several different live scans (Pokegear 3.0, Raticate BREAK,
+// Zorua, Vileplume). Every one of them came back with genuine, DIFFERENT
+// per-condition prices (e.g. Pokegear 3.0 Reverse Holofoil: NM $36.22, LP
+// $27.59, MP $21.79, HP $20.41, DMG $12.50 — ratios nowhere close to our
+// flat 85/70/55/40% multiplier table) instead of the single NM-only number
+// we'd been extrapolating from this whole time. `includeHistory=true` was
+// simply never being requested. Turning it on here (permanently, on the
+// existing request — NOT a second network call, so no latency hit) and
+// reading the real per-condition breakdown in buildPriceVariantsFromPPT /
+// buildAggregatePricing below. CONDITION_MULTIPLIERS is now only a
+// fallback for whichever specific condition(s) PPT doesn't have real data
+// for on a given printing (e.g. Raichu GX SM90 above was missing a real
+// "Heavily Played" figure) — the UI marks exactly those estimated tiers,
+// not the whole table, since most of the table is now real.
 async function fetchPokemonPriceTracker(name, { graded = false, language = "English", offset = null } = {}) {
-  const params = new URLSearchParams({ search: name, limit: "30" });
+  const params = new URLSearchParams({ search: name, limit: "30", includeHistory: "true" });
   if (graded) params.set("includeEbay", "true");
   if (String(language).toLowerCase() === "japanese") params.set("language", "japanese");
   if (offset) params.set("offset", String(offset));
@@ -687,19 +709,51 @@ function normalizePptCard(raw) {
 // prices merged alongside plain "Base Set"'s) rather than the winning
 // candidate's own data — see the merge step in lookupCardPPT. Untagged
 // calls (tag omitted) behave exactly as before.
+// Maps our internal tier codes to PPT's real (includeHistory=true)
+// condition-name keys. See the FIX comment on fetchPokemonPriceTracker
+// above for how this was confirmed against real live-scan data.
+const CONDITION_NAME_TO_TIER = {
+  "Near Mint": "NM",
+  "Lightly Played": "LP",
+  "Moderately Played": "MP",
+  "Heavily Played": "HP",
+  Damaged: "DMG",
+};
+
 function buildPriceVariantsFromPPT(rawVariants, tag) {
   if (!rawVariants) return null;
   const variants = {};
   for (const [key, v] of Object.entries(rawVariants)) {
     if (!v) continue;
-    const basePrice = v.marketPrice ?? v.market ?? v.lowPrice ?? v.low;
+
+    // includeHistory=true shape: v is keyed by real condition names, each
+    // holding {price, ...} — e.g. v["Lightly Played"].price. Detect it by
+    // checking whether any of PPT's condition-name keys are present.
+    const realByTier = {};
+    for (const [condName, tier] of Object.entries(CONDITION_NAME_TO_TIER)) {
+      const entry = v[condName];
+      if (entry && typeof entry.price === "number") realByTier[tier] = entry.price;
+    }
+    const hasRealData = Object.keys(realByTier).length > 0;
+
+    const basePrice = hasRealData
+      ? realByTier.NM ?? v.marketPrice ?? v.market
+      : v.marketPrice ?? v.market ?? v.lowPrice ?? v.low;
     if (basePrice == null) continue;
+
     const conditions = {};
+    const estimated = {};
     for (const [tier, mult] of Object.entries(CONDITION_MULTIPLIERS)) {
-      conditions[tier] = Math.round(basePrice * mult * 100) / 100;
+      if (hasRealData && realByTier[tier] != null) {
+        conditions[tier] = realByTier[tier];
+        estimated[tier] = false;
+      } else {
+        conditions[tier] = Math.round(basePrice * mult * 100) / 100;
+        estimated[tier] = true;
+      }
     }
     const label = tag ? `${key} (${tag})` : key;
-    variants[label] = { label, printEdition: label, basePrice, conditions };
+    variants[label] = { label, printEdition: label, basePrice, conditions, estimated };
   }
   return Object.keys(variants).length ? variants : null;
 }
@@ -741,11 +795,26 @@ function pickDefaultVariantKey(priceVariants, read, primaryPrinting) {
 function buildAggregatePricing(card) {
   if (!card.prices || card.prices.market == null) return null;
   const basePrice = card.prices.market;
+  // With includeHistory=true, PPT's top-level `prices.conditions` is a
+  // real per-condition breakdown for `prices.primaryPrinting` (confirmed
+  // via live logs — see the FIX comment on fetchPokemonPriceTracker).
+  // Same real-data-first, multiplier-fallback approach as
+  // buildPriceVariantsFromPPT above.
+  const realConditions = card.prices.conditions && typeof card.prices.conditions === "object" ? card.prices.conditions : null;
   const conditions = {};
+  const estimated = {};
   for (const [tier, mult] of Object.entries(CONDITION_MULTIPLIERS)) {
-    conditions[tier] = Math.round(basePrice * mult * 100) / 100;
+    const condName = Object.keys(CONDITION_NAME_TO_TIER).find((k) => CONDITION_NAME_TO_TIER[k] === tier);
+    const real = realConditions && condName ? realConditions[condName] : null;
+    if (real && typeof real.price === "number") {
+      conditions[tier] = real.price;
+      estimated[tier] = false;
+    } else {
+      conditions[tier] = Math.round(basePrice * mult * 100) / 100;
+      estimated[tier] = true;
+    }
   }
-  return { basePrice, conditions };
+  return { basePrice, conditions, estimated };
 }
 
 function stripSubtypeSuffix(name) {
@@ -1086,6 +1155,12 @@ async function lookupCardPPT(read) {
     tcgplayerUrl: best.tcgPlayerUrl || null,
     marketPrice: chosenVariant ? chosenVariant.basePrice : aggregatePricing ? aggregatePricing.basePrice : null,
     conditionPrices: chosenVariant ? chosenVariant.conditions : aggregatePricing ? aggregatePricing.conditions : null,
+    // Per-tier flag: true where the price is our synthetic
+    // CONDITION_MULTIPLIERS extrapolation, false where it's PPT's real
+    // per-condition data (includeHistory=true). Lets the UI only label the
+    // tiers that are actually estimates instead of a blanket caveat on the
+    // whole table. See FIX comment on fetchPokemonPriceTracker.
+    conditionPricesEstimated: chosenVariant ? chosenVariant.estimated : aggregatePricing ? aggregatePricing.estimated : null,
     priceVariants,
     priceVariantUsed,
     _tcgSearchName: tcgSearchName,
