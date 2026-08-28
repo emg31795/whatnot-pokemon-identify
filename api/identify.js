@@ -776,8 +776,32 @@ async function lookupCardPPT(read) {
   // miss" cases that are already failing today, not on ordinary
   // successful lookups, so the rate-limit fix's credit savings stay
   // intact for the common case.
-  if (!best && rawList.length === 30) {
-    console.log("[lookup] no match above the floor and page 1 came back full — fetching page 2 via offset=30");
+  //
+  // WIDENED (2026-08-28, live test — Charizard V "017/172", Brilliant
+  // Stars): the trigger above only covered the case where NOTHING cleared
+  // the match floor (`!best`). Real logs from this scan showed a
+  // different, more common shape of the same crowding-out bug: Gemini
+  // read a specific, legible, perfectly real card number ("017/172" —
+  // Brilliant Stars Charizard V), page 1 came back completely full
+  // (raw candidate count=30), and the genuine 017/172 printing was never
+  // in that page — but a WRONG candidate ("Charizard V - SWSH260") still
+  // cleared the match floor on secondary signals (hp/subtype) alone, so
+  // `best` was truthy and the page-2 fallback never fired at all. The
+  // existing "NO NUMBER MATCH IN POOL" note further down correctly
+  // detected and warned about this exact mismatch — but only after
+  // already giving up and settling for the wrong card + its (wrong)
+  // price, instead of trying page 2 first. Fixed by also triggering page
+  // 2 whenever Gemini read a specific card number that matches NONE of
+  // the page-1 candidates (regardless of whether some other candidate
+  // cleared the floor via other signals) and page 1 came back full.
+  const numberMissingFromPool =
+    !!read.cardNumber && !candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
+  if ((!best || numberMissingFromPool) && rawList.length === 30) {
+    console.log(
+      !best
+        ? "[lookup] no match above the floor and page 1 came back full — fetching page 2 via offset=30"
+        : `[lookup] best=${best.name} cleared the floor on other signals but read number=${read.cardNumber} matches nothing on page 1, which came back full — fetching page 2 via offset=30`
+    );
     const page2 = await fetchPokemonPriceTracker(read.cardName, { language: read.language, offset: 30 });
     if (page2 && page2.error === "rate-limited") return { error: "rate-limited", retryAfter: page2.retryAfter };
     const page2List = page2 ? (Array.isArray(page2.data) ? page2.data : Array.isArray(page2) ? page2 : []) : [];
