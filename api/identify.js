@@ -451,6 +451,27 @@ function isOddityCandidate(candidate) {
   return ODDITY_PATTERN.test(candidate.setName || "") || ODDITY_PATTERN.test(candidate.name || "");
 }
 
+// FIX (2026-08-28, feature request — Shadowless dropdown option): the
+// user asked for "Shadowless" (Base Set's early print run, no drop-shadow
+// on the picture-frame border) to be selectable in the price dropdown.
+// Explicitly NOT doing this via a new Gemini-detected visual signal — the
+// user asked to avoid adding runtime/latency risk, so this is pure
+// post-processing on data already fetched. Real logs confirmed
+// PokemonPriceTracker doesn't model Shadowless as another key inside one
+// card's `variants` object (the way "1st Edition"/"Unlimited" are) — it's
+// a whole separate candidate row with its own setName ("Base Set
+// (Shadowless)" vs plain "Base Set"), same number/hp/attack otherwise.
+// These two helpers let the price-building step recognize that pairing
+// so both sets of prices can be merged into one dropdown regardless of
+// which one the scoring picked as "best" — see lookupCardPPT below.
+function stripShadowlessSuffix(setName) {
+  return String(setName || "").replace(/\s*\(shadowless\)\s*$/i, "").trim().toLowerCase();
+}
+
+function isShadowlessSetName(setName) {
+  return /\(shadowless\)/i.test(String(setName || ""));
+}
+
 function candidateDedupKey(candidate) {
   const baseName = String(candidate.name || "")
     .replace(/\s*-\s*\S+\/\S+\s*$/, "")
@@ -659,7 +680,14 @@ function normalizePptCard(raw) {
   };
 }
 
-function buildPriceVariantsFromPPT(rawVariants) {
+// FIX (2026-08-28, feature request — Shadowless dropdown option): added
+// an optional `tag` so the same PPT variant keys ("1st Edition Holofoil",
+// "Unlimited Holofoil") can be relabeled when they're being merged in
+// from a SIBLING candidate (e.g. the "Base Set (Shadowless)" entry's
+// prices merged alongside plain "Base Set"'s) rather than the winning
+// candidate's own data — see the merge step in lookupCardPPT. Untagged
+// calls (tag omitted) behave exactly as before.
+function buildPriceVariantsFromPPT(rawVariants, tag) {
   if (!rawVariants) return null;
   const variants = {};
   for (const [key, v] of Object.entries(rawVariants)) {
@@ -670,7 +698,8 @@ function buildPriceVariantsFromPPT(rawVariants) {
     for (const [tier, mult] of Object.entries(CONDITION_MULTIPLIERS)) {
       conditions[tier] = Math.round(basePrice * mult * 100) / 100;
     }
-    variants[key] = { label: key, printEdition: key, basePrice, conditions };
+    const label = tag ? `${key} (${tag})` : key;
+    variants[label] = { label, printEdition: label, basePrice, conditions };
   }
   return Object.keys(variants).length ? variants : null;
 }
@@ -960,9 +989,65 @@ async function lookupCardPPT(read) {
 
   console.log("[lookup] raw variants object for best match:", JSON.stringify(best._rawVariants).slice(0, 1500));
 
-  const priceVariants = buildPriceVariantsFromPPT(best._rawVariants);
-  const priceVariantUsed = priceVariants ? pickDefaultVariantKey(priceVariants, read, best.prices?.primaryPrinting) : null;
-  const chosenVariant = priceVariantUsed ? priceVariants[priceVariantUsed] : null;
+  // Default-variant selection stays exactly as before, computed against
+  // `best`'s own untagged variant keys only — the merge below only adds
+  // MORE options to the dropdown, it never changes what's picked by
+  // default.
+  const bestOwnVariants = buildPriceVariantsFromPPT(best._rawVariants);
+  const defaultKeyRaw = bestOwnVariants ? pickDefaultVariantKey(bestOwnVariants, read, best.prices?.primaryPrinting) : null;
+
+  // FIX (2026-08-28, feature request — Shadowless dropdown option): see
+  // stripShadowlessSuffix/isShadowlessSetName above for the real-log
+  // evidence this is based on. PPT models Base Set's Shadowless print run
+  // as an entirely separate candidate (same number/hp/attack, different
+  // setName — "Base Set (Shadowless)" vs plain "Base Set"), not as an
+  // extra key inside one card's `variants` object. The scoring/dedup
+  // logic above only ever picks ONE of these two as `best`. Rather than
+  // trying to detect which one the physical card actually is (the user
+  // explicitly asked NOT to add a new Gemini-detected signal for this —
+  // no extra runtime cost, no risk to existing field accuracy), just find
+  // the sibling candidate (same number, opposite Shadowless status, same
+  // underlying set name once the "(Shadowless)" suffix is stripped) among
+  // whatever candidates were already fetched — zero extra network calls —
+  // and merge its prices into the same dropdown, tagged so they're never
+  // confused with the winning candidate's own prices. This only ever ADDS
+  // options; it never changes the default selection above.
+  const bestIsShadowless = isShadowlessSetName(best.setName);
+  const bestBaseSetName = stripShadowlessSuffix(best.setName);
+  const shadowlessSibling = bestBaseSetName
+    ? candidates.find(
+        (c) =>
+          c !== best &&
+          isShadowlessSetName(c.setName) !== bestIsShadowless &&
+          stripShadowlessSuffix(c.setName) === bestBaseSetName &&
+          numbersMatch(best.number, c.number).match
+      )
+    : null;
+
+  let priceVariants = buildPriceVariantsFromPPT(best._rawVariants, bestIsShadowless ? "Shadowless" : null);
+  let priceVariantUsed = defaultKeyRaw ? (bestIsShadowless ? `${defaultKeyRaw} (Shadowless)` : defaultKeyRaw) : null;
+
+  if (shadowlessSibling && shadowlessSibling._rawVariants) {
+    const siblingIsShadowless = isShadowlessSetName(shadowlessSibling.setName);
+    const siblingVariants = buildPriceVariantsFromPPT(shadowlessSibling._rawVariants, siblingIsShadowless ? "Shadowless" : null);
+    if (siblingVariants) {
+      priceVariants = { ...(priceVariants || {}), ...siblingVariants };
+      console.log(
+        `[lookup] merged Shadowless-sibling prices into dropdown: best=${best.setName}, sibling=${shadowlessSibling.setName}, sibling keys=`,
+        Object.keys(siblingVariants)
+      );
+    }
+  }
+
+  // Edge case: `best` itself had no price data of its own (so
+  // `defaultKeyRaw` is null) but a Shadowless sibling did — fall back to
+  // the sibling's own default key rather than leaving a populated
+  // dropdown with no price selected.
+  if (!priceVariantUsed && priceVariants && Object.keys(priceVariants).length) {
+    priceVariantUsed = Object.keys(priceVariants)[0];
+  }
+
+  const chosenVariant = priceVariantUsed && priceVariants ? priceVariants[priceVariantUsed] : null;
 
   const aggregatePricing = !chosenVariant ? buildAggregatePricing(best) : null;
 
