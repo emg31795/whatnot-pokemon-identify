@@ -773,6 +773,23 @@ function stripSubtypeSuffix(name) {
 // actually failed in a live scan yet.
 function normalizeNameForMatch(name) {
   return String(name || "")
+    // FIX (2026-08-28, live test — Pokémon Collector, blorgotron stream):
+    // Gemini reads the accented card name straight off the card ("Pokémon
+    // Collector"), but PokemonPriceTracker's own card names are spelled
+    // without the accent ("Pokemon Collector" in the raw candidate data
+    // confirmed via logs). Without stripping diacritics first, the "é"
+    // survived toLowerCase() and then got replaced by the punctuation-strip
+    // regex below with a bare space (since it's not a-z0-9), producing
+    // "pok mon collector" — which is NOT a substring match against PPT's
+    // "pokemon collector" (extra space breaks it) and vice versa. Every
+    // single Pokémon Collector scan hit "zero candidates survived the name
+    // filter" as a result, despite 11 real raw candidates coming back from
+    // PPT. Normalizing to NFD form and stripping the combining diacritical
+    // marks before lowercasing collapses "é" -> "e" so it matches PPT's
+    // unaccented spelling. Same class of bug as the earlier Nidoran♂ fix
+    // (Gemini's literal on-card read vs. PPT's plainer spelling).
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/♂/g, " m")
     .replace(/♀/g, " f")
