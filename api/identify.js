@@ -648,14 +648,33 @@ async function fetchPokemonPriceTracker(name, { graded = false, language = "Engl
 
     if (resp.status === 429) {
       let retryAfter = 15;
+      let isDailyLimit = false;
       try {
         const parsed = JSON.parse(body);
         if (parsed && parsed.retryAfter) retryAfter = parsed.retryAfter;
+        // FIX (2026-08-29, live — Sudowoodo/Charizard ex, daily quota
+        // exhausted mid-stream): PPT returns a 429 for TWO genuinely
+        // different reasons with different real-world fixes — a real
+        // per-minute rate limit (error: "Minute rate limit exceeded", see
+        // test #30 — resolves itself in ~15s) and running out of the
+        // account's DAILY credit allowance entirely (error: "Daily credit
+        // limit exceeded", confirmed via real logs: body included
+        // "Insufficient API credits. Request requires 60 credits, you
+        // have 14 daily + 0 purchased = 14 remaining" — retryAfter here
+        // was ~1000-1090s, which is time until the daily reset, NOT a
+        // per-minute cooldown). The user-facing message below used to
+        // call both of these "our per-minute limit," which is actively
+        // wrong and unactionable for the daily-quota case (waiting 15s
+        // does nothing — the account is out of credits until the daily
+        // reset, or until more are purchased). Detecting which one this
+        // is from PPT's own `error` field so the message can tell the
+        // user the real, correct fix.
+        if (parsed && /daily/i.test(String(parsed.error || ""))) isDailyLimit = true;
       } catch (e3) {
         // ignore, use default
       }
-      console.log(`[lookup] RATE LIMITED by PokemonPriceTracker: retryAfter=${retryAfter}s name=`, name);
-      return { error: "rate-limited", retryAfter };
+      console.log(`[lookup] RATE LIMITED by PokemonPriceTracker: retryAfter=${retryAfter}s isDailyLimit=${isDailyLimit} name=`, name);
+      return { error: "rate-limited", retryAfter, isDailyLimit };
     }
 
     if (resp.status >= 500) {
@@ -986,7 +1005,7 @@ function normalizeNameForMatch(name) {
 async function lookupCardPPT(read) {
   let data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
   if (!data) return { error: "card-db-unavailable" };
-  if (data.error === "rate-limited") return { error: "rate-limited", retryAfter: data.retryAfter };
+  if (data.error === "rate-limited") return { error: "rate-limited", retryAfter: data.retryAfter, isDailyLimit: data.isDailyLimit };
 
   let rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
   console.log("[lookup] search=", read.cardName, "language=", read.language, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
@@ -1063,7 +1082,7 @@ async function lookupCardPPT(read) {
         : `[lookup] best=${best.name} cleared the floor on other signals but read number=${read.cardNumber} matches nothing on page 1, which came back full — fetching page 2 via offset=30`
     );
     const page2 = await fetchPokemonPriceTracker(read.cardName, { language: read.language, offset: 30 });
-    if (page2 && page2.error === "rate-limited") return { error: "rate-limited", retryAfter: page2.retryAfter };
+    if (page2 && page2.error === "rate-limited") return { error: "rate-limited", retryAfter: page2.retryAfter, isDailyLimit: page2.isDailyLimit };
     const page2List = page2 ? (Array.isArray(page2.data) ? page2.data : Array.isArray(page2) ? page2 : []) : [];
     console.log("[lookup] page 2 raw candidate count=", page2List.length);
     if (page2List.length > 0) {
@@ -1106,7 +1125,7 @@ async function lookupCardPPT(read) {
     const combinedQuery = `${read.cardName} ${read.cardNumber}`;
     console.log(`[lookup] number still missing after page1+2 — trying combined name+number search= "${combinedQuery}"`);
     const combinedResult = await fetchPokemonPriceTracker(combinedQuery, { language: read.language });
-    if (combinedResult && combinedResult.error === "rate-limited") return { error: "rate-limited", retryAfter: combinedResult.retryAfter };
+    if (combinedResult && combinedResult.error === "rate-limited") return { error: "rate-limited", retryAfter: combinedResult.retryAfter, isDailyLimit: combinedResult.isDailyLimit };
     const combinedList = combinedResult
       ? Array.isArray(combinedResult.data)
         ? combinedResult.data
@@ -1512,9 +1531,24 @@ module.exports = async function handler(req, res) {
       // above for the actual fix (lower request limit to use fewer
       // credits per call); this just makes the user-facing message
       // honest about what's happening when it does still occur.
+      //
+      // FIX (2026-08-29, live — Sudowoodo/Charizard ex): this used to say
+      // "per-minute limit" for EVERY 429, but confirmed via real logs that
+      // PPT also returns 429 for a completely different, non-transient
+      // reason — the account's DAILY credit allowance being fully spent
+      // ("Daily credit limit exceeded", 0 purchased credits remaining).
+      // Telling the user to "wait Ns and try again" for that case is
+      // actively wrong advice (retryAfter there is ~1000s+ until the
+      // daily reset, not a short cooldown) and doesn't mention the real
+      // fix (wait for the daily reset, or buy more credits). Now branches
+      // on `isDailyLimit` (set in fetchPokemonPriceTracker from PPT's own
+      // `error` field) to show the correct explanation and action for
+      // each real, distinct cause.
       const reason =
         result && result.error === "rate-limited"
-          ? `Our card database's per-minute limit was hit from scanning quickly — wait about ${result.retryAfter || 15}s and try again.`
+          ? result.isDailyLimit
+            ? `PokemonPriceTracker's daily credit allowance is used up for today (resets in ~${Math.ceil((result.retryAfter || 3600) / 60)} min) — wait for the reset, or buy more credits at pokemonpricetracker.com/api-keys to keep scanning today.`
+            : `Our card database's per-minute limit was hit from scanning quickly — wait about ${result.retryAfter || 15}s and try again.`
           : "Couldn't reach our card database right now (it's been intermittently flaky) — try again in a moment.";
       res.status(200).json({ found: false, reason, usage });
       return;
