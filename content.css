@@ -1,3 +1,8 @@
+/* content.css — Whatnot Pokémon Card ID (Free) extension
+   Backed up 2026-08-24 alongside extension-content.js — see that file's
+   header comment and whatnot-pokemon-extension-build-status.md for context.
+   Styles the draggable panel injected on whatnot.com/live/* pages. */
+
 #wnpk-root {
   position: fixed;
   bottom: 16px;
@@ -181,6 +186,21 @@
   font-size: 11px;
   line-height: 1.4;
   margin-bottom: 6px;
+}
+
+/* ADDED (2026-08-30, user report — Ditto 18/62 Fossil price-accuracy
+   investigation): pricing now comes straight from TCGplayer's real
+   per-condition data, and per explicit user instruction a failure to pull
+   a genuine live number now surfaces as a loud, hard failure instead of a
+   guessed price. This needs to read as materially more urgent than the
+   existing soft amber .wnpk-warning (ambiguous match, stamp notes, etc.)
+   so it's never mistaken for "the price might be a little off" — it means
+   NO price is being shown at all. */
+.wnpk-price-error {
+  background: #3a1414;
+  color: #ff8a8a;
+  border: 1px solid #7a2323;
+  font-weight: 700;
 }
 
 .wnpk-cond-label {

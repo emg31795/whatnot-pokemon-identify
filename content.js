@@ -474,6 +474,20 @@
           ? `<div class="wnpk-warning">⚠ ${escapeHtml(data.noPriceNote)}</div>`
           : ""
       }
+      ${
+        // FIX (2026-08-30, user report — Ditto 18/62 Fossil, LP shown
+        // $13.45 vs. real TCGplayer LP $6.84): pricing now comes straight
+        // from TCGplayer's real per-condition data instead of PPT's own
+        // (sometimes incomplete) breakdown, and per explicit user
+        // instruction, a failure to pull genuine live numbers now surfaces
+        // here loudly instead of falling back to a guessed price. This is
+        // deliberately styled/worded to stand out from the softer
+        // ambiguous-match/stamp warnings above — it means NO price is
+        // being shown, not "the price might be off."
+        data.pricingError
+          ? `<div class="wnpk-warning wnpk-price-error">🛑 NO LIVE PRICE: ${escapeHtml(data.pricingError)}</div>`
+          : ""
+      }
     `;
 
     // Prefer the exact TCGPlayer product page for the matched printing
@@ -528,39 +542,30 @@
       return;
     }
 
-    // FIX (2026-08-28, real-money price-accuracy report — Togepi, Undaunted
-    // 70/90 Reverse Holofoil): the backend used to synthesize EVERY
-    // non-NM condition price from a flat multiplier table applied to the
-    // single Near-Mint market price PPT returned — this label always said
-    // "(estimated from market price above)" for the whole table, even
-    // though (per the user's own TCGplayer screenshots) the estimates
-    // could be off by ~3x for a real card. The backend now requests PPT's
-    // `includeHistory=true` data and uses REAL per-condition prices
-        // wherever PPT actually has them, only falling back to the synthetic
-    // multiplier for whichever specific tier(s) PPT doesn't have real data
-    // for (see the FIX comment on fetchPokemonPriceTracker in identify.js).
-    // `data.conditionPricesEstimated` (and each variant's own `.estimated`
-    // map) tells us, per tier, which numbers are real vs. synthetic — mark
-    // only the synthetic ones with "*" instead of caveating the whole
-    // table, since most of it is now real market data.
-    function conditionRowsHtml(conditions, estimatedMap) {
+    // FIX (2026-08-30, user report — Ditto 18/62 Fossil, LP shown $13.45
+    // vs. real TCGplayer LP $6.84): pricing no longer comes from PPT's own
+    // data (or a synthetic multiplier fallback) at all — the backend now
+    // fetches real per-condition, per-printing prices straight from
+    // TCGplayer's own price-history endpoint for the matched card (see the
+    // "Live TCGplayer per-condition pricing" section in identify.js). Per
+    // explicit user instruction, there is no more "some tiers are
+    // estimated" partial state: either every condition in the table is
+    // genuine live TCGplayer data, or the backend throws and this whole
+    // card shows the loud `pricingError` banner above instead of any
+    // price. `estimatedMap` is kept only for shape compatibility with the
+    // backend response (always all-false when prices are present) — no
+    // "*" marking is needed anymore since nothing shown is ever a guess.
+    function conditionRowsHtml(conditions) {
       return CONDITION_ORDER.map((tier) => {
         const price = conditions ? conditions[tier] : null;
-        const isEstimated = estimatedMap ? !!estimatedMap[tier] : true;
-        return `<div class="wnpk-cond-row"><span>${tier}${
-          price != null && isEstimated ? " *" : ""
-        }</span><span>${price != null ? "$" + price.toFixed(2) : "—"}</span></div>`;
+        return `<div class="wnpk-cond-row"><span>${tier}</span><span>${
+          price != null ? "$" + price.toFixed(2) : "—"
+        }</span></div>`;
       }).join("");
     }
 
     function conditionLabelNote(estimatedMap) {
-      if (!estimatedMap) return "(estimated from market price above)";
-      const tiers = Object.keys(estimatedMap);
-      const anyEstimated = tiers.some((t) => estimatedMap[t]);
-      const allEstimated = tiers.length > 0 && tiers.every((t) => estimatedMap[t]);
-      if (allEstimated) return "(estimated from market price above)";
-      if (!anyEstimated) return "(real per-condition data from PokemonPriceTracker)";
-      return "(* = estimated from market price; others are PokemonPriceTracker's real per-condition data)";
+      return estimatedMap ? "(real-time data from TCGplayer)" : "(no live data)";
     }
 
     // Detected as a slab, but no graded-price data available (API key not
@@ -578,7 +583,7 @@
         <div class="wnpk-cond-label">
           RAW CONDITION PRICES <span class="wnpk-estimate-note">${conditionLabelNote(data.conditionPricesEstimated)} — not graded value</span>
         </div>
-        <div class="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices, data.conditionPricesEstimated)}</div>
+        <div class="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices)}</div>
         ${footer}
       `;
       return;
@@ -629,7 +634,7 @@
       <div class="wnpk-cond-label" id="wnpk-cond-label">
         CONDITION PRICES <span class="wnpk-estimate-note" id="wnpk-cond-note">${conditionLabelNote(initialEstimatedMap)}</span>
       </div>
-      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices, initialEstimatedMap)}</div>
+      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices)}</div>
       ${footer}
     `;
 
@@ -639,7 +644,7 @@
         const variant = data.priceVariants[select.value];
         if (!variant) return;
         $("#wnpk-market-price").textContent = marketPriceLine(variant);
-        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions, variant.estimated);
+        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions);
         $("#wnpk-cond-note").textContent = conditionLabelNote(variant.estimated);
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
