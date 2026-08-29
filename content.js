@@ -564,8 +564,23 @@
       }).join("");
     }
 
-    function conditionLabelNote(estimatedMap) {
-      return estimatedMap ? "(real-time data from TCGplayer)" : "(no live data)";
+    // CHANGED (2026-08-29, user report — Hitmontop/Cinccino/Snorlax
+    // Japanese promos all showing zero prices even though real TCGplayer
+    // listings existed for some conditions): the backend no longer
+    // requires all 5 conditions to have real data before showing any of
+    // them (see buildLivePriceVariantsFromTCGPlayer) — it now shows
+    // whichever tiers TCGplayer has genuine live data for, dashing out
+    // the rest, and only sends `pricingError` when NONE of the 5 tiers
+    // have any real data at all. `partial` (from the backend's
+    // `conditionPricesPartial` / a variant's own `partial` field) says
+    // whether this printing's table has real numbers for every tier or
+    // just some — every number shown is still always genuine, never a
+    // guess, in both cases.
+    function conditionLabelNote(estimatedMap, partial) {
+      if (!estimatedMap) return "(no live data)";
+      return partial
+        ? "(real-time data from TCGplayer — some conditions have no market data yet)"
+        : "(real-time data from TCGplayer)";
     }
 
     // Detected as a slab, but no graded-price data available (API key not
@@ -581,7 +596,7 @@
           Raw market: ${data.marketPrice != null ? "$" + data.marketPrice.toFixed(2) : "—"}
         </div>
         <div class="wnpk-cond-label">
-          RAW CONDITION PRICES <span class="wnpk-estimate-note">${conditionLabelNote(data.conditionPricesEstimated)} — not graded value</span>
+          RAW CONDITION PRICES <span class="wnpk-estimate-note">${conditionLabelNote(data.conditionPricesEstimated, data.conditionPricesPartial)} — not graded value</span>
         </div>
         <div class="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices)}</div>
         ${footer}
@@ -624,6 +639,7 @@
 
     const initialVariant = data.priceVariants ? data.priceVariants[data.priceVariantUsed] : null;
     const initialEstimatedMap = initialVariant ? initialVariant.estimated : data.conditionPricesEstimated;
+    const initialPartial = initialVariant ? initialVariant.partial : data.conditionPricesPartial;
 
     $("#wnpk-body").innerHTML = `
       ${header}
@@ -632,7 +648,7 @@
       </div>
       ${variantPicker}
       <div class="wnpk-cond-label" id="wnpk-cond-label">
-        CONDITION PRICES <span class="wnpk-estimate-note" id="wnpk-cond-note">${conditionLabelNote(initialEstimatedMap)}</span>
+        CONDITION PRICES <span class="wnpk-estimate-note" id="wnpk-cond-note">${conditionLabelNote(initialEstimatedMap, initialPartial)}</span>
       </div>
       <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices)}</div>
       ${footer}
@@ -645,7 +661,7 @@
         if (!variant) return;
         $("#wnpk-market-price").textContent = marketPriceLine(variant);
         $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions);
-        $("#wnpk-cond-note").textContent = conditionLabelNote(variant.estimated);
+        $("#wnpk-cond-note").textContent = conditionLabelNote(variant.estimated, variant.partial);
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
       });

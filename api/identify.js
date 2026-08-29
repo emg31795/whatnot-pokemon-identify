@@ -807,15 +807,31 @@ async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
 }
 
 // Groups TCGplayer's flat per-SKU result list into
-// { <printingLabel>: { label, printEdition, basePrice, conditions: {NM,LP,MP,HP,DMG}, estimated } }
+// { <printingLabel>: { label, printEdition, basePrice, conditions: {NM,LP,MP,HP,DMG}, estimated, partial } }
 // using each SKU's most recent weekly bucket as the live market price for
-// that condition. A printing is only included if TCGplayer has real data
-// for ALL FIVE conditions — a partially-real row would just be a
-// different flavor of the exact "fabricated number" problem this change
-// exists to eliminate, so an incomplete printing is dropped rather than
-// shown half-real. `estimated` is always all-false here since every value
-// that survives is genuine live TCGplayer data — the field is kept only
-// for frontend/shape compatibility.
+// that condition.
+//
+// CHANGED (2026-08-29, user report — Hitmontop/Cinccino/Snorlax Japanese
+// promos all showing "NO LIVE PRICE" back-to-back): this used to require
+// TCGplayer to have real data for ALL FIVE conditions before including a
+// printing at all, on the theory that a partially-real row was a
+// different flavor of the "fabricated number" problem. Real evidence
+// proved that wrong — the user pulled up the live TCGplayer listing page
+// for the Cinccino case and showed real, current NM (26 listings) and LP
+// (3 listings) asking prices existing right now, for a card our
+// price-history endpoint only had weekly sales-history data for on 1-3
+// conditions. Requiring all 5 conditions to have sales-history data
+// before showing ANY of them was throwing away real numbers we did have,
+// not preventing fabrication — every number here is still either a real
+// TCGplayer figure or a blank "—", never guessed. So: a printing is now
+// included as long as it has real data for AT LEAST ONE condition;
+// whichever tiers TCGplayer doesn't have sales data for are simply left
+// out of `conditions` (the frontend already renders a missing tier as
+// "—", same as before). `estimated` is always all-false since every
+// value present is genuine live data — the field is kept for
+// frontend/shape compatibility. `partial: true` is set whenever fewer
+// than all 5 tiers have real data, so the UI can caption this
+// distinctly from a printing with full coverage.
 function buildLivePriceVariantsFromTCGPlayer(historyResult) {
   const byVariant = {};
   for (const sku of historyResult) {
@@ -832,13 +848,23 @@ function buildLivePriceVariantsFromTCGPlayer(historyResult) {
 
   const variants = {};
   for (const [label, conditions] of Object.entries(byVariant)) {
-    if (!CONDITION_TIERS.every((t) => conditions[t] != null)) continue;
+    const presentTiers = CONDITION_TIERS.filter((t) => conditions[t] != null);
+    if (!presentTiers.length) continue;
+    // Prefer NM as the headline "Market" price shown above the table
+    // (matches how every other part of this tool has always defined
+    // "market price"); if TCGplayer's data happens not to include NM for
+    // this printing, fall back to whichever tier IS present, preferring
+    // the best-condition one available.
+    const basePrice = conditions.NM != null
+      ? conditions.NM
+      : conditions[presentTiers[0]];
     variants[label] = {
       label,
       printEdition: label,
-      basePrice: conditions.NM,
+      basePrice,
       conditions,
       estimated: { NM: false, LP: false, MP: false, HP: false, DMG: false },
+      partial: presentTiers.length < CONDITION_TIERS.length,
     };
   }
   return Object.keys(variants).length ? variants : null;
@@ -856,7 +882,7 @@ async function buildLiveVariantsForCandidate(candidate, tag) {
   const history = await fetchTCGPlayerPriceHistory(candidate.tcgPlayerId);
   const variants = buildLivePriceVariantsFromTCGPlayer(history);
   if (!variants) {
-    throw new Error(`TCGplayer has no printing with complete 5-condition live data for productId=${candidate.tcgPlayerId} (${candidate.name}).`);
+    throw new Error(`TCGplayer has no live condition-price data at all for productId=${candidate.tcgPlayerId} (${candidate.name}).`);
   }
   if (!tag) return variants;
   const tagged = {};
@@ -1257,6 +1283,12 @@ async function lookupCardPPT(read) {
     // every surviving number is genuine live TCGplayer data (see
     // buildLivePriceVariantsFromTCGPlayer).
     conditionPricesEstimated: chosenVariant ? chosenVariant.estimated : null,
+    // NEW (2026-08-29): true when TCGplayer had real live data for SOME
+    // but not all 5 condition tiers on the shown printing (see
+    // buildLivePriceVariantsFromTCGPlayer) — lets the frontend caption
+    // this differently from full 5-condition coverage without implying
+    // any of the missing tiers were guessed.
+    conditionPricesPartial: chosenVariant ? !!chosenVariant.partial : false,
     priceVariants,
     priceVariantUsed,
     _tcgSearchName: tcgSearchName,
