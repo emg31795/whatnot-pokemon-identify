@@ -1077,6 +1077,61 @@ async function lookupCardPPT(read) {
     }
   }
 
+  // FIX (2026-08-29, live test — Eevee SVP "173", test #49): even the
+  // page-1+page-2 pagination above (60 total candidates) can still fail
+  // to surface a specific printing for an extremely common species name
+  // — "Eevee" alone has hundreds of real printings across 25+ years of
+  // sets, so a specific newer/lower-profile promo number can get crowded
+  // out of even a 60-result pool. Confirmed via PokemonPriceTracker's own
+  // live API docs (read directly off the rendered docs page, not a
+  // summarized/cached fetch — see the `cardNumber`-param lesson from an
+  // earlier session on why that distinction matters) that `search` is a
+  // genuine multi-word search across name, setName, cardNumber, rarity,
+  // AND cardType simultaneously, and explicitly "Supports 'X/Y' card
+  // number format" — documented example: `search=charizard base set
+  // holo`. So when the read card number still isn't anywhere in the
+  // page-1+2 pool, try ONE more search combining name + number in a
+  // single query (e.g. "Eevee 173") — this lets PPT's own relevance
+  // ranking surface the specific printing directly instead of depending
+  // on getting lucky within a fixed page count. Purely additive: only
+  // runs when the number is still missing after everything above has
+  // already failed to find it, so it can only help cases that are
+  // already broken today — it never changes behavior for a lookup that
+  // already succeeds. Needs a live rescan of the same Eevee (or any other
+  // card that hit this gap) to confirm it actually surfaces the real
+  // printing before trusting this broadly.
+  const stillMissingAfterPage2 =
+    !!read.cardNumber && !candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
+  if (stillMissingAfterPage2) {
+    const combinedQuery = `${read.cardName} ${read.cardNumber}`;
+    console.log(`[lookup] number still missing after page1+2 — trying combined name+number search= "${combinedQuery}"`);
+    const combinedResult = await fetchPokemonPriceTracker(combinedQuery, { language: read.language });
+    if (combinedResult && combinedResult.error === "rate-limited") return { error: "rate-limited", retryAfter: combinedResult.retryAfter };
+    const combinedList = combinedResult
+      ? Array.isArray(combinedResult.data)
+        ? combinedResult.data
+        : Array.isArray(combinedResult)
+        ? combinedResult
+        : []
+      : [];
+    console.log("[lookup] combined name+number search raw candidate count=", combinedList.length);
+    if (combinedList.length > 0) {
+      const combinedFiltered = combinedList.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
+      if (combinedFiltered.length > 0) {
+        const combinedCandidates = combinedFiltered.map(normalizePptCard);
+        const foundExactNumber = combinedCandidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
+        if (foundExactNumber) {
+          filtered = filtered.concat(combinedFiltered);
+          candidates = filtered.map(normalizePptCard);
+          console.log("[lookup] combined name+number search surfaced the missing number — re-scoring, total candidates=", candidates.length);
+          ({ best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, "[lookup:combined]"));
+        } else {
+          console.log("[lookup] combined name+number search returned results but still no exact number match — keeping prior best");
+        }
+      }
+    }
+  }
+
   if (!best) return { notFound: true };
 
   let matchConfidence = confidenceForScore(bestScore);
