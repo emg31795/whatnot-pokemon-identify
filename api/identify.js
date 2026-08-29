@@ -111,7 +111,21 @@ const CARDDB_RETRY_TIMEOUT_MS = 1200;
 const GEMINI_INPUT_USD_PER_1M = 0.30;
 const GEMINI_OUTPUT_USD_PER_1M = 2.50;
 
-const CONDITION_MULTIPLIERS = { NM: 1.00, LP: 0.85, MP: 0.70, HP: 0.55, DMG: 0.40 };
+// REMOVED (2026-08-30, user report — Ditto 18/62 Fossil, LP shown $13.45
+// vs. real TCGplayer LP $6.84): this flat 85/70/55/40% multiplier was
+// never accurate across card eras — real per-condition ratios vary a lot
+// by rarity/age (a WotC-era card's real LP/NM ratio here was 43%, not
+// 85%) — and it was carrying the WHOLE condition table for any printing
+// where PPT had no real per-condition breakdown at all (common for older
+// cards, confirmed via logs). The user pointed out we should pull real
+// per-condition prices straight from TCGplayer instead, the way
+// pallet.trade does — see the live-pricing section below, which replaces
+// this multiplier entirely. There is no more synthetic price anywhere in
+// this file: a condition tier with no genuine live TCGplayer number now
+// surfaces as an explicit `pricingError` instead of a guess (per explicit
+// user instruction, since they're in an active testing phase and want
+// loud failures over quiet wrong numbers).
+const CONDITION_TIERS = ["NM", "LP", "MP", "HP", "DMG"];
 
 // FIX (2026-08-27, live test — Cramorant V / Shaymin V): number was worth
 // only 10 points, but the OTHER four signals combined (hp 6 + subtype 5 +
@@ -695,6 +709,13 @@ function normalizePptCard(raw) {
     setName: raw.setName || null,
     attackName: raw.attackName || extractFirstAttackName(raw.attacks) || null,
     tcgPlayerUrl: raw.tcgPlayerUrl || null,
+    // ADDED (2026-08-30, live TCGplayer pricing): PPT's own data already
+    // carries the real TCGplayer product ID for every candidate (PPT is
+    // itself built on top of TCGplayer's catalog) — this is what lets us
+    // fetch real per-condition prices directly from TCGplayer once a card
+    // is matched, instead of trusting PPT's own (sometimes incomplete)
+    // per-condition data. See fetchTCGPlayerPriceHistory below.
+    tcgPlayerId: raw.tcgPlayerId || null,
     cardImageUrl: raw.imageCdnUrl || raw.imageCdnUrl200 || raw.imageUrl || raw.image || raw.images?.large || raw.images?.small || null,
     prices: raw.prices || null,
     _rawVariants: raw.variants && typeof raw.variants === "object" ? raw.variants : null,
@@ -720,57 +741,130 @@ const CONDITION_NAME_TO_TIER = {
   Damaged: "DMG",
 };
 
-function buildPriceVariantsFromPPT(rawVariants, tag) {
-  if (!rawVariants) return null;
+// ---------------------------------------------------------------------------
+// Live TCGplayer per-condition pricing (2026-08-30)
+// ---------------------------------------------------------------------------
+// REPLACED buildPriceVariantsFromPPT/buildAggregatePricing (the
+// CONDITION_MULTIPLIERS-based functions that used to live here).
+//
+// User report that triggered this: Ditto (18/62, Fossil) showed LP $13.45
+// (the old 85%-of-NM multiplier, since PPT's raw `variants` object for
+// this exact printing was the old single-number shape with zero real
+// per-condition breakdown) vs. the real live TCGplayer LP of $6.84 — a
+// >2x miss. The user pointed out pallet.trade pulls real per-condition
+// data straight from TCGplayer and asked us to do the same instead of
+// trusting PPT's own (sometimes incomplete) per-condition coverage.
+//
+// Confirmed live (browser network inspection on a real tcgplayer.com
+// product page — same technique originally used to reverse-engineer
+// pallet.trade itself, see pallet-trade-reverse-engineering.md):
+// TCGplayer's own storefront calls a public, UNAUTHENTICATED, CORS-open,
+// cacheable JSON endpoint —
+// `https://infinite-api.tcgplayer.com/price/history/{tcgPlayerId}/detailed?range=quarter`
+// — returning REAL, transaction-based market prices broken out by every
+// condition AND every printing (SKU-level), refreshed weekly from actual
+// sales. Confirmed for this exact Ditto (tcgPlayerId 44426): Unlimited /
+// Lightly Played showed $7.33 — real market noise away from the user's
+// cited $6.84 — vs. our old multiplier's $13.45.
+//
+// PPT already gives us every candidate's real `tcgPlayerId` (PPT is
+// itself built on TCGplayer's catalog), so PPT is untouched for the hard
+// part — vision-matching/candidate scoring, validated across 40+ live
+// test cases — only the PRICING step now calls TCGplayer directly.
+//
+// Per explicit user instruction (mid-testing-phase, 2026-08-30): if a
+// genuine real-time number can't be pulled for a condition, THROW rather
+// than substitute a guess. There is no synthetic fallback left anywhere
+// in this file — a failure here surfaces as an explicit `pricingError` in
+// the API response (see lookupCardPPT below), which the extension shows
+// as a loud, visible warning instead of any price.
+const TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS = 2500;
+
+async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
+  const url = `https://infinite-api.tcgplayer.com/price/history/${tcgPlayerId}/detailed?range=quarter`;
+  let resp;
+  try {
+    resp = await fetchWithTimeout(url, {}, TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS);
+  } catch (e) {
+    throw new Error(`TCGplayer price-history request failed for productId=${tcgPlayerId}: ${e && e.message}`);
+  }
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(`TCGplayer price-history returned HTTP ${resp.status} for productId=${tcgPlayerId}: ${body.slice(0, 200)}`);
+  }
+  let json;
+  try {
+    json = await resp.json();
+  } catch (e) {
+    throw new Error(`TCGplayer price-history returned invalid JSON for productId=${tcgPlayerId}: ${e && e.message}`);
+  }
+  const result = Array.isArray(json && json.result) ? json.result : [];
+  if (!result.length) {
+    throw new Error(`TCGplayer price-history returned zero SKUs for productId=${tcgPlayerId}`);
+  }
+  console.log(`[tcgplayer-price] productId=${tcgPlayerId} skus=${result.length}`);
+  return result;
+}
+
+// Groups TCGplayer's flat per-SKU result list into
+// { <printingLabel>: { label, printEdition, basePrice, conditions: {NM,LP,MP,HP,DMG}, estimated } }
+// using each SKU's most recent weekly bucket as the live market price for
+// that condition. A printing is only included if TCGplayer has real data
+// for ALL FIVE conditions — a partially-real row would just be a
+// different flavor of the exact "fabricated number" problem this change
+// exists to eliminate, so an incomplete printing is dropped rather than
+// shown half-real. `estimated` is always all-false here since every value
+// that survives is genuine live TCGplayer data — the field is kept only
+// for frontend/shape compatibility.
+function buildLivePriceVariantsFromTCGPlayer(historyResult) {
+  const byVariant = {};
+  for (const sku of historyResult) {
+    const tier = CONDITION_NAME_TO_TIER[sku.condition];
+    if (!tier) continue;
+    const latest = Array.isArray(sku.buckets) && sku.buckets.length ? sku.buckets[0] : null;
+    const price = latest && latest.marketPrice != null ? Number(latest.marketPrice) : null;
+    if (price == null || Number.isNaN(price)) continue;
+    const label = String(sku.variant || "").trim();
+    if (!label) continue;
+    if (!byVariant[label]) byVariant[label] = {};
+    byVariant[label][tier] = Math.round(price * 100) / 100;
+  }
+
   const variants = {};
-  for (const [key, v] of Object.entries(rawVariants)) {
-    if (!v) continue;
-
-    // includeHistory=true shape: v is keyed by real condition names, each
-    // holding {price, ...} — e.g. v["Lightly Played"].price. Detect it by
-    // checking whether any of PPT's condition-name keys are present.
-    const realByTier = {};
-    for (const [condName, tier] of Object.entries(CONDITION_NAME_TO_TIER)) {
-      const entry = v[condName];
-      if (entry && typeof entry.price === "number") realByTier[tier] = entry.price;
-    }
-    const hasRealData = Object.keys(realByTier).length > 0;
-
-    const basePrice = hasRealData
-      ? realByTier.NM ?? v.marketPrice ?? v.market
-      : v.marketPrice ?? v.market ?? v.lowPrice ?? v.low;
-    if (basePrice == null) continue;
-
-    const conditions = {};
-    const estimated = {};
-    for (const [tier, mult] of Object.entries(CONDITION_MULTIPLIERS)) {
-      // FIX (2026-08-29, live test — Charizard ex 223/197, Obsidian Flames):
-      // NM was showing a "*" (estimated) marker even though it's never a
-      // multiplier product — `basePrice` IS the real PPT/TCGPlayer NM
-      // market price on every path (either `realByTier.NM` from
-      // includeHistory, or the plain `marketPrice` field when this
-      // printing has no per-condition breakdown at all, as this exact card
-      // turned out to have — confirmed via real logs: PPT's raw variants
-      // object for this card was the old single-number shape,
-      // `{"marketPrice":108.59,...}`, no per-condition data whatsoever).
-      // Only LP/MP/HP/DMG are ever actually derived from the
-      // CONDITION_MULTIPLIERS extrapolation — NM should never carry the
-      // estimated flag regardless of which branch produced `basePrice`.
-      if (tier === "NM") {
-        conditions[tier] = Math.round(basePrice * 100) / 100;
-        estimated[tier] = false;
-      } else if (hasRealData && realByTier[tier] != null) {
-        conditions[tier] = realByTier[tier];
-        estimated[tier] = false;
-      } else {
-        conditions[tier] = Math.round(basePrice * mult * 100) / 100;
-        estimated[tier] = true;
-      }
-    }
-    const label = tag ? `${key} (${tag})` : key;
-    variants[label] = { label, printEdition: label, basePrice, conditions, estimated };
+  for (const [label, conditions] of Object.entries(byVariant)) {
+    if (!CONDITION_TIERS.every((t) => conditions[t] != null)) continue;
+    variants[label] = {
+      label,
+      printEdition: label,
+      basePrice: conditions.NM,
+      conditions,
+      estimated: { NM: false, LP: false, MP: false, HP: false, DMG: false },
+    };
   }
   return Object.keys(variants).length ? variants : null;
+}
+
+// Fetches + builds live price variants for one candidate (identified by
+// its own tcgPlayerId), optionally relabeling every variant key with a
+// suffix tag (used for merging in a Shadowless sibling's prices — see the
+// merge step in lookupCardPPT). Throws if the candidate has no
+// tcgPlayerId or the TCGplayer fetch/build fails.
+async function buildLiveVariantsForCandidate(candidate, tag) {
+  if (!candidate || !candidate.tcgPlayerId) {
+    throw new Error(`No TCGplayer product ID available for "${candidate && candidate.name}" — cannot fetch live pricing.`);
+  }
+  const history = await fetchTCGPlayerPriceHistory(candidate.tcgPlayerId);
+  const variants = buildLivePriceVariantsFromTCGPlayer(history);
+  if (!variants) {
+    throw new Error(`TCGplayer has no printing with complete 5-condition live data for productId=${candidate.tcgPlayerId} (${candidate.name}).`);
+  }
+  if (!tag) return variants;
+  const tagged = {};
+  for (const [k, v] of Object.entries(variants)) {
+    const label = `${k} (${tag})`;
+    tagged[label] = { ...v, label, printEdition: label };
+  }
+  return tagged;
 }
 
 // Picks which variant is pre-selected in the dropdown.
@@ -807,40 +901,12 @@ function pickDefaultVariantKey(priceVariants, read, primaryPrinting) {
   return keys[0];
 }
 
-function buildAggregatePricing(card) {
-  if (!card.prices || card.prices.market == null) return null;
-  const basePrice = card.prices.market;
-  // With includeHistory=true, PPT's top-level `prices.conditions` is a
-  // real per-condition breakdown for `prices.primaryPrinting` (confirmed
-  // via live logs — see the FIX comment on fetchPokemonPriceTracker).
-  // Same real-data-first, multiplier-fallback approach as
-  // buildPriceVariantsFromPPT above.
-  const realConditions = card.prices.conditions && typeof card.prices.conditions === "object" ? card.prices.conditions : null;
-  const conditions = {};
-  const estimated = {};
-  for (const [tier, mult] of Object.entries(CONDITION_MULTIPLIERS)) {
-    // FIX (2026-08-29, live test — Charizard ex 223/197): same fix as
-    // buildPriceVariantsFromPPT above — `basePrice` (card.prices.market)
-    // is always real PPT/TCGPlayer data, never a multiplier product, so
-    // NM must never carry the estimated flag even when this card has no
-    // real per-condition breakdown at all.
-    if (tier === "NM") {
-      conditions[tier] = Math.round(basePrice * 100) / 100;
-      estimated[tier] = false;
-      continue;
-    }
-    const condName = Object.keys(CONDITION_NAME_TO_TIER).find((k) => CONDITION_NAME_TO_TIER[k] === tier);
-    const real = realConditions && condName ? realConditions[condName] : null;
-    if (real && typeof real.price === "number") {
-      conditions[tier] = real.price;
-      estimated[tier] = false;
-    } else {
-      conditions[tier] = Math.round(basePrice * mult * 100) / 100;
-      estimated[tier] = true;
-    }
-  }
-  return { basePrice, conditions, estimated };
-}
+// REMOVED (2026-08-30): buildAggregatePricing used to live here — it was
+// the CONDITION_MULTIPLIERS-based fallback for when a candidate had no
+// per-printing `_rawVariants` at all, built off PPT's own aggregate
+// `card.prices` field instead. There is no multiplier fallback left
+// anywhere in this file (see the live-pricing section above); a card with
+// no usable live TCGplayer data now surfaces a `pricingError` instead.
 
 function stripSubtypeSuffix(name) {
   return String(name || "").replace(/\s+(VMAX|VSTAR|GX|EX|ex|V|BREAK)\s*$/i, "").trim();
@@ -1100,29 +1166,23 @@ async function lookupCardPPT(read) {
 
   console.log("[lookup] raw variants object for best match:", JSON.stringify(best._rawVariants).slice(0, 1500));
 
-  // Default-variant selection stays exactly as before, computed against
-  // `best`'s own untagged variant keys only — the merge below only adds
-  // MORE options to the dropdown, it never changes what's picked by
-  // default.
-  const bestOwnVariants = buildPriceVariantsFromPPT(best._rawVariants);
-  const defaultKeyRaw = bestOwnVariants ? pickDefaultVariantKey(bestOwnVariants, read, best.prices?.primaryPrinting) : null;
-
   // FIX (2026-08-28, feature request — Shadowless dropdown option): see
   // stripShadowlessSuffix/isShadowlessSetName above for the real-log
   // evidence this is based on. PPT models Base Set's Shadowless print run
   // as an entirely separate candidate (same number/hp/attack, different
   // setName — "Base Set (Shadowless)" vs plain "Base Set"), not as an
-  // extra key inside one card's `variants` object. The scoring/dedup
-  // logic above only ever picks ONE of these two as `best`. Rather than
-  // trying to detect which one the physical card actually is (the user
-  // explicitly asked NOT to add a new Gemini-detected signal for this —
-  // no extra runtime cost, no risk to existing field accuracy), just find
-  // the sibling candidate (same number, opposite Shadowless status, same
-  // underlying set name once the "(Shadowless)" suffix is stripped) among
-  // whatever candidates were already fetched — zero extra network calls —
-  // and merge its prices into the same dropdown, tagged so they're never
-  // confused with the winning candidate's own prices. This only ever ADDS
-  // options; it never changes the default selection above.
+  // extra key inside one card's `variants` object — and, relevantly here,
+  // a DIFFERENT tcgPlayerId/product entirely, so it needs its own live
+  // TCGplayer fetch. The scoring/dedup logic above only ever picks ONE of
+  // these two as `best`. Rather than trying to detect which one the
+  // physical card actually is (the user explicitly asked NOT to add a new
+  // Gemini-detected signal for this), just find the sibling candidate
+  // (same number, opposite Shadowless status, same underlying set name
+  // once the "(Shadowless)" suffix is stripped) among whatever candidates
+  // were already fetched and merge its live prices into the same
+  // dropdown, tagged so they're never confused with the winning
+  // candidate's own prices. This only ever ADDS options; it never changes
+  // the default selection below.
   const bestIsShadowless = isShadowlessSetName(best.setName);
   const bestBaseSetName = stripShadowlessSuffix(best.setName);
   const shadowlessSibling = bestBaseSetName
@@ -1135,36 +1195,44 @@ async function lookupCardPPT(read) {
       )
     : null;
 
-  let priceVariants = buildPriceVariantsFromPPT(best._rawVariants, bestIsShadowless ? "Shadowless" : null);
-  let priceVariantUsed = defaultKeyRaw ? (bestIsShadowless ? `${defaultKeyRaw} (Shadowless)` : defaultKeyRaw) : null;
-
-  if (shadowlessSibling && shadowlessSibling._rawVariants) {
-    const siblingIsShadowless = isShadowlessSetName(shadowlessSibling.setName);
-    const siblingVariants = buildPriceVariantsFromPPT(shadowlessSibling._rawVariants, siblingIsShadowless ? "Shadowless" : null);
-    if (siblingVariants) {
-      priceVariants = { ...(priceVariants || {}), ...siblingVariants };
-      console.log(
-        `[lookup] merged Shadowless-sibling prices into dropdown: best=${best.setName}, sibling=${shadowlessSibling.setName}, sibling keys=`,
-        Object.keys(siblingVariants)
-      );
+  // LIVE TCGPLAYER PRICING (2026-08-30) — see the big comment above
+  // buildLivePriceVariantsFromTCGPlayer for the full story. PPT is done
+  // being used at this point except for its `tcgPlayerId`/`tcgPlayerUrl`
+  // fields; every dollar figure from here on is either genuine live
+  // TCGplayer data or an explicit `pricingError` — never a guess.
+  let priceVariants = null;
+  let pricingError = null;
+  try {
+    priceVariants = await buildLiveVariantsForCandidate(best, bestIsShadowless ? "Shadowless" : null);
+    if (shadowlessSibling) {
+      try {
+        const siblingIsShadowless = isShadowlessSetName(shadowlessSibling.setName);
+        const siblingVariants = await buildLiveVariantsForCandidate(shadowlessSibling, siblingIsShadowless ? "Shadowless" : null);
+        priceVariants = { ...priceVariants, ...siblingVariants };
+        console.log(
+          `[lookup] merged Shadowless-sibling LIVE prices into dropdown: best=${best.setName}, sibling=${shadowlessSibling.setName}, sibling keys=`,
+          Object.keys(siblingVariants)
+        );
+      } catch (e) {
+        // Non-fatal: the sibling is a bonus dropdown option, not the
+        // primary match's own price. Log and move on rather than failing
+        // the whole scan over a secondary printing's data.
+        console.error("[lookup] Shadowless sibling LIVE price fetch failed (non-fatal):", e && e.message);
+      }
     }
+  } catch (e) {
+    console.error("[lookup] LIVE TCGPLAYER PRICING FAILED:", e && e.message, "tcgPlayerId=", best.tcgPlayerId);
+    pricingError = (e && e.message) || "Could not fetch live TCGplayer pricing for this card.";
+    priceVariants = null;
   }
 
-  // Edge case: `best` itself had no price data of its own (so
-  // `defaultKeyRaw` is null) but a Shadowless sibling did — fall back to
-  // the sibling's own default key rather than leaving a populated
-  // dropdown with no price selected.
-  if (!priceVariantUsed && priceVariants && Object.keys(priceVariants).length) {
-    priceVariantUsed = Object.keys(priceVariants)[0];
-  }
-
+  const defaultKeyRaw = priceVariants ? pickDefaultVariantKey(priceVariants, read, best.prices?.primaryPrinting) : null;
+  const priceVariantUsed = defaultKeyRaw;
   const chosenVariant = priceVariantUsed && priceVariants ? priceVariants[priceVariantUsed] : null;
 
-  const aggregatePricing = !chosenVariant ? buildAggregatePricing(best) : null;
-
   let noPriceNote = null;
-  if (!chosenVariant && !aggregatePricing) {
-    noPriceNote = "This printing hasn't synced a price into PokemonPriceTracker yet. Check the link below for current listings.";
+  if (!chosenVariant && !pricingError) {
+    noPriceNote = "TCGplayer doesn't have complete live condition pricing for this printing yet. Check the link below for current listings.";
   }
 
   const tcgSearchName = String(best.name).replace(/\s*-\s*\S+\/\S+\s*$/, "").trim();
@@ -1177,15 +1245,18 @@ async function lookupCardPPT(read) {
     matchConfidence,
     ambiguousNote,
     noPriceNote,
+    // Loud, explicit failure per user instruction (2026-08-30, active
+    // testing phase): set only when live TCGplayer pricing could not be
+    // fetched at all. Never paired with a fabricated marketPrice/
+    // conditionPrices — those stay null whenever this is set.
+    pricingError,
     tcgplayerUrl: best.tcgPlayerUrl || null,
-    marketPrice: chosenVariant ? chosenVariant.basePrice : aggregatePricing ? aggregatePricing.basePrice : null,
-    conditionPrices: chosenVariant ? chosenVariant.conditions : aggregatePricing ? aggregatePricing.conditions : null,
-    // Per-tier flag: true where the price is our synthetic
-    // CONDITION_MULTIPLIERS extrapolation, false where it's PPT's real
-    // per-condition data (includeHistory=true). Lets the UI only label the
-    // tiers that are actually estimates instead of a blanket caveat on the
-    // whole table. See FIX comment on fetchPokemonPriceTracker.
-    conditionPricesEstimated: chosenVariant ? chosenVariant.estimated : aggregatePricing ? aggregatePricing.estimated : null,
+    marketPrice: chosenVariant ? chosenVariant.basePrice : null,
+    conditionPrices: chosenVariant ? chosenVariant.conditions : null,
+    // Kept for frontend/shape compatibility — always all-false now, since
+    // every surviving number is genuine live TCGplayer data (see
+    // buildLivePriceVariantsFromTCGPlayer).
+    conditionPricesEstimated: chosenVariant ? chosenVariant.estimated : null,
     priceVariants,
     priceVariantUsed,
     _tcgSearchName: tcgSearchName,
