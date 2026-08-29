@@ -744,7 +744,22 @@ function buildPriceVariantsFromPPT(rawVariants, tag) {
     const conditions = {};
     const estimated = {};
     for (const [tier, mult] of Object.entries(CONDITION_MULTIPLIERS)) {
-      if (hasRealData && realByTier[tier] != null) {
+      // FIX (2026-08-29, live test — Charizard ex 223/197, Obsidian Flames):
+      // NM was showing a "*" (estimated) marker even though it's never a
+      // multiplier product — `basePrice` IS the real PPT/TCGPlayer NM
+      // market price on every path (either `realByTier.NM` from
+      // includeHistory, or the plain `marketPrice` field when this
+      // printing has no per-condition breakdown at all, as this exact card
+      // turned out to have — confirmed via real logs: PPT's raw variants
+      // object for this card was the old single-number shape,
+      // `{"marketPrice":108.59,...}`, no per-condition data whatsoever).
+      // Only LP/MP/HP/DMG are ever actually derived from the
+      // CONDITION_MULTIPLIERS extrapolation — NM should never carry the
+      // estimated flag regardless of which branch produced `basePrice`.
+      if (tier === "NM") {
+        conditions[tier] = Math.round(basePrice * 100) / 100;
+        estimated[tier] = false;
+      } else if (hasRealData && realByTier[tier] != null) {
         conditions[tier] = realByTier[tier];
         estimated[tier] = false;
       } else {
@@ -804,6 +819,16 @@ function buildAggregatePricing(card) {
   const conditions = {};
   const estimated = {};
   for (const [tier, mult] of Object.entries(CONDITION_MULTIPLIERS)) {
+    // FIX (2026-08-29, live test — Charizard ex 223/197): same fix as
+    // buildPriceVariantsFromPPT above — `basePrice` (card.prices.market)
+    // is always real PPT/TCGPlayer data, never a multiplier product, so
+    // NM must never carry the estimated flag even when this card has no
+    // real per-condition breakdown at all.
+    if (tier === "NM") {
+      conditions[tier] = Math.round(basePrice * 100) / 100;
+      estimated[tier] = false;
+      continue;
+    }
     const condName = Object.keys(CONDITION_NAME_TO_TIER).find((k) => CONDITION_NAME_TO_TIER[k] === tier);
     const real = realConditions && condName ? realConditions[condName] : null;
     if (real && typeof real.price === "number") {
