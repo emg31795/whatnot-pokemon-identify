@@ -275,7 +275,41 @@ async function identifyWithGemini(imageBase64, apiKey) {
       // ("matches the 'no thinking' setting for most queries") — this task
       // is exactly that case: transcribe visible text/fields from one
       // image into a fixed schema, not something requiring deep reasoning.
-      thinkingConfig: { thinkingLevel: "minimal" },
+      //
+      // RAISED minimal -> low (2026-08-29, research task prompted by test
+      // #50's severe Gemini read instability — see the "options to improve
+      // Gemini scan consistency" research note below/in this file's
+      // history): "minimal" is tuned for simple instruction-following,
+      // which mostly fits this task, but test #50's worst failure (a full
+      // hallucinated Chinese attack name on a Japanese card, not just a
+      // hard-to-read digit) looks more like a "didn't double-check itself"
+      // gap than a pure legibility problem. "low" is a real documented
+      // step between "no thinking" and the "medium" default this project
+      // was originally trying to avoid — should cost less than the
+      // 400-600 thinking-token default while giving a bit more room to
+      // self-check before committing to an answer. Needs a real timing
+      // measurement on a live rescan to confirm this stays inside the
+      // 2-5s target, and a recurrence of a hard card to see if it actually
+      // helps — nothing here proves it will fix a hallucination, only that
+      // it's a documented, low-cost lever worth trying before something
+      // more invasive (e.g. dual-frame capture).
+      thinkingConfig: { thinkingLevel: "low" },
+      // ADDED (2026-08-29, same research task): explicitly request the
+      // model's max media resolution instead of relying on the
+      // undocumented "unspecified" default. Per Google's current docs
+      // (ai.google.dev/gemini-api/docs/generate-content/media-resolution),
+      // this is a plain generationConfig.media_resolution string on this
+      // (legacy inline_data) API surface, with MEDIA_RESOLUTION_HIGH
+      // giving the model the most image detail tokens to work with short
+      // of the per-part-only ULTRA_HIGH. Caveat, confirmed from the same
+      // docs and noted honestly rather than oversold: for Gemini 3 models
+      // specifically, "unspecified" reportedly already computes to the
+      // same ~1120-token budget as explicit HIGH, so this may be a no-op
+      // for accuracy on gemini-3.6-flash specifically — shipping it
+      // anyway as a low/zero-cost safety net against relying on
+      // undocumented default behavior that could silently change on a
+      // future model swap.
+      media_resolution: "MEDIA_RESOLUTION_HIGH",
     },
   };
 
