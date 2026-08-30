@@ -214,6 +214,18 @@ checklist before reporting something as finished:
    cause once found. This is what lets accuracy be tracked over time
    instead of relying on memory (or on chat history that gets
    compressed away).
+
+   **What "rescan" means in this project**: on a live Whatnot stream, a card
+   is shown once and sold — you generally cannot go back and find the exact
+   same physical card again later, and won't reliably remember it if you
+   could. "Confirm via rescan" means scanning 2-3 times back-to-back *while
+   a card is still on screen*, not tracking down a specific previously-seen
+   card. Validating a fix means testing it against *any* card in the same
+   failure class (e.g. Japanese, promo/alphanumeric numbers, full-art/ex
+   cards) as it naturally comes up on stream, and watching the trend across
+   many different cards in `docs/test-cases.md` over time — not waiting for
+   one specific named card to reappear.
+
 6. **Keep this file and ROADMAP.md updated.** When you ship a fix, land
    an architecture change, complete a roadmap checklist item, or learn
    something future-you will need, update the relevant file in the same
