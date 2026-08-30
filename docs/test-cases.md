@@ -1,0 +1,414 @@
+# Test Cases — Whatnot Pokémon Card ID
+
+Live-stream test log. Every real scan reported gets a row here to track
+accuracy and speed over time instead of relying on memory.
+
+## How to report a test
+
+Tell me, for each scan:
+1. What the physical card actually was (name, set, number, variant/edition,
+   language) — the ground truth.
+2. What the extension showed (name, set, price, variant selected, image
+   yes/no).
+3. Roughly how long it took (or paste the Vercel timing if you have it).
+4. Anything that looked wrong.
+
+## Log
+
+| # | Date | Card (ground truth) | Language | Result shown | Variant picker shown? | Price accuracy | Latency | Pass/Fail | Notes |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2026-08-26 | Toxtricity VMAX, Shiny Star V, 060/190, HP 320 | Japanese | "couldn't confidently match" | N/A | N/A | Not measured | FAIL → root-caused in #2-6 | Real cause: broken API endpoint (see #2-6). |
+| 2-6 | 2026-08-26 | Carbink, Timburr, Slurpuff, Beautifly, Scorbunny (common English cards) | English | All 5: "couldn't confidently match" | N/A | N/A | Not measured | FAIL → ROOT CAUSE FIXED | Backend was calling a nonexistent `/api/v2/prices` endpoint — 100% failure rate regardless of card. Fixed to `/api/v2/cards`. |
+| 7 | 2026-08-26/27 | Koffing, Team Rocket, 58/82, HP 40, **1st Edition (visible stamp, confirmed by user)** | English | Matched at High confidence, showed "1st Edition" price $2.20 | Yes | **Actually correct** — see notes | Not measured | PASS (initially misdiagnosed as a bug) | First successful match since the endpoint fix. I incorrectly assumed the 1st-Edition default was wrong because Gemini's stampType read said "none," and shipped a fix forcing the default away from 1st Edition whenever the stamp isn't read. User then confirmed the card **was** physically 1st Edition — Gemini just missed the stamp. That fix was **reverted**; PPT's own `primaryPrinting` field turned out to be the more reliable signal. |
+| 8 | 2026-08-27 | Brock's Onix, Gym Heroes, 069/132, HP 100, attacks "Bellow"/"Rock Throw" | English | Matched "Brock's Onix (21)" 021/132, HP 70, attacks "Bind"/"Tunneling" — **wrong printing** | Yes (1st Edition $15.29 shown) | **Wrong card entirely** | Not measured | FAIL → FIXED | Gemini read cardNumber "21/132" (matched a real but wrong candidate) while also reading hp "100 HP" (matches a *different* candidate, 069/132). Number match outscored HP and won with false High confidence. Two bugs found: (1) HP comparison used exact string match, so "100 HP" never matched a bare "100" — HP silently scored zero. (2) No safeguard existed for "number matches, but HP clearly points to a different candidate." Fixed both, plus nudged the Gemini prompt to not mix fields between multiple cards in frame. |
+| 9 | 2026-08-27 | Gourgeist ex, physical card read as 067/182 | English | Matched "Gourgeist ex - 102/086" (ME04: Chaos Rising), Low confidence, ambiguous-match warning shown | Yes (Holofoil $1.27) | Uncertain — flagged as such | Not measured | **Working as intended** | Only 2 candidates existed in the search pool, neither matched the read number, so the system correctly showed Low confidence rather than false certainty. Not a bug. |
+| 10 | 2026-08-27 | Hitmontop, Japanese, Crimson Haze (SV5a), 067/066, HP 100, attacks "Spin Draw"/"Cyclone Kick" | Japanese | Matched "Hitmontop" 072/172 (SWSH09: Brilliant Stars), Medium confidence, "Normal" price $0.13, no warning shown | Yes (Normal $0.13) | Wrong printing, resting on weak evidence shown as more certain than it was | Not measured | FAIL → FIXED | Read cardNumber/set matched NONE of the 18 real PPT candidates — match rested entirely on one HP coincidence. Two bugs found: (1) PPT never exposes a scalar `attackName` field, only an `attacks[]` array — the 4-point attackName scoring signal had been completely dead since the PPT-only rewrite. Fixed with `extractFirstAttackName()`. (2) No safeguard for "read number matches nothing in the pool" — added a downgrade to Low confidence with an explanatory note. |
+| 11 | 2026-08-27 | Stonjourner VMAX, SWSH01 Sword & Shield Base Set | English | Matched correctly, High/High, Holofoil $1.76 | Yes | Correct | ~1.7-2.3s range | PASS | Part of an 8-scan batch testing the latency fix. Old (pre-fix) deployment. |
+| 12 | 2026-08-27 | Gardevoir V (Magical Shot / Swelling Pulse) | English | Matched correctly, High read / Low match confidence, ambiguous-match warning, Holofoil $1.99 | Yes | Correct, but flagged Low | Not measured | PASS | Old deployment. Ambiguous-match safety net fired but the guess was right — expected, honest behavior. |
+| 13 | 2026-08-27 | Steelix V, SWSH04 Vivid Voltage | English | Matched correctly, High/High, Holofoil $0.96 | Yes | Correct | Not measured | PASS | Old deployment. |
+| 14 | 2026-08-27 | Zoroark GX (Trade ability / Riotous Beating), Trickster GX | English | Matched correctly, High read / Low match, ambiguous-match warning, Holofoil $3.66 | Yes | Correct despite Low flag | Not measured | PASS | Old deployment. Same pattern as #12. |
+| 15 | 2026-08-27 | Slaking V ("Kinda Lazy" ability / Heavy Impact) | English | Matched correctly, High read / Low match, ambiguous-match warning, Holofoil $0.74 | Yes | Correct despite Low flag | Not measured | PASS | Old deployment. |
+| 16 | 2026-08-27 | Kommo-o GX, SM Guardians Rising, HP 240 | English | Matched correctly, High/High, Holofoil $3.81 | Yes | Correct | Not measured | PASS | Old deployment (just before the latency-fix deploy went live). |
+| 17 | 2026-08-27 | Zarude (partially obscured behind card sleeve/glare) | — | "Couldn't identify the card. Try again when it's clearly visible." | N/A | N/A | Not measured | FAIL — no bug found | Logs show no code error/timeout — Gemini itself returned found:false. Most likely a genuinely hard frame. |
+| 18 | 2026-08-27 | Silvally GX (English promo, likely SM91 or 116/156) | English | Repeated scans gave inconsistent reads ("SM91" vs "116/156") and inconsistent results: one scan matched Hidden Fates: Shiny Vault at Low confidence ($13.24, wrong printing), a later rescan matched 116/156 at High confidence ($4.32, correct) | Yes | Wrong on the flagged scan; correct on a later rescan | 1637-2280ms across 4 attempts (first real measured numbers) | FAIL → FIXED | `normalizeNumber`'s regex required the number to start with a digit, so alphanumeric promo numbers ("SM91") never parsed. When Gemini read "SM91" correctly, the number signal silently scored zero, and the pick fell back to a 7-way HP/attack tie, landing on the wrong printing. Fixed: `normalizeNumber` now captures an optional leading letter prefix and requires prefixes to match. |
+| 19 | 2026-08-27 | Cramorant V (normal-size holofoil, no oversize markings) | English | Matched a "Jumbo Cards" oversized promo listing, $2.62 | Yes | Wrong product line entirely | Not measured | FAIL → FIXED | Exact "SWSH086" number read tied at the same score with 3 other candidates matching only via hp+attackName coincidence, because `SCORE.number` (10) could be tied/beaten by the other signals combined (17). Fixed: bumped `SCORE.number` to 20 (dominates any combination of other signals) and added `isOddityCandidate()` to prefer non-oddity candidates among tied top scorers. |
+| 20 | 2026-08-27 | Shaymin V (normal holofoil, no "Prize Pack" stamp visible) | English | Matched under "Prize Pack Series Cards", $33.10 | Yes | Wrong product line entirely | Not measured | FAIL → FIXED | PPT's data contained two literal duplicate rows for the same printing, tied at score 25 — old dedup key treated a name-suffix difference as two distinct candidates. Fixed: `candidateDedupKey()` strips the trailing "- number" name suffix before computing dedup identity, plus the same oddity-preference fix as #19. |
+| 21 | 2026-08-27 | Galarian Moltres, SWSH284 (Sword & Shield Promo), HP 120, none stamp | English | Matched correctly, High/High, Holofoil $14.38 | Yes | Correct | Not measured | PASS | First scan since the Cramorant V/Shaymin V fix — a promo-numbered card matched cleanly. |
+| 22 | 2026-08-27 | Pikachu ex, 179/131, SV: Prismatic Evolutions, HP 200, none stamp | English | Matched correctly, High/High, Holofoil $59.70 | Yes | Correct | Not measured | PASS | Clean match, no tie/oddity issues. |
+| 23 | 2026-08-27 | Mewtwo, SVP 052 (Scarlet & Violet Black Star Promo) | English | Matched "Mewtwo EX" 52/108 (XY - Evolutions), High/High, Holofoil $10.45 — wrong printing entirely | Yes | Wrong card | Not measured | FAIL → FIXED | Two issues: (1) Gemini's own reads were inconsistent across repeat scans, once a full hallucination ("GG44/GG70", "Crown Zenith" — text not on the card at all, matched a real candidate and returned $274.61 at High confidence). Vision-reliability issue, not fixable in our code — flagged as an open concern. (2) When Gemini read the bare promo number "052" correctly, number-matching gave FULL credit for matching an unrelated numbered-set card "52/108" — a coincidental digit match between different numbering schemes. Fixed: `numbersMatch` now only gives full credit when both numbers share the same scheme; an asymmetric match scores much lower plus an explicit warning note. |
+
+## Latency fix — CONFIRMED with real numbers (2026-08-27)
+
+The 4 Silvally GX scans in test #18 are the first requests on the
+post-latency-fix deployment (`dpl_93uCTCS8zVA7WidUhYEef2PQNG5s`):
+
+| Gemini ms | Lookup ms | Total ms |
+|---|---|---|
+| 1637 | 141 | 1778 |
+| 1851 | 131 | 1982 |
+| 2157 | 123 | 2280 |
+| 1906 | 88 | 1994 |
+
+All four land at 1.8-2.3 seconds total — comfortably inside the 2-5s
+target, a real, measured improvement over the pre-fix behavior (16
+confirmed timeout aborts in a single 24h window on the old deployment).
+
+## Known-good baselines (for regression comparison)
+
+- **PokemonPriceTracker search returns real candidates**: confirmed live.
+- **Variant object shape**: `{"1st Edition": {...}, "Unlimited": {...}}` and also `{"Holofoil": {...}}` alone on modern cards.
+- **Default variant selection trusts PPT's `primaryPrinting` field** (Gemini's stamp read can miss real stamps).
+- **HP comparison is digits-only**.
+- **Number/HP conflict detection**: if the winning candidate's number matches but its HP contradicts the read, while a different candidate's HP matches exactly, confidence drops to Low with an explicit warning.
+- **attackName scoring signal**: parses the move name out of the first `attacks[]` string (PPT never returns a scalar field).
+- **No-number-match-in-pool warning**: read number matches nothing in the pool → Low confidence + note.
+- **Card image (`imageCdnUrl`)**: confirmed present and rendering.
+- **Name-filter Unicode normalization**: gender symbols (♂/♀ → "m"/"f") and diacritics (é → e) normalized before name-filter comparison.
+- **Condition prices are real, live per-condition TCGplayer data or an explicit error — never a flat multiplier or a guess** (rearchitected 2026-08-30, see test #42; extended in test #44; confirmed working live in test #46): a printing shows whichever conditions TCGplayer has real data for, missing tiers dashed out; `pricingError` only fires when NONE of the 5 conditions have any real data. The old `CONDITION_MULTIPLIERS` synthetic-estimate table has been deleted entirely.
+
+| 24-26 | 2026-08-27 | Raichu (Japanese AR, 074/071), Psyduck (Japanese AR, 199/193), Lapras (Japanese AR, s12a 177/172) | Japanese | Raichu: "couldn't confidently match". Psyduck/Lapras: matched wrong English promo printings, Low confidence | Yes (Psyduck/Lapras) | Wrong card/language on all 3 | Not measured | FAIL → misdiagnosed, then correctly fixed (see #27) | Initially concluded (WITHOUT checking PPT's own API docs) this was a structural data-source gap. **User correctly pushed back** — they specifically pay for PPT's Japanese card data. Re-checking PPT's docs found the real cause — see #27. |
+| 27 | 2026-08-27 | (fix, not a new scan) | Japanese | N/A | N/A | N/A | N/A | **REAL ROOT CAUSE FOUND & FIXED** | PPT's `/api/v2/cards` endpoint has a documented `language` query parameter that `fetchPokemonPriceTracker()` had never been passing — every "Japanese" scan all session silently searched PPT's English-only pool. Fixed: passes `language=japanese` whenever Gemini's read says the card is Japanese, threaded through `lookupCardPPT` and `lookupGradedPrice`. Removed the blanket Japanese-caveat/confidence-cap workaround. Lesson: absence of evidence for a mechanism doesn't confirm the data doesn't exist upstream — should have checked the API docs before concluding a data-source limitation. |
+| 28 | 2026-08-27 | Dark Gengar, わるいゲンガー (Neo Destiny JP), HP70, in a TAG 9 graded slab | Japanese | Matched correctly, Medium confidence, Holofoil $223.00 (raw estimate, honest slab warning) | Yes | **Correct card and price, per user** | 2371ms Gemini / 231ms lookup / 2602ms total | **PASS — confirms the language-param fix (#27) works** | First live confirmation via real logs since the fix deployed — genuinely Japanese-market candidates came back this time. Medium (not High) confidence is separately honest: no `cardNumber` field to verify against. |
+| 29 | 2026-08-27 | Eevee, SV: Scarlet & Violet Promo Cards, 173, HP 50, no Pokemon Center stamp visible | English | Matched "Eevee - 173 (Pokemon Center Exclusive)", Low confidence, ambiguous-match warning, Holofoil $91.24 | Yes | Wrong printing | Not measured | FAIL → FIXED | Two real, distinct PPT rows tied at score 30 (number+hp+attackName all matched identically); no tie-break signal existed to prefer the plain promo, even though Gemini's own stampType read said "none". Fixed: added a soft stamp-keyword scoring signal cross-referencing Gemini's `stampType` read. |
+| 30 | 2026-08-27 | Palkia GX / Origin Forme Palkia VSTAR, Japanese (rapid rescans) | Japanese | "Couldn't reach our card database right now (it's been intermittently flaky)." | N/A | N/A | Not measured | FAIL → FIXED | 4 rapid rescans in ~30s hit a real PPT 429 ("Minute rate limit exceeded") — not flakiness. `fetchPokemonPriceTracker()` was requesting `limit=100` per search, far more than ever needed. Fixed: dropped default limit to 30 (~3x credit savings), added explicit 429 detection, honest rate-limit message with wait estimate. |
+| 31 | 2026-08-27 | Squirtle, SV2a "151" (Japanese), 170/165, AR, HP 60 | Japanese | "couldn't confidently match" | N/A | N/A | Not measured | FAIL → FIXED (attempt 1 — turned out to be a no-op, see #32) | Exactly the regression flagged as a risk in #30: `limit=30` crowded out a real valuable card behind unrelated filler cards sharing the species name. "Fixed" with a `cardNumber` query param based on a WebFetch summary of PPT's docs — **turned out to be completely wrong, see #32.** |
+| 32 | 2026-08-27 | Same Squirtle card, rescanned again | Japanese | Still "couldn't confidently match" | N/A | N/A | Not measured | FAIL → FIXED for real (attempt 2, still had a gap — see #33) | **User caught the #31 fix didn't work.** PPT returned an explicit 400 on every request with `cardNumber` — it was never a real parameter; my earlier WebFetch summary was simply wrong. Real fix: removed `cardNumber`, added a genuine `offset`-based page-2 fallback — but only triggered when nothing at all cleared the match floor (`!best`). Test #33 found this trigger still too narrow. |
+| 33 | 2026-08-28 | Charizard V, SWSH: Brilliant Stars, 017/172, HP 220 | English | Matched "Charizard V - SWSH260" (promo), Holofoil $51.13, Read: High / Match: Low, honest "no exact number match" warning | Yes | Wrong printing | Gemini 1412-1799ms, lookup ~100ms | FAIL → FIXED | A wrong candidate cleared the match floor via secondary signals even without the number matching, so `best` was truthy and #32's `!best`-only trigger never fired. Fixed: widened the page-2 trigger to also fire whenever the read number matches NONE of the page-1 candidates, regardless of whether something else cleared the floor. |
+| 34 | 2026-08-28 | Dragonite, Fossil, 4/62, HP 100, Holo Rare | English | Matched "Dragonite (19)" 19/62, Read: High / Match: Low, honest warning, variant picker only "1st Edition"/"Unlimited" (no separate Holo) | Yes | Card/price correct; question was about the missing Holo/non-Holo distinction | Gemini ~1550ms, lookup 204-374ms | **PASS — no bug; confirms #33's widened fix works in production** | PPT's `variants` object genuinely has no separate "Holofoil" key for this card — Fossil-era rares were only ever printed as Holo, so 1st Edition/Unlimited prices ARE the holo prices. Also confirmed #33's fix firing correctly in production across multiple cards this window. |
+| 35 | 2026-08-28 | Zoroark, SV: White Flare (2025), 062/086, HP 120 | English | Matched "Zoroark - SM89" (SM Promos, 2017), Read: High / Match: Low, honest warning, Holofoil $1.22 | Yes | Wrong printing | Gemini ~1480-1505ms, lookup 104-173ms | FAIL — real cause is a PPT catalog gap, not a code bug | Page-1+2 search (28 real, deduplicated candidates) came back with genuinely zero White Flare printings — PPT's catalog for a plain "Zoroark" search simply doesn't carry this newer (2025) set yet. Safety net worked as intended (Low confidence + explicit warning). No code fix available. |
+| 36 | 2026-08-28 | Nidoran♂, HP 60, attack "Double Scratch", none stamp | English | "couldn't confidently match" on all 4 repeat scans | N/A | N/A | Gemini 1433-1736ms | FAIL → FIXED (real code bug) | Gemini reads the gender as a Unicode symbol ("Nidoran♂"), PPT spells it as a letter ("Nidoran M") — the name filter's strict substring check rejected every real candidate before scoring ever ran. Fixed: `normalizeNameForMatch()` spells out ♂/♀ as letters and strips punctuation. Likely also protects Mr. Mime, Farfetch'd, Type: Null. |
+
+## Tests #37-40 (2026-08-28, 4 scans reported together)
+
+**User report, verbatim**: "Right name- wrong card (tyranitar). Same deal
+with psyduck. Iron treads didn't identify the stamp. Pokemon collector
+card could not be identified." One was a real, fixable code bug; the
+other three were genuine data/OCR limitations.
+
+| # | Date | Card (ground truth) | Language | Result shown | Latency | Pass/Fail | Notes |
+|---|---|---|---|---|---|---|---|
+| 37 | 2026-08-28 | Tyranitar, read "122/193" and "130/193", HP 180 | English | Matched "Tyranitar - 222/193" (Paldea Evolved), $73.79 — wrong printing, honest warning shown | Gemini 1637-1938ms | FAIL — PPT catalog-coverage gap | Page-1+2 pagination merged 60 candidates; neither read number was anywhere in the pool. A 3rd scan of a different physical Tyranitar matched correctly on page 1 alone — confirms the matching logic is fine when the printing is actually fetched. No code fix without deeper pagination (real latency/credit cost). |
+| 38 | 2026-08-28 | Psyduck, HP 70, cardNumber obscured, Detective Pikachu stamp visible | English | Ambiguous match warning, matched "Psyduck - SM199 (Detective Pikachu Stamped)", $36.69 | Gemini 1577-2026ms | FAIL — genuine OCR limitation | Gemini's read explicitly said `cardNumber: null` (correct — obscured by hand/marker). 6 candidates tied at the floor; safety net fired correctly. No code fix possible — number physically not visible. |
+| 39 | 2026-08-28 | Iron Treads ex, HP 220, Paldean Fates holo-overlay watermark | English | Scan 1: ambiguous 2-way tie ($0.83). Scan 2: matched wrong SV01 Base Set printing ($1.06) | Gemini 1504-1517ms | FAIL — two distinct non-code-bug causes | Scan 1: Gemini's `stampType` enum has no slot for a set-branding overlay, so "none" was the closest honest answer — tie is expected given no stamp signal. Scan 2: Gemini misread the printed number ("233/091" isn't real for a 91-card set), which happened to number-match an unrelated candidate at exact-match strength. Not fixable client-side. Widening the stampType enum flagged as a possible future improvement, not shipped. |
+| 40 | 2026-08-28 | Pokémon Collector (accented), HP null, "97/123" visible on 2 of 3 scans | English | "couldn't confidently match" on all 3 repeat scans | Gemini 1502-1555ms | FAIL → FIXED (real code bug) | Same class of bug as #36: Gemini reads the literal accent ("Pokémon Collector"), PPT spells it without ("Pokemon Collector"). `normalizeNameForMatch` stripped punctuation but never diacritics. Fixed: runs `.normalize("NFD")` and strips combining marks before lowercasing. |
+
+## Shadowless dropdown option (feature request, 2026-08-28)
+
+Added a Shadowless price option to the dropdown as a pure post-processing
+step (zero extra network calls, zero Gemini prompt changes) —
+`stripShadowlessSuffix()`/`isShadowlessSetName()` helpers find the
+Shadowless sibling candidate among candidates already fetched and fold
+its prices into the same dropdown, tagged "(Shadowless)". Default variant
+selection unchanged.
+
+**Process note**: the first deploy attempt base64-encoded the file to
+avoid retyping risk, but the blob was too large to view/verify in full
+and only a truncated prefix got pasted — silently shipping a broken file
+(Vercel still reported "READY" since it doesn't syntax-check). Caught and
+corrected using the exact plain-text content already captured via prior
+Read calls, verified byte-identical via md5 before committing. **Lesson**:
+for very large files, read the plain-text source in ordered chunks small
+enough to view in full and concatenate faithfully — don't reach for
+base64 as a shortcut.
+
+## Corrected — Japanese Pokémon cards ARE supported by PokemonPriceTracker (2026-08-27)
+
+Superseded the earlier wrong conclusion that PPT lacked Japanese-market
+data. Real cause (test #27) was a missing `language=japanese` query
+parameter on our own requests. Confirmed fixed via test #28.
+
+## Open reliability concern — Gemini's own reads can be inconsistent/hallucinated on the same physical card
+
+Test #23 (Mewtwo): 3 different cardNumber reads on the same physical
+card within seconds, once a full hallucination. Test #35 (Zoroark): two
+scans of the same card produced two different `stampType` values. Test
+#45 (Snorlax): `setName` read as "s10a" once and "s10b" on a repeat scan.
+Not a code bug — Gemini's vision output varying/hallucinating between
+calls on harder reads. Escalated significantly in test #50 (see below).
+
+## Number-weight / oddity tie-break fix (2026-08-27)
+
+Bumped `SCORE.number` from 10 to 20 (dominates any combination of the
+other four signals, which max out at 18) and added dedup + oddity-
+avoidance logic to `pickBestCandidate()` — see tests #19/#20. This also
+moves the scoring model closer to pallet.trade's own approach, which
+treats the card number as authoritative (see
+`pallet-trade-reverse-engineering.md`).
+
+## PPT `limit` vs. real-candidate-coverage tradeoff (2026-08-27 → 2026-08-28)
+
+Test #30 lowered PPT's default search `limit` from 100 to 30 to fix a
+real rate-limit bug. Test #31 confirmed the regression risk this flagged:
+a real card can get crowded out of a `limit=30` pool by unrelated
+same-species filler. Test #31's own fix (`cardNumber` param) was
+completely wrong and did nothing — see #32. Test #32's `offset`-based
+pagination was real but too narrow (`!best`-only trigger) — see #33.
+**Real fix, test #33**: widened the trigger to fire whenever the read
+number matches nothing on page 1, whether or not something else cleared
+the floor. Confirmed firing correctly across multiple card types since.
+**Test #35 surfaces a deeper limit**: even with page 2 fetched, PPT's own
+catalog can genuinely not contain a printing at all for a newer/less
+common set — pagination alone can't fix a coverage gap in the source data.
+
+## Speed benchmarks (target: 2-5s total, end to end)
+
+First real numbers captured 2026-08-27 (test #18): 1778-2280ms. Test #33:
+1511-1799ms. Test #35: 1584-1678ms. Tests #37-40: 1584-2119ms across
+successfully-completed lookups, including the pagination path and the
+ambiguous-tie path. Test #43 (Hitmontop): 2001-2182ms including a failed
+live TCGplayer fetch. Tests #44-45: 1988-2602ms, confirming the
+partial-condition-data fix adds no meaningful latency. Comfortably inside
+target throughout.
+
+## Condition-price accuracy investigation (2026-08-28) — RESOLVED, then rearchitected (see test #42, confirmed in test #46)
+
+**User report, verbatim**, with screenshots of both our result panel and
+the real TCGplayer product page: "I think we may have a bigger issue at
+hand. Price inaccuracies... seeing the market price of $10.52 on the
+tcgplayer website. We need to fully investigate this." Card: Togepi,
+Undaunted 70/90, Reverse Holofoil. Our panel showed Market $37.50 (real
+NM data, correct) but Lightly Played $31.88 — TCGplayer's actual live LP
+market was $10.52, roughly a 3x overestimate.
+
+**Root cause, confirmed empirically**: every LP/MP/HP/DMG price shown
+anywhere in this tool, on every card, has been a synthetic extrapolation
+— `CONDITION_MULTIPLIERS` (85%/70%/55%/40% of the single Near-Mint
+`marketPrice` PPT returns) — with zero real per-condition backing.
+
+A temporary debug block requesting PPT's `includeHistory=true` param on a
+real live scan (Raichu, Stormfront) confirmed PPT DOES return genuine,
+non-uniform, real per-condition prices when asked — nowhere close to the
+flat 85/70/55/40% ratios assumed. `includeHistory=true` had simply never
+been requested before this investigation.
+
+**First fix (2026-08-28, superseded)**: always request
+`includeHistory=true`, read PPT's real per-condition breakdown where it
+existed, fall back to the old multiplier only for tiers PPT didn't have.
+Superseded by test #42's Ditto case — the remaining multiplier fallback
+was badly wrong for older WotC-era cards (real 43% LP/NM ratio vs. the
+assumed 85%). **Replaced entirely by the live-TCGplayer-or-explicit-error
+architecture in test #42.**
+
+## Test #41 — NM-estimated-flag bug found and fixed (2026-08-29)
+
+Card: Charizard ex - 223/197 (Obsidian Flames), Market (Holofoil)
+$108.59. All five condition tiers were marked "*" (estimated) — including
+NM, the actual real market price itself.
+
+**Root cause**: PPT's raw `variants` object for this printing was the old
+single-number shape with zero per-condition breakdown, so `hasRealData`
+was false for every tier. The multiplier-fallback loop correctly fell
+back for LP/MP/HP/DMG but incorrectly did the same for NM too — even
+though `basePrice` (used for NM) is ALWAYS the genuine PPT/TCGPlayer
+market price on every code path, never itself a multiplier product.
+
+**Fix**: explicit `tier === "NM"` branch that always sets
+`estimated.NM = false` regardless of which branch produced `basePrice`.
+Committed as `aea450d`.
+
+## Test #42 — condition pricing rearchitected: real TCGplayer data, not PPT (2026-08-30)
+
+Card: Ditto (18/62, Fossil). User: "Got this one very wrong. LP is
+currently $6.84." Real cause: multiplier fallback was tuned loosely off
+modern-card examples (75-85% LP/NM ratios) and is badly wrong for older
+WotC-era cards — this Ditto's real ratio is 43%.
+
+**User's direction**: pull real per-condition prices straight from
+TCGplayer instead of PPT. Confirmed via live browser network inspection
+that TCGplayer's own storefront calls a public, unauthenticated,
+CORS-open, cacheable JSON endpoint:
+`https://infinite-api.tcgplayer.com/price/history/{tcgPlayerId}/detailed?range=quarter`
+— real transaction-based market prices broken out by condition and
+printing, refreshed weekly.
+
+**Real fix, shipped**: PPT still supplies card identification and each
+candidate's `tcgPlayerId`. Pricing is completely rearchitected:
+`fetchTCGPlayerPriceHistory()` calls TCGplayer's own endpoint directly;
+`buildLivePriceVariantsFromTCGPlayer()` groups the response by printing.
+`CONDITION_MULTIPLIERS` is deleted entirely — no synthetic fallback
+exists anywhere in the file. Per explicit user instruction, a printing
+with no genuine live data for any condition throws and is surfaced as an
+explicit `pricingError` field, shown as a distinct red banner
+("🛑 NO LIVE PRICE"), never paired with a fabricated number.
+
+**Deploy process failure, disclosed in full**: the first deploy attempt
+shipped a placeholder stub module that doesn't exist — and unlike a prior
+near-miss, this one actually went live on production, meaning real scans
+were broken (`Cannot find module`) for a window. A second attempt
+accidentally omitted `api/identify.js` from the file list (failed to
+build, no harm). A third deployed another placeholder as a rollback
+marker. The actual fix was the fourth deploy, verified via `node -c` +
+sha1 check and a live test request before declaring it fixed. Root cause:
+rushing a large (75K-char) file-content paste instead of reading the
+source in full, non-truncated chunks and transcribing exactly. Committed
+as `6ff729e` (backend) and `ed64de1` (frontend).
+
+## Test #43 — Hitmontop scan: backend correct, stale Chrome extension was the real culprit (2026-08-29)
+
+Card showed "Market: —", all condition rows blank, the OLD caption text,
+and no error banner. Real logs showed the backend behaved exactly as
+designed: TCGplayer had only 1 SKU (NM) with zero LP/MP/HP/DMG sales data
+for this ultra-rare Japanese promo, `pricingError` correctly set. The
+actual bug: the OLD caption text can't be produced by the shipped code —
+the user's Chrome extension was still running pre-fix `content.js`.
+**Chrome extensions require a manual reload** (chrome://extensions →
+reload icon) to pick up file changes; they do not auto-reload.
+
+This also raised a real product question (partial-condition-data display)
+— initially decided to keep strict all-or-nothing, reversed within the
+same session in test #44 once the user showed concrete counter-evidence.
+
+## Test #44 — partial condition pricing shipped after concrete counter-evidence; a real deploy near-miss along the way (2026-08-29)
+
+User pushed back with concrete TCGplayer screenshots (Cinccino: 26 active
+NM + 3 LP listings; Snorlax: same pattern) showing real data existed for
+some conditions that our all-or-nothing rule was discarding entirely.
+
+**Fix**: `buildLivePriceVariantsFromTCGPlayer` no longer requires all 5
+conditions — a printing is included as soon as it has real data for at
+least one. Missing tiers render as "—", never guessed. Added a `partial`
+flag so the frontend can caption partial coverage differently.
+`pricingError` now only fires when literally none of the 5 conditions
+have any real data.
+
+**Deploy process — a real near-miss, disclosed in full**: repeated the
+same class of mistake as test #42. A deploy including a literal
+placeholder string (`"PLACEHOLDER_WILL_REPLACE"`) as the entire content
+of `api/identify.js` built successfully and went live on production
+(Vercel doesn't check a serverless function's actual logic) — a real user
+scan surfaced the breakage directly. The actual fix was built by reading
+the local source in full via plain-text `cat` in ordered chunks and
+transcribing exactly. Committed as `9166b09`, pushed to GitHub.
+
+**Structural fix worth considering, not yet acted on**: git-integrated
+Vercel deploys (auto-build from a GitHub push) would eliminate this whole
+class of manual-paste mistake. Flagged for a future explicit conversation
+rather than switched mid-incident.
+
+## Test #45 — Snorlax: same partial-pricing pattern, plus a possible number-mismatch worth watching
+
+Same root cause/fix as test #44. Separate wrinkle: two scans read
+`cardNumber` "077/071" but matched a candidate whose real number is
+"077/096" — a numerator match but denominator mismatch that normally
+should trigger the "no number match" warning — worth checking on a future
+rescan whether it fired.
+
+## Test #46 — Glaceon ex: partial-pricing fix confirmed correct on a live scan (2026-08-29)
+
+Glaceon ex, Prismatic Evolutions, 026/131. NM $2.82 / LP $2.01 / MP $1.99
+/ HP — / DMG $1.43. **Confirmed correct, exact match** — user's own
+TCGplayer screenshot shows no Heavily Played category exists for this
+listing (hence the dash), and LP $2.01 exactly matches TCGplayer's own
+displayed Market Price. First live confirmation of test #44's fix.
+
+## Test #47 — Banette: another clean partial-pricing success (2026-08-29)
+
+Banette, Shrouded Fable, 090 Holofoil. NM $10.94 / LP $11.06 / MP — / HP
+— / DMG $9.66. Confirmed correct per user. LP slightly higher than NM —
+tool reports TCGplayer's real weekly data as-is, no artificial ordering
+imposed. Second live confirmation.
+
+## Test #48 — Braviary: apparent discrepancy investigated, turned out to be correct (2026-08-29)
+
+User flagged our NM $10.63 vs. a TCGplayer page showing "$9.16". Live
+logs + a live TCGplayer page load confirmed: the page had landed with
+"Lightly Played" as its default-selected condition filter, not Near Mint
+— its own "Near Mint Comparison Prices" box explicitly lists $10.63,
+matching our figure exactly. Both of our numbers were correct all along.
+Third live confirmation of the partial/live-pricing architecture, and the
+first case this session where an apparent discrepancy was investigated
+and closed as "working correctly."
+
+## Test #49 — Eevee SVP 173: same card as test #29, real cause is a PPT catalog-crowding gap (2026-08-29)
+
+Same physical card as test #29. Matched "Eevee - SM184 (Cosmos Holo)"
+instead, honest Low-confidence warning shown, $15.33 — wrong card/price.
+Gemini's read was correct and consistent; page-1+2 pagination merged 60
+real, distinct Eevee printings and genuinely none of them was the SVP 173
+promo. Same class as test #35 (Zoroark) and #37 (Tyranitar) — an
+extremely common search name with hundreds of real printings, where even
+60 results isn't guaranteed to surface every specific promo number. No
+code fix shipped this session (deeper pagination trades latency/credit
+for a gain that only helps rare crowding cases).
+
+## Fix shipped for test #49's crowding-out gap: name+number combined search fallback (2026-08-29)
+
+Confirmed via PPT's own live API docs page that `search` supports
+multi-word queries across name/setName/cardNumber/rarity/cardType
+(`search=charizard base set holo`). **Fix**: in `lookupCardPPT`, after
+page-1+page-2 pagination still fails to find the read number, try ONE
+more search combining name + number as a single query before giving up.
+Purely additive — only fires when the number is already missing after
+everything else has failed. Committed as `5b9c54c`.
+
+## Test #50 — Cornerstone Mask Ogerpon ex: severe Gemini read instability, not a matching-code bug (2026-08-29)
+
+Japanese Ogerpon ex card, Start Deck 100 Battle Collection. 6 repeat
+scans in the investigated window produced wildly inconsistent Gemini
+reads: twice `cardNumber: null` (honest — correctly triggered the
+ambiguous-tie safety net across 18 real tied candidates); once a
+nonexistent number ("225/200" — confirmed the new combined-search
+fallback executing correctly end-to-end, finding nothing since the number
+wasn't real); once a real number for a DIFFERENT Ogerpon variant (Teal
+Mask, not Cornerstone Mask) that cleared the floor and returned a wrong
+card/price with no warning; once a full hallucination (invented a Chinese
+attack name and language on a Japanese card).
+
+**Root cause: a Gemini vision-reliability failure worse than any prior
+instance of the tracked reliability concern** — no plausible code fix;
+this is the first time a scan both invented a nonexistent number AND
+hallucinated an entire wrong language/attack text on the same card.
+
+## Test #51 — "wait 1041s" rate-limit message was actually PokemonPriceTracker's daily credit quota, not per-minute (2026-08-29)
+
+Real PPT response: `{"error":"Daily credit limit exceeded", ...}` — this
+is PPT's **daily** API credit quota being fully spent, not the
+per-minute rate limit from test #30. Our own message conflated the two.
+
+**Fix shipped**: `fetchPokemonPriceTracker`'s 429 handler now detects
+`isDailyLimit` from PPT's own `error` field and branches the user-facing
+message accordingly (daily-limit case gives the real reset ETA and points
+to pokemonpricetracker.com/api-keys; true per-minute case keeps the
+original short-wait message). Committed as `02e3942`.
+
+**Resolved by the user directly**: bought 200,000 more PPT credits for $5.
+
+## Still outstanding (as of 2026-08-29, see CLAUDE.md for current state)
+
+- Hitmontop, Cinccino, Snorlax (tests #43-45): can only be re-verified
+  opportunistically if those specific cards come up again on stream.
+- Ditto (test #42): rescan to confirm LP now shows in the real ~$6-8
+  range.
+- Snorlax's possible number-mismatch (test #45): needs a clean rescan.
+- The name+number combined search fallback: confirmed executing correctly
+  in production (test #50), but hasn't yet had a case where a real,
+  findable number was actually missing from the pool.
+
+## Research: options to improve Gemini scan consistency (2026-08-29)
+
+Prompted by test #50's severity. Read Google's current Gemini API docs
+directly before proposing anything:
+
+1. **Explicitly set `generationConfig.media_resolution = "MEDIA_RESOLUTION_HIGH"`.** Free/negligible cost, may be a no-op for gemini-3.6-flash specifically (unspecified may already equal HIGH per the docs) but removes reliance on an undocumented default.
+2. **Raise `thinkingLevel` from `minimal` to `low`.** A real documented middle step; should cost less than the 400-600 thinking-token `medium` default. Needs real timing measurement to confirm it stays inside the 2-5s target.
+3. **Dual-frame capture in one request.** Capture two frames, send both in the SAME Gemini call, cross-check. Targets the actual "one bad exposure" failure mode directly — not yet built.
+4. **Prompt tightening** — explicit instruction to only report a field if literally visible, prefer null over inventing content. Free, unproven.
+5. **True self-consistency** (call Gemini twice, compare). Most robust in theory, least proven, most expensive.
+
+**Recommendation, approved and partially shipped**: options 1+2 shipped
+2026-08-30 (uncommitted at the time of the CLAUDE.md migration — see
+CLAUDE.md "Recent / in-flight work"). Option 3 (dual-frame) is the most
+structurally promising follow-up if 1+2 don't move the needle. Options 4
+and 5 remain lower priority.
+
+## Related docs
+
+- `whatnot-pokemon-extension-build-status.md` — architecture history and
+  rationale for every backend decision.
+- `../api/identify.js` — current backend source.
+
+---
+
+*Snapshot through test #51 (2026-08-29), migrated into the repo as
+durable on-disk reference 2026-08-30. See CLAUDE.md at the repo root for
+the current, condensed summary.*
