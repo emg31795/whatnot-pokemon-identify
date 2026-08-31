@@ -339,6 +339,31 @@ checklist before reporting something as finished:
   real timing measurement on a live rescan (stay inside the 2-5s target)
   and a recurrence of a hard card to see if the read-instability fix
   actually helps — deployment alone doesn't prove that.
+- **Test #58 (2026-08-30)**: first live Trainer/Supporter-card scan since
+  the subtype-extraction fix that wasn't flagged wrong (Grimsley's Move,
+  clean High/High match, no ambiguous-tie warning). A real but not
+  conclusive data point for the Trainer/Supporter tie-break question
+  below — doesn't confirm the subtype signal was actually decisive (no
+  logs pulled, and a screenshot alone can't show the candidate pool). See
+  test #58 in `docs/test-cases.md`.
+- **Test #60 (2026-08-30) — ROOT CAUSE CONFIRMED via real Vercel logs, no
+  code fix shipped**: Porygon2 scan explicitly flagged wrong by the user
+  (matched to "Great Encounters" instead of what looks like a real
+  e-Reader-era printing). Logs confirm the read number "28/147" never
+  appeared in page 1, page 2, or the combined name+number search — same
+  class as tests #35/#37/#49, a genuine PPT catalog-coverage gap, not a
+  matching-code bug. **Open, unverified hypothesis**: "/147" total-count
+  + the e-Reader dot-code strip strongly suggest this is genuinely
+  Skyridge #28 — but confirming that against PPT's live API
+  (`search=Porygon2&setName=Skyridge`) is **blocked on API-key access**
+  this session (no local `.env`, key not in the shell environment). If
+  someone with the key confirms it, that opens a real design question:
+  whether a 4th search-fallback tier — "denominator matches a known set's
+  total card count → scope the search to that set" — is worth adding
+  (same shape as the test #49 combined-search fallback). **Not to be
+  built without explicit sign-off.** See test #60 in
+  `docs/test-cases.md` for the full log trace and the open verification
+  item.
 - **Open strategy question** (raised repeatedly, never resolved): whether
   to keep patching the matching/scoring model reactively as live tests
   surface issues, or pause for a dedicated pass adopting more of

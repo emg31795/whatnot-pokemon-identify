@@ -461,7 +461,65 @@ where that scenario actually applies to confirm in practice. The
 deeper tie-break design question (same-subtype same-name printings)
 remains open — see ROADMAP.md.
 
-## Still outstanding (as of 2026-08-29, see CLAUDE.md for current state)
+## Tests #54-60 (2026-08-30, 7 scans reported together from screenshots; #60 root-caused via real Vercel logs below)
+
+User shared 7 panel screenshots from a live `cavemancraw` stream with one
+explicit correction: "The Porygon e-reader was incorrect." No other card
+was flagged as wrong, but for the rest we only have "no complaint raised,"
+not an explicit ground-truth confirmation — logged as such rather than
+marked PASS, per the project's own honesty-over-guessing principle.
+
+| # | Date | Card shown | Set | Read/Match | Stamp | Price | Notes |
+|---|---|---|---|---|---|---|---|
+| 54 | 2026-08-30 | Roaring Moon ex - 262/182 | SV04: Paradox Rift | High/High | none | Holofoil $5.88 | No issue reported. |
+| 55 | 2026-08-30 | Mega Lucario ex - 033 (Japanese, メガブレイブ) | ME: Mega Evolution Promo | High/High | none | Holofoil $12.16 | No issue reported. |
+| 56 | 2026-08-30 | Marshadow - shown as "146/132" | ME01: Mega Evolution | High/Low | none | Holofoil $13.57 | Ambiguous-match warning fired: banner says the actual Gemini read was card number **"204/197"**, i.e. the title/header shows the *matched candidate's* number while the warning shows the *read* number — same pattern as test #9, working as designed, not a bug. No ground truth given for which number is correct. |
+| 57 | 2026-08-30 | Crobat VMAX | Shining Fates | High/High | none | Holofoil $1.61 | No issue reported. |
+| 58 | 2026-08-30 | Grimsley's Move - 120/094 (Trainer/Supporter) | ME02: Phantasmal Flames | High/High | none | Holofoil $1.08 | **First live Trainer-card scan since the subtype-extraction fix (commit `d589d46`, deployed 2026-08-30) that wasn't flagged as wrong.** Clean High/High match with no ambiguous-tie warning. Doesn't fully confirm the fix was decisive (don't know from a screenshot alone how many same-name candidates existed or whether subtype broke a tie), but it's a real data point for the "Open: Trainer/Supporter same-name tie-break" question in CLAUDE.md — worth pulling logs on a future Trainer scan to see the subtype signal actually firing. |
+| 59 | 2026-08-30 | Mega Heracross ex - 108/094 | ME02: Phantasmal Flames | High/High | none | Holofoil $1.89 | No issue reported. |
+| 60 | 2026-08-30 | Porygon2 (physical card appears to be an e-Reader-era printing — dot-matrix code strip visible at the card's bottom edge) | Matched to **Great Encounters** (a Diamond & Pearl-era set with no e-Reader strip) | High/Low | none | Normal $2.80 | **FAIL, per explicit user correction** ("The Porygon e-reader was incorrect"). Root-caused via real Vercel logs — see below. |
+
+### Test #60 root cause — CONFIRMED via real Vercel runtime logs (2026-08-30)
+
+```
+[identify] Gemini read: cardName="Porygon2", cardNumber="28/147", hp="70", attackName="Hypnotic Ray", setName=null, confidence=High
+[lookup] search=Porygon2 language=English — page 1: 30 candidates, page 2: 30 candidates, merged/deduped: 17
+[lookup] combined name+number search "Porygon2 28/147" — raw candidate count = 0
+[lookup] NO NUMBER MATCH IN POOL: read number=28/147 matches nothing anywhere in the fetched pool
+[lookup] best = "Porygon2" 49/106 (Great Encounters), bestScore=6, tieCount=4 — landed here purely on secondary signals (hp+attackName), not the number
+```
+
+Same failure class as tests #35 (Zoroark/White Flare), #37 (Tyranitar),
+and #49 (Eevee SVP 173): the read number ("28/147") never appeared in
+any of the three search passes (page 1, page 2, combined name+number) —
+a genuine **PPT catalog-coverage/crowding gap** on a common species
+name, not a scoring or matching-code bug. All three of PPT's own search
+fallbacks executed correctly and still came back empty for this number.
+
+**Skyridge hypothesis — raised, not yet independently verified**: "/147"
+as a total-set-count is distinctive (Skyridge is the only mainstream
+Pokémon set with exactly 147 total cards — 144 base + 3 secret rares),
+and the physical card's e-Reader dot-matrix strip only appears on the
+three e-Card-era sets (Expedition, Aquapolis, Skyridge, 2002-2003) — a
+real independent signal this card is genuinely Skyridge #28. **Not yet
+checked against PPT's live API**: this session has no local copy of
+`POKEMONPRICETRACKER_API_KEY` (no `.env`/`.env.local` in the repo, not
+set in the shell environment), so a scoped `search=Porygon2&setName=Skyridge`
+(or `set=Skyridge` — both are real validated params per PPT's own 400
+error's `allowedParameters` list, see the FIX comment history in
+`api/identify.js` around the `cardNumber` saga) has not been run to
+confirm whether PPT's catalog actually carries Skyridge #28 under either
+key. **This is a real open verification gap, not a confirmed finding —
+do not treat "genuine PPT coverage gap" as fully proven until someone
+with API access runs that scoped search.** If it turns up 28/147 under
+Skyridge, that both confirms ground truth and raises a real, deliberate
+design question (see CLAUDE.md's "Recent / in-flight work") about
+whether a 4th search-fallback tier — "denominator matches a known set's
+total card count → scope search to that set" — is worth adding, the same
+way the combined name+number fallback was added for test #49. Not to be
+built without explicit sign-off.
+
+## Still outstanding (as of 2026-08-30, see CLAUDE.md for current state)
 
 - Hitmontop, Cinccino, Snorlax (tests #43-45): can only be re-verified
   opportunistically if those specific cards come up again on stream.
@@ -470,7 +528,22 @@ remains open — see ROADMAP.md.
 - Snorlax's possible number-mismatch (test #45): needs a clean rescan.
 - The name+number combined search fallback: confirmed executing correctly
   in production (test #50), but hasn't yet had a case where a real,
-  findable number was actually missing from the pool.
+  findable number was actually missing from the pool. Test #60
+  (Porygon2) is now a second confirmed case of that same fallback
+  executing correctly and still coming back empty — a genuine
+  catalog-coverage gap, not a fallback bug.
+- **Test #60's Skyridge hypothesis** (new): needs a scoped
+  `search=Porygon2&setName=Skyridge` (or `set=Skyridge`) query run
+  against PPT's live API to confirm whether card 28/147 genuinely exists
+  in their catalog under that set name. Blocked on API-key access this
+  session (no local `.env`/`.env.local`, not in the shell environment) —
+  see the "Test #60 root cause" section above.
+- Trainer/Supporter tie-break question (test #53/#58): test #58
+  (Grimsley's Move) is one clean-looking data point since the
+  subtype-extraction fix deployed, but not confirmed decisive without
+  logs — needs a Trainer-card scan where multiple same-name candidates
+  with genuinely different subtypes are pulled, then checked via logs
+  that the subtype signal actually broke the tie.
 
 ## Research: options to improve Gemini scan consistency (2026-08-29)
 
