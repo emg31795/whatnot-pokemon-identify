@@ -46,6 +46,17 @@ actually helps, then update ROADMAP.md's Phase 1 checklist.
   the user has explicitly said they want to approve these, not just
   review after the fact.
 
+**Project facts belong in this repo, not Claude Code's own memory feature.**
+Claude Code has a separate per-project memory store outside git (e.g.
+`~/.claude/projects/<project>/memory/`). Do not use it for anything project-
+specific — autonomy rules, architecture facts, deploy status, open
+questions, anything that belongs in CLAUDE.md/ROADMAP.md/docs/test-cases.md.
+This repo's git-tracked files are the ONLY source of truth for this project,
+on purpose, so any session (or the user, reading via the device bridge) can
+see the same state. A per-project fact saved outside git is invisible to
+both and was already caught and deleted once (2026-08-30) for exactly this
+reason.
+
 ## What this is
 
 A free personal Chrome extension that replicates pallet.trade's core
