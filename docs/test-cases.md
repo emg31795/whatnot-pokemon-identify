@@ -477,7 +477,7 @@ marked PASS, per the project's own honesty-over-guessing principle.
 | 57 | 2026-08-30 | Crobat VMAX | Shining Fates | High/High | none | Holofoil $1.61 | No issue reported. |
 | 58 | 2026-08-30 | Grimsley's Move - 120/094 (Trainer/Supporter) | ME02: Phantasmal Flames | High/High | none | Holofoil $1.08 | **First live Trainer-card scan since the subtype-extraction fix (commit `d589d46`, deployed 2026-08-30) that wasn't flagged as wrong.** Clean High/High match with no ambiguous-tie warning. Doesn't fully confirm the fix was decisive (don't know from a screenshot alone how many same-name candidates existed or whether subtype broke a tie), but it's a real data point for the "Open: Trainer/Supporter same-name tie-break" question in CLAUDE.md — worth pulling logs on a future Trainer scan to see the subtype signal actually firing. |
 | 59 | 2026-08-30 | Mega Heracross ex - 108/094 | ME02: Phantasmal Flames | High/High | none | Holofoil $1.89 | No issue reported. |
-| 60 | 2026-08-30 | Porygon2 (physical card appears to be an e-Reader-era printing — dot-matrix code strip visible at the card's bottom edge) | Matched to **Great Encounters** (a Diamond & Pearl-era set with no e-Reader strip) | High/Low | none | Normal $2.80 | **FAIL, per explicit user correction** ("The Porygon e-reader was incorrect"). Root-caused via real Vercel logs — see below. |
+| 60 | 2026-08-30 | Porygon2, **Aquapolis, 028/147** (English, WotC e-Card era, "Hypnotic Ray" attack, HP 70) — ground truth confirmed live against PPT's own API, see below | Matched to **Great Encounters** (a Diamond & Pearl-era set with no e-Reader strip) | High/Low | none | Normal $2.80 | **FAIL, per explicit user correction** ("The Porygon e-reader was incorrect"). Root-caused via real Vercel logs, then ground-truth-confirmed via a live scoped PPT API query — see below. **Confirmed: genuine PPT crowding-out gap, not a nonexistent card or a bad Gemini read** — Gemini's read was fully correct. |
 
 ### Test #60 root cause — CONFIRMED via real Vercel runtime logs (2026-08-30)
 
@@ -496,28 +496,63 @@ a genuine **PPT catalog-coverage/crowding gap** on a common species
 name, not a scoring or matching-code bug. All three of PPT's own search
 fallbacks executed correctly and still came back empty for this number.
 
-**Skyridge hypothesis — raised, not yet independently verified**: "/147"
-as a total-set-count is distinctive (Skyridge is the only mainstream
-Pokémon set with exactly 147 total cards — 144 base + 3 secret rares),
-and the physical card's e-Reader dot-matrix strip only appears on the
-three e-Card-era sets (Expedition, Aquapolis, Skyridge, 2002-2003) — a
-real independent signal this card is genuinely Skyridge #28. **Not yet
-checked against PPT's live API**: this session has no local copy of
-`POKEMONPRICETRACKER_API_KEY` (no `.env`/`.env.local` in the repo, not
-set in the shell environment), so a scoped `search=Porygon2&setName=Skyridge`
-(or `set=Skyridge` — both are real validated params per PPT's own 400
-error's `allowedParameters` list, see the FIX comment history in
-`api/identify.js` around the `cardNumber` saga) has not been run to
-confirm whether PPT's catalog actually carries Skyridge #28 under either
-key. **This is a real open verification gap, not a confirmed finding —
-do not treat "genuine PPT coverage gap" as fully proven until someone
-with API access runs that scoped search.** If it turns up 28/147 under
-Skyridge, that both confirms ground truth and raises a real, deliberate
-design question (see CLAUDE.md's "Recent / in-flight work") about
-whether a 4th search-fallback tier — "denominator matches a known set's
-total card count → scope search to that set" — is worth adding, the same
-way the combined name+number fallback was added for test #49. Not to be
-built without explicit sign-off.
+### Ground truth confirmed live — CORRECTED from the initial Skyridge hypothesis (2026-08-30)
+
+The "/147" total-set-count reasoning was right in spirit but named the
+wrong specific set. Live queries against PPT's own API (`.env.local`
+created locally, key confirmed loaded, never committed — see
+"`.env.local` now exists locally" below) found:
+
+- `search=Porygon2&setName=Skyridge` → **0 results**. Sanity-checked the
+  param itself works (`search=Xatu&setName=Skyridge` → 2 real results),
+  and confirmed **PPT's catalog has zero Porygon-line cards of any kind
+  under Skyridge** (`search=Porygon&setName=Skyridge` → 0 results). The
+  Skyridge-specific hypothesis was simply wrong.
+- **Real reason /147 wasn't unique to Skyridge**: Aquapolis, the *other*
+  e-Card-era set with a matching e-Reader dot-code strip, *also* totals
+  147 cards. An unscoped `search=Porygon2` page-2 dump (offset=30,
+  matching the app's own real pagination) turned up two Aquapolis
+  Porygon printings at `103a/147`/`103b/147` — confirming both sets
+  legitimately share that denominator, so "/147 → Skyridge" was never a
+  unique inference to begin with.
+- **`search=Porygon2&setName=Aquapolis` → exact match, ground truth
+  confirmed**:
+  ```json
+  { "name": "Porygon2", "cardNumber": "028/147", "setName": "Aquapolis",
+    "hp": "70", "attacks": ["[2] Hypnotic Ray (20) ..."], "rarity": "Rare" }
+  ```
+  Every field (`name`, `cardNumber` → normalizes to 28/147, `hp`,
+  attack name) matches Gemini's read exactly. **Gemini's read was
+  entirely correct on this scan** — the miss is 100% on the lookup/
+  matching side, a genuine PPT crowding-out gap: a real, correctly
+  cataloged card that PPT's default relevance-sorted search never
+  surfaces within 60 merged Porygon2-name candidates (page 1 + page 2),
+  crowded out by dozens of Porygon/Porygon-Z promo and modern-set
+  variants.
+
+### Open design question — NOT built, needs explicit sign-off
+
+Given ground truth is confirmed and the card genuinely exists in PPT's
+catalog, a **4th search-fallback tier** — "read number's denominator
+matches a known set's total card count → scope the search to that set,"
+the same shape as test #49's combined name+number fallback — is worth
+considering. Real complexity worth weighing before building it:
+
+1. **The denominator isn't unique to one set.** This exact case (147)
+   collides between Aquapolis and Skyridge — a real fallback would need
+   to try multiple candidate sets per denominator, not assume a 1:1
+   mapping.
+2. **PPT provides no queryable `totalSetNumber`.** Every card record
+   returned had `"totalSetNumber": null` — there's no live field to
+   join against; this would require a hardcoded static map of
+   `{total count → [known set names]}`, maintained by hand and prone to
+   going stale as new sets release.
+3. **Cost**: each candidate set in the map adds one more PPT search
+   call (credits + latency) to an already-multi-step fallback chain
+   (page 1 → page 2 → combined name+number → this).
+
+Flagging for a deliberate decision, not shipping speculatively — see
+CLAUDE.md's "Recent / in-flight work" for the same note.
 
 ## Still outstanding (as of 2026-08-30, see CLAUDE.md for current state)
 
@@ -532,12 +567,13 @@ built without explicit sign-off.
   (Porygon2) is now a second confirmed case of that same fallback
   executing correctly and still coming back empty — a genuine
   catalog-coverage gap, not a fallback bug.
-- **Test #60's Skyridge hypothesis** (new): needs a scoped
-  `search=Porygon2&setName=Skyridge` (or `set=Skyridge`) query run
-  against PPT's live API to confirm whether card 28/147 genuinely exists
-  in their catalog under that set name. Blocked on API-key access this
-  session (no local `.env`/`.env.local`, not in the shell environment) —
-  see the "Test #60 root cause" section above.
+- **Test #60 — RESOLVED (2026-08-30)**: ground truth confirmed live
+  against PPT's own API (Porygon2, Aquapolis, 028/147 — see the "Ground
+  truth confirmed live" section above). The initial Skyridge-specific
+  hypothesis was wrong (PPT has zero Porygon-line cards under Skyridge);
+  the real card is Aquapolis, the other e-Card-era set that also totals
+  147 cards. Open design question (4th search-fallback tier) written up
+  but not built — needs explicit sign-off before shipping.
 - Trainer/Supporter tie-break question (test #53/#58): test #58
   (Grimsley's Move) is one clean-looking data point since the
   subtype-extraction fix deployed, but not confirmed decisive without

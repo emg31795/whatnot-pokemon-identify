@@ -130,6 +130,14 @@ with false certainty. This is deliberately closer to pallet.trade's own
   was folded into paid-only Scrydex (see
   `docs/pallet-trade-reverse-engineering.md`). **Buying more credits
   requires asking the user first** (see "When to ask before acting").
+  **A working `.env.local` with a real `POKEMONPRICETRACKER_API_KEY`
+  now exists locally** (created 2026-08-30, user's explicit go-ahead —
+  the earlier "never source/view this key" caution from prior sessions
+  is lifted). `.env.local` is git-ignored (confirmed via `git
+  check-ignore -v`) and must never be committed, logged, or printed in
+  full — a future session can `source .env.local` for real PPT API
+  verification (e.g. scoped `search=`/`setName=` queries) instead of
+  hitting the "no local API access" dead end test #60 hit initially.
 - **TCGplayer's public price-history endpoint** — unauthenticated,
   CORS-open, no API key needed. Used for real per-condition pricing
   (replaced a synthetic multiplier table entirely, see test #42 in
@@ -346,24 +354,31 @@ checklist before reporting something as finished:
   below — doesn't confirm the subtype signal was actually decisive (no
   logs pulled, and a screenshot alone can't show the candidate pool). See
   test #58 in `docs/test-cases.md`.
-- **Test #60 (2026-08-30) — ROOT CAUSE CONFIRMED via real Vercel logs, no
-  code fix shipped**: Porygon2 scan explicitly flagged wrong by the user
-  (matched to "Great Encounters" instead of what looks like a real
-  e-Reader-era printing). Logs confirm the read number "28/147" never
-  appeared in page 1, page 2, or the combined name+number search — same
-  class as tests #35/#37/#49, a genuine PPT catalog-coverage gap, not a
-  matching-code bug. **Open, unverified hypothesis**: "/147" total-count
-  + the e-Reader dot-code strip strongly suggest this is genuinely
-  Skyridge #28 — but confirming that against PPT's live API
-  (`search=Porygon2&setName=Skyridge`) is **blocked on API-key access**
-  this session (no local `.env`, key not in the shell environment). If
-  someone with the key confirms it, that opens a real design question:
-  whether a 4th search-fallback tier — "denominator matches a known set's
-  total card count → scope the search to that set" — is worth adding
-  (same shape as the test #49 combined-search fallback). **Not to be
-  built without explicit sign-off.** See test #60 in
-  `docs/test-cases.md` for the full log trace and the open verification
-  item.
+- **Test #60 (2026-08-30) — FULLY RESOLVED: root cause confirmed via
+  real Vercel logs, ground truth confirmed via a live scoped PPT API
+  query, no code fix shipped**: Porygon2 scan explicitly flagged wrong
+  by the user (matched to "Great Encounters" instead of the real card).
+  Logs confirmed the read number "28/147" never appeared in page 1,
+  page 2, or the combined name+number search — same class as tests
+  #35/#37/#49, a genuine PPT catalog-coverage gap, not a matching-code
+  bug. **Ground truth, confirmed live**: the real card is Porygon2,
+  **Aquapolis**, 028/147 — every field (name/number/HP/attack) matches
+  Gemini's read exactly, so Gemini's read was fully correct too; the
+  miss was 100% on the lookup side. The initial hypothesis that this was
+  specifically **Skyridge** was wrong — checked live and PPT has zero
+  Porygon-line cards under Skyridge at all. The "/147" reasoning wasn't
+  unique: Aquapolis, the other e-Card-era set, also totals 147 cards
+  (confirmed live — PPT has real `103a/147`/`103b/147` Porygon entries
+  under Aquapolis too). This opens a real design question — a 4th
+  search-fallback tier ("denominator matches a known set's total card
+  count → scope the search to that set," same shape as test #49's
+  combined-search fallback) — but real complexity was found worth
+  weighing first: the denominator isn't unique to one set (this case
+  alone collides between two), and PPT provides no queryable
+  `totalSetNumber` field to join against (always `null`), so it'd need a
+  hand-maintained static map. **Not to be built without explicit
+  sign-off.** See test #60 in `docs/test-cases.md` for the full log
+  trace, the live API queries, and the full design write-up.
 - **Open strategy question** (raised repeatedly, never resolved): whether
   to keep patching the matching/scoring model reactively as live tests
   surface issues, or pause for a dedicated pass adopting more of
