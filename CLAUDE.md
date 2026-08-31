@@ -379,6 +379,27 @@ checklist before reporting something as finished:
   hand-maintained static map. **Not to be built without explicit
   sign-off.** See test #60 in `docs/test-cases.md` for the full log
   trace, the live API queries, and the full design write-up.
+- **Tests #61-66 (2026-08-30)**: 6-scan investigation of a user report of
+  "a lot of incorrect scannings." 2 of 6 confirmed correct (Eternatus V,
+  Quaquaval ex — exact PPT number matches). 3 of 6 are the system
+  honestly flagging genuine ambiguity — no code bug (2 foil-glare
+  unreadable-number ties, 1 genuine PPT catalog-coverage gap same class
+  as tests #35/#37/#49/#60). **1 of 6 (test #63) is a real, new failure
+  class**: Gemini invented 3 different, all-wrong English translations
+  of an untranslated Japanese Supporter card's name across repeat scans
+  ("AZ's Solace"/"AZ's Comfort") — PPT's real name is **"AZ's
+  Tranquility"**, confirmed via live API query. Also confirmed via a live
+  query that PPT's search silently returns unrelated filler results
+  (not an empty array) for multi-word queries that match nothing — a
+  real API quirk worth remembering when debugging future "raw candidate
+  count > 0" logs that don't look right. And confirmed via source read
+  that `lookupCardPPT` (`api/identify.js:1073-1076`) gives up immediately
+  when the name filter yields zero survivors, entirely before the page-2/
+  combined-search number-based fallbacks further down ever get a chance
+  to run — even when a legible card number was read on another attempt.
+  **Open design question, not built**: a rescue path (number-scoped or
+  shorter-token search) for this specific "zero name-filter survivors"
+  case. See test #63 in `docs/test-cases.md` for the full write-up.
 - **Open strategy question** (raised repeatedly, never resolved): whether
   to keep patching the matching/scoring model reactively as live tests
   surface issues, or pause for a dedicated pass adopting more of

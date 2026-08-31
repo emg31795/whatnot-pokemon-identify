@@ -125,6 +125,15 @@ scans of the same card produced two different `stampType` values. Test
 #45 (Snorlax): `setName` read as "s10a" once and "s10b" on a repeat scan.
 Not a code bug — Gemini's vision output varying/hallucinating between
 calls on harder reads. Escalated significantly in test #50 (see below).
+**Test #63 (2026-08-30) adds a new flavor**: inconsistent *English
+translation* of the same untranslated Japanese card name across 3 repeat
+scans ("AZ's Solace" twice, "AZ's Comfort" once) — and all 3 guesses were
+simply wrong; PPT's real name for the card is "AZ's Tranquility." Distinct
+from prior instability cases (which varied a structured field like
+cardNumber/stampType/setName) — here the free-text name itself is
+unstable AND inaccurate, which is a harder problem since there's no
+"correct" deterministic translation for Gemini to converge on without
+already knowing PPT's specific chosen English name.
 
 ## Number-weight / oddity tie-break fix (2026-08-27)
 
@@ -597,6 +606,105 @@ directly before proposing anything:
 CLAUDE.md "Recent / in-flight work"). Option 3 (dual-frame) is the most
 structurally promising follow-up if 1+2 don't move the needle. Options 4
 and 5 remain lower priority.
+
+## Tests #61-66 (2026-08-30, 6 scans from `blorgotron`'s stream, root-caused via real Vercel logs + live PPT API queries)
+
+User reported "a lot of incorrect scannings" across 6 screenshots with no
+specific ground truth given. Investigated via real Vercel runtime logs
+(matching the exact scan timestamps) plus live PPT API queries (using the
+new local `.env.local`) rather than guessing from the screenshots alone.
+**Result: 2 of 6 are confirmed correct, 3 of 6 are the system honestly
+flagging genuine ambiguity/gaps (working as designed, not bugs), and 1 of
+6 is a real, new, previously-undocumented failure class.**
+
+| # | Date | Card shown | Gemini read (from logs) | Verdict |
+|---|---|---|---|---|
+| 61 | 2026-08-30 | Chien-Pao ex - 274/193, SV02: Paldea Evolved | `cardNumber: null` (both repeat scans identical) | **No bug.** 8 real PPT candidates share identical HP/attack/subtype ("ex", 220 HP, "Hail Blade") differing ONLY by number (274/193 down to 061/193) — a genuine holo-glare legibility miss, not a code issue. Low confidence + explicit warning shown correctly. |
+| 62 | 2026-08-30 | Eternatus V, SWSH03: Darkness Ablaze | `cardNumber: "116/189"` (both scans identical) | **Confirmed correct.** Exact match against a real PPT candidate (SWSH03: Darkness Ablaze, 116/189), clean score, no warning. |
+| 63 | 2026-08-30 | "AZ's Comfort" / "AZ's Solace" (Japanese Supporter) | 3 different reads across repeat scans: `"AZ's Solace"`/null, `"AZ's Comfort"`/null, `"AZ's Solace"`/"087/066" | **FAIL — real, new root cause, see below.** |
+| 64 | 2026-08-30 | Quaquaval ex - 260/193, SV02: Paldea Evolved | `cardNumber: "260/193"` (both scans identical) | **Confirmed correct.** Exact match (SV02: Paldea Evolved, Hyper Rare), bestScore=35, tieCount=1, no warning. |
+| 65 | 2026-08-30 | Mega Darkrai ex - 120/084, ME05: Pitch Black | `cardNumber: null` (both scans identical) | **No bug.** Same shape as #61 — 4 real candidates tied on HP/attack/subtype, differing only by number, genuinely unreadable this scan (foil glare). Low confidence + warning shown correctly. |
+| 66 | 2026-08-30 | Tauros (Mirror Holo), Japanese, shown as "Start Deck 100 Battle Collection" | `cardNumber: "172/165"` (both scans identical) | **No code bug — same class as #35/#37/#49/#60.** Full fallback chain executed correctly (page 1: 30 + page 2: 26 = 56 merged candidates, then combined name+number search "Tauros 172/165") and genuinely found nothing — "172/165" doesn't exist anywhere in PPT's Tauros catalog. Real PPT does carry OTHER "/165"-denominator Tauros prints (128/165, 3 pattern variants) — worth noting as a real coverage gap, not proof Gemini misread the number. |
+
+### Test #63 root cause — CONFIRMED via real Vercel logs + live PPT API queries (2026-08-30): a new failure class, distinct from every prior documented one
+
+Real log trace (3 repeat scans of the same physical card, ~30s apart):
+
+```
+[identify] Gemini read: cardName="AZ's Solace",  cardNumber=null,        language=Japanese
+[lookup]   search=AZ's Solace  language=Japanese  raw candidate count=30  sample=[Alakazam V - 105/100, ...]
+[lookup]   zero candidates survived the name filter for name= AZ's Solace
+
+[identify] Gemini read: cardName="AZ's Comfort", cardNumber=null,        language=Japanese
+[lookup]   search=AZ's Comfort language=Japanese  raw candidate count=30  sample=[Alakazam V - 105/100, ...]
+[lookup]   zero candidates survived the name filter for name= AZ's Comfort
+
+[identify] Gemini read: cardName="AZ's Solace",  cardNumber="087/066",   language=Japanese
+[lookup]   search=AZ's Solace  language=Japanese  raw candidate count=30  sample=[Alakazam V - 105/100, ...]
+[lookup]   zero candidates survived the name filter for name= AZ's Solace
+```
+
+**Live PPT API verification** (`search=` queries run directly against
+`pokemonpricetracker.com/api/v2/cards`, not from logs):
+
+- `search=AZ's Comfort` / `search=AZ Comfort` (with `language=japanese`)
+  → 30 results, but **every one is unrelated filler** (Alakazam V,
+  Rayquaza, Zamazenta — none contain "AZ" as a substring). Confirmed
+  PPT's search endpoint does NOT return an empty array when a multi-word
+  query matches nothing — it silently falls back to unrelated results. A
+  narrower `search=AZs Comfort` (apostrophe removed as a contraction) and
+  `search=Comfort` alone both correctly returned 0.
+- `search=AZ` alone (bare) → exactly 4 real, correct "AZ" (the Trainer
+  character) cards. Confirms the search endpoint filters correctly on
+  short/single-token queries.
+- `search=AZ's` → **3 real results, all named "AZ's Tranquility"**
+  (`M4: Ninja Spinner`, Japanese, numbers 118/083, 108/083, 075/083). A
+  broader unscoped search for `"AZ's Tranquility"` also surfaced 3
+  English-market printings (`ME04: Chaos Rising`, 120/086, 106/086,
+  076/086 — the English-set counterpart of the Japanese `M4` set).
+
+**Real root cause, confirmed**: PPT's actual card name for this printing
+is **"AZ's Tranquility"** — a name Gemini never produced in 3 attempts
+("Solace" twice, "Comfort" once). This is a genuine **English-translation
+mismatch**: the card has no widely-known official English name (Japan-
+market Supporter), so Gemini is inventing its own plausible translation
+of the Japanese text each time, and none of its 3 guesses happened to
+match PPT's actual chosen translation. The app's own name filter
+(`normalizeNameForMatch(c.name).includes(wantedName)`) correctly rejected
+every attempt — it did NOT get fooled by the unrelated 30-result filler
+PPT returned — so the honest "couldn't confidently match" message shown
+to the user was the right call given what the pipeline had to work with.
+**Note**: none of the 6 real "AZ's Tranquility" printings found (3 JP +
+3 EN) have the denominator "066" that Gemini read on attempt 3
+("087/066") — so even a perfect name match wouldn't have resolved this
+scan; that specific read is either a misread (glare/instability, same
+tracked concern as tests #23/#35/#45/#50) or a printing PPT doesn't
+carry. Ground truth for the *exact* printing is not fully confirmed —
+only the real card *name* is.
+
+**A real architectural gap, confirmed by reading `lookupCardPPT` in
+`api/identify.js`**: when the name filter yields **zero** survivors
+(`filtered.length === 0`, `api/identify.js:1073-1076`), the function
+returns `{ notFound: true }` immediately — this happens **before** the
+page-2 pagination fallback and the combined name+number search fallback
+(both further down, gated on `best` existing, i.e. on at least one
+candidate having survived the name filter). So even on the 3rd scan,
+where Gemini read a specific, legible card number ("087/066"), that
+number was never used at all — the wrong translated name killed the
+lookup before number-matching ever had a chance to run. This is a
+different failure point than every previously-documented crowding/
+coverage-gap case (#35/#37/#49/#60/#66 above), which all fail *after*
+clearing the name filter.
+
+**Open follow-up, not built — needs a deliberate decision**: when zero
+candidates survive the name filter for a Japanese-language read AND a
+legible `cardNumber` was captured on any attempt, consider a rescue
+search scoped by number (or a shorter/partial name token, since bare
+`search=AZ` worked fine) instead of giving up immediately. Real
+complexity worth weighing: PPT's silent-fallback-to-filler behavior on
+unmatched multi-word queries (found above) makes any looser search
+harder to trust without still requiring strict local filtering after the
+fact. Not shipped — flagging for sign-off, per project convention.
 
 ## Related docs
 
