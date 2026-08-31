@@ -269,6 +269,42 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Trainer-subtype extraction fix (commit `d589d46`) — DEPLOYED
+  2026-08-30** (`dpl_GnxKLpHTkcN8QuVXhY1gPgpmpk1P`, aliased to
+  `whatnot-pokemon-identify.vercel.app`). First non-Pokémon (Trainer/
+  Supporter) card ever scanned (test #53, a Drayton) found via real
+  Vercel logs that `normalizePptCard`'s `subtypes` extraction only ever
+  recognized Pokémon power tags (VMAX/VSTAR/GX/EX/ex/V/BREAK) in the
+  candidate name — Trainer subtypes (Supporter/Item/Stadium/Tool) were
+  never captured even though PPT's raw payload carries them directly on
+  `pokemonType` (`"Trainer - <subtype>"`), so the subtype scoring signal
+  was silently dead on every Trainer card. Same dead-signal class as the
+  earlier `attackName` fix. Shipped as an isolated fix, deliberately NOT
+  bundled with the deeper tie-break question below. Deployed via the
+  Vercel MCP `deploy_to_vercel` tool with plain-text content, verified
+  byte-exact against the local file (sha1 match) before transcription
+  into the tool call. Verified: deployment state `READY` and aliased to
+  production; build log confirms exactly 3 files downloaded; live `POST
+  /api/identify` with `{}` returns the real `400
+  {"error":"Missing imageBase64"}` (not a stub); runtime logs confirm
+  that exact request was served by `dpl_GnxKLpHTkcN8QuVXhY1gPgpmpk1P`.
+  **Not yet confirmed via a live scan**: this fix would not have changed
+  either of test #53's two specific scans (all 4 real candidates shared
+  the same subtype) — what it fixes going forward is any future
+  Trainer-card scan where distinguishable subtypes exist among same-name
+  candidates. Needs a live scan where that scenario actually applies.
+- **Open: Trainer/Supporter same-name tie-break design question** (new,
+  from test #53): for Trainer cards, `number`+`set` are the ONLY signals
+  that can ever break a tie between same-name printings — HP/attackName
+  are always N/A by card type, and subtype (even fixed, above) can't
+  discriminate between printings that share the same subtype (e.g. two
+  different-set "Drayton" Supporter printings). This makes Trainer-card
+  matching structurally more fragile to a bad Gemini number read than
+  Pokémon-card matching, which has three independent tie-break signals
+  in reserve. Needs a deliberate decision (e.g. widen the
+  ambiguous-match safety net's messaging for Trainer cards specifically,
+  or something else) — not a reactive patch. See ROADMAP.md's Phase 1
+  checklist and test #53 in `docs/test-cases.md`.
 - **`thinkingConfig.thinkingLevel: "low"` + explicit
   `media_resolution: "MEDIA_RESOLUTION_HIGH"` (commit `3e895b1`) — DEPLOYED
   2026-08-30** (`dpl_5eUq8D9vMY755WTnSRrNvggYQKvX`, aliased to
