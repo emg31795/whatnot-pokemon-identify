@@ -432,6 +432,29 @@ checklist before reporting something as finished:
   check above. The original AZ's Tranquility card won't necessarily
   retest cleanly since Gemini's translation problem is untouched. See
   test #63 in `docs/test-cases.md` for the full write-up.
+- **Research (2026-08-30/31): additional scoring signals — nothing
+  built, one real finding worth acting on.** Live-checked `weakness`/
+  `resistance`/`retreatCost`/`energyType` against real PPT data: all
+  reliably populated but confirmed redundant with existing HP/attack
+  tie groups (verified against the real test #61 tie set — identical
+  across every tied candidate), and structurally `null` for every
+  Trainer card, so none of them help the Trainer/Supporter gap above.
+  `artist` is real but too sparse (~40-60% populated) and too hard for
+  Gemini to OCR reliably to trust yet. **Regulation mark is a hard dead
+  end — confirmed via PPT's own full field list that no such field
+  exists in their schema at all**, independent of Gemini's read
+  reliability. **`rarity` is a real, actionable finding**: populated on
+  100% of every real candidate sampled, and confirmed via source
+  (`grep -n "\.rarity" api/identify.js` → zero hits) to be completely
+  unused in scoring despite being fetched on every lookup already at
+  zero extra cost — same dead-signal class as the historical
+  `attackName`/Trainer-subtype bugs. It's also the only reliably-
+  populated field left unused for Trainer cards specifically, and
+  checked against the real Drayton tie set it does meaningfully
+  discriminate (though not completely). Not built — see the full
+  write-up in `docs/test-cases.md` for the two separable pieces (score
+  on existing `rarity` data vs. also asking Gemini to read it) and needs
+  explicit sign-off before either is built.
 - **Open strategy question** (raised repeatedly, never resolved): whether
   to keep patching the matching/scoring model reactively as live tests
   surface issues, or pause for a dedicated pass adopting more of

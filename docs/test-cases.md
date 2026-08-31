@@ -610,6 +610,156 @@ CLAUDE.md "Recent / in-flight work"). Option 3 (dual-frame) is the most
 structurally promising follow-up if 1+2 don't move the needle. Options 4
 and 5 remain lower priority.
 
+## Research: additional scoring/matching signals beyond number/hp/subtype/set/attackName/stampType (2026-08-30/31)
+
+Prompted by wanting to know if any other card traits are worth adding as
+tie-break signals, especially for the Trainer/Supporter tie-break gap
+(test #53) — Trainer cards structurally lack HP/attackName/subtype
+discrimination today. Investigated via live PPT API queries (not
+assumption) and a source-code check of what's actually scored today, per
+this project's standing "verify, don't guess" convention. **Findings
+below are a write-up of an open decision — nothing built.**
+
+### 1. `weakness` / `resistance` / `retreatCost` — reliably populated, but genuinely useless for the failure classes this project actually has
+
+Live-checked across 4 species/eras (Pikachu, Charizard, Magikarp, Ditto,
+~60 real candidate records): `weakness` and `retreatCost` are populated
+on essentially every Pokémon-type candidate; `resistance` is frequently
+either a real value or a genuine "None" (not missing data, an actual
+game fact), with some real gaps.
+
+**But**: checked directly against the real tie set from test #61
+(Chien-Pao ex, 8 candidates genuinely tied on HP/attack/subtype) — every
+single one shares the *identical* `weakness` ("Mx2") and `retreatCost`
+("2"). This isn't a coincidence: weakness/resistance/retreat cost are
+fixed by a card's exact game text, the same text that already determines
+HP and attack — so within any group that already ties on HP+attack
+(the actual recurring failure mode in this project's history, e.g. tests
+#9/#12/#14/#15/#19/#20/#61/#65), these fields will essentially always be
+identical too. Reliably populated ≠ useful signal here.
+
+**Also**: confirmed all three are structurally `null` for every real
+Trainer/Supporter candidate checked (Drayton, test #53's own case) —
+this is a TCG game-rules fact (only Pokémon cards have weakness/
+resistance/retreat cost), not a PPT data gap. **Zero help for the
+Trainer/Supporter tie-break gap specifically.**
+
+**Verdict: not worth adding.**
+
+### 2. `artist` — real signal sometimes, too unreliable on both ends to trust
+
+Live-checked: roughly 40-60% populated across a spot sample (much
+sparser on promo-heavy pools — many `null`). Does occasionally differ
+*within* a real tie group (test #61's Chien-Pao ex: 261/193 = "kodama"
+vs the 061/193 reprints = "CG Works" vs several `null`), so it's not
+purely redundant like weakness/retreat. But two independent reliability
+problems stack: (a) PPT's own coverage is spotty even when the signal
+would help, and (b) the on-card artist credit is small printed text —
+a much higher-risk OCR ask for a live video-frame capture than
+`cardNumber`/`hp`, which this project's own history (Gemini
+read-instability, tests #23/#35/#45/#50/#63) already shows Gemini
+struggles with on *easier* text. Gemini also isn't currently asked for
+this field at all.
+
+**Verdict: not recommended without further work** — real but weak on
+both the data-coverage and Gemini-legibility axes.
+
+### 3. `rarity` — the one genuinely promising candidate; a real dead-signal bug, same class as the historical `attackName`/Trainer-subtype fixes
+
+Live-checked: `rarity` was populated on **100% of every real candidate**
+pulled across every query this session (Pikachu/Charizard/Magikarp/
+Ditto/Chien-Pao ex/Drayton — dozens of records, zero nulls). Source-code
+check (`grep -n "\.rarity" api/identify.js`) confirms **zero references
+anywhere in the codebase** — `normalizePptCard` doesn't even copy it
+onto the normalized candidate object, despite it being fetched on every
+single lookup already, at zero extra API cost. This is the exact same
+"reliably-present-in-data-we-already-have, silently unused" pattern as
+the historical `attackName` bug (test #33-ish) and the Trainer-subtype
+bug (test #53) — both real, both previously fixed.
+
+**Does it actually break ties the current signals can't?** Checked
+against the real test #61 tie set: the 8 tied Chien-Pao ex candidates
+carry rarities of Hyper Rare / Special Illustration Rare / Ultra Rare /
+Double Rare (×4, correctly — those four are literal duplicate reprint
+rows for the same nominal 061/193 printing) — genuinely discriminates
+most of an otherwise-fully-tied group.
+
+**Critically, for the Trainer/Supporter gap specifically** (test #53):
+rarity is the ONE reliably-populated field left unused for Trainer
+cards, since weakness/resistance/retreatCost/energyType are all
+structurally null there. Checked against the real Drayton tie set (test
+#53's own case): rarity populated on 3 of 4 real candidates
+(Special Illustration Rare / Ultra Rare / Uncommon / Special Illustration
+Rare) — discriminates 2 of the 4 from each other and from the SIR pair,
+though the two Special Illustration Rare printings (different sets)
+still share it, so this is a real, meaningful partial improvement, not
+a complete fix on its own.
+
+**Can Gemini plausibly read it?** Gemini isn't currently asked for
+rarity at all. Unlike a literal tiny rarity *symbol* (a small corner
+icon) or the regulation mark below, the *rarity tier itself* corresponds
+to dramatically different visual card treatments in modern Pokémon TCG
+(full-art vs. extended-art vs. plain small-art border) — plausibly a
+much easier, more holistic visual read than fine print, similar in kind
+to how Gemini already reads `stampType`. This is a plausibility argument
+only, not a confirmed one — **would need a live-scan check of Gemini's
+actual read reliability before trusting it**, same as every other new
+signal added to this project historically.
+
+**Verdict: worth a deliberate build decision.** Two separable pieces:
+(a) start scoring on `rarity` using data already fetched today, zero new
+Gemini prompt/schema change, zero extra API cost — the safer, more
+contained piece; (b) additionally ask Gemini to read/infer rarity from
+the frame, which needs live-scan validation of read reliability before
+being trusted as a scoring input. Not built — flagging for sign-off.
+
+### 4. `energyType` — same conclusion as weakness/retreat: reliably populated, but redundant for the failure classes this project has
+
+Live-checked: consistently populated for Pokémon-type candidates
+(structurally `null` for Trainer cards, same as weakness/etc). Checked
+directly against the test #61 tie set: all 8 tied Chien-Pao ex
+candidates share identical `energyType: ["Water"]` — again, same root
+cause as weakness/retreat (a Pokémon's elemental type is tied to its
+game text, which is what already determines the existing HP/attack tie
+group). A genuine exception exists for classic-era "Delta Species" cards
+(confirmed live: "Charizard (Delta Species)" carries `energyType`
+`"Lightning Metal"` instead of the expected Fire) — but this is a
+narrow, decades-old niche mechanic from one specific 2005 set line, not
+relevant to the failure classes actually tracked in this project's test
+log.
+
+**Verdict: not worth adding** — same redundancy problem as
+weakness/resistance/retreatCost, for the same underlying reason.
+
+### 5. Regulation mark — hard dead end, confirmed via PPT's own schema, not assumed
+
+Dumped every field PPT's raw card record actually contains (`jq '.data[0]
+| keys'` on a live query): `artist, attacks, cardNumber, cardType,
+createdAt, dataCompleteness, energyType, externalCatalogId, flavorText,
+hp, id, imageCdnUrl*, name, needsDetailedScrape, pokemonType, prices,
+printingsAvailable, rarity, resistance, retreatCost, setId, setName,
+stage, tcgPlayerId, tcgPlayerUrl, totalSetNumber, updatedAt, variants,
+weakness` — **no field resembling a regulation mark exists anywhere in
+PPT's schema.** This settles the question regardless of how reliably
+Gemini could read the small corner letter from a live video frame (a
+real, separate risk the user flagged, and one worth taking seriously
+given this project's documented history of small/subtle-detail read
+failures) — there's nothing in PPT's data to match it against even with
+a perfect read.
+
+**Verdict: dead end. Not worth pursuing** unless PPT adds this field to
+their own API in the future.
+
+### Summary table
+
+| Trait | PPT population | Redundant with existing signals? | Helps Trainer/Supporter gap? | Gemini currently asked? | Verdict |
+|---|---|---|---|---|---|
+| weakness/resistance/retreatCost | High (Pokémon only) | Yes — always ties with HP/attack | No (always null on Trainer) | No | Not worth adding |
+| artist | ~40-60%, spotty | No, but unreliable both ways | Unclear, too sparse to test | No | Not recommended yet |
+| **rarity** | **100% in every sample** | **No — genuinely discriminates** | **Yes — only usable signal left for Trainer cards** | No | **Worth a build decision** |
+| energyType | High (Pokémon only) | Yes — always ties with HP/attack | No (always null on Trainer) | No | Not worth adding |
+| regulation mark | **Not in PPT's schema at all** | N/A | N/A | No | Dead end |
+
 ## Tests #61-66 (2026-08-30, 6 scans from `blorgotron`'s stream, root-caused via real Vercel logs + live PPT API queries)
 
 User reported "a lot of incorrect scannings" across 6 screenshots with no
