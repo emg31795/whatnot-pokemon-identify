@@ -696,15 +696,60 @@ different failure point than every previously-documented crowding/
 coverage-gap case (#35/#37/#49/#60/#66 above), which all fail *after*
 clearing the name filter.
 
-**Open follow-up, not built — needs a deliberate decision**: when zero
-candidates survive the name filter for a Japanese-language read AND a
-legible `cardNumber` was captured on any attempt, consider a rescue
-search scoped by number (or a shorter/partial name token, since bare
-`search=AZ` worked fine) instead of giving up immediately. Real
-complexity worth weighing: PPT's silent-fallback-to-filler behavior on
-unmatched multi-word queries (found above) makes any looser search
-harder to trust without still requiring strict local filtering after the
-fact. Not shipped — flagging for sign-off, per project convention.
+### Fix shipped — number-scoped rescue path, DEPLOYED 2026-08-30/31 (`dpl_2hK8UGLwx2kMMkxHuhCZTSsjooBz`)
+
+Per explicit sign-off, scoped narrowly to exactly the architectural gap
+above (item (1) from the design write-up) — deliberately NOT attempting
+anything for Gemini's mistranslated-name problem itself (item (2),
+remains open/unsolved, see below).
+
+**What shipped**: in `lookupCardPPT` (`api/identify.js`), when
+`filtered.length === 0` (zero name-filter survivors) AND a legible
+`read.cardNumber` exists, try ONE combined name+number search (same
+query shape as the existing combined-search fallback), then filter the
+raw results **strictly by exact number match on the raw `cardNumber`
+field — never by name, and never trusting a nonzero raw count** (per the
+live-confirmed PPT filler-result quirk from this test). If that finds a
+match, an honest disclosure note fires (caps confidence at Medium,
+explicitly tells the user the name never matched, only the number did).
+If no cardNumber was read, or the rescue search still finds nothing,
+behavior is byte-for-byte unchanged from before: `{ notFound: true }`.
+Purely additive — doesn't touch the page-2/combined-search fallbacks
+used once a candidate already clears the name filter, so no regression
+risk to the crowding-gap cases those already handle (tests
+#35/#37/#49/#60/#66).
+
+**Deploy process**: file is 91KB/1700 lines — too large to safely
+transcribe in a single pass per this project's established large-file
+discipline. Read in 4 verified chunks, reconstructed to a local scratch
+file, and hash-compared against the real source (`sha1
+1d9c2d5bcd8512afc45fe6860d6b33468e3e9c23`) *before* deploying — this
+caught a real transcription error (a `̀-ͯ` regex escape got
+mangled into literal Unicode combining characters on the first attempt),
+fixed via a direct non-generative copy from the verified source (Python
+line-replace, not retyped), then re-verified hash-identical before
+the actual deploy. Confirmed: deployment state `READY`, aliased to
+production; build log confirms exactly 3 files downloaded; live `POST
+/api/identify {}` returns the real `400 {"error":"Missing
+imageBase64"}` (not a stub); runtime logs confirm that exact request was
+served by `dpl_2hK8UGLwx2kMMkxHuhCZTSsjooBz`. A real live scan
+(Riolu, GG26/GG70, Crown Zenith Galarian Gallery) also came through
+cleanly on this exact deployment moments after shipping — confirms the
+deploy isn't broken generally, though it's not a scan of the specific
+rescue-path scenario this fix targets.
+
+**Not yet confirmed**: needs a live rescan that actually hits the
+targeted path — zero name-filter survivors AND a legible cardNumber.
+"AZ's Tranquility" itself won't retest cleanly (Gemini's translation
+problem is untouched, so it may or may not read a number at all on a
+future attempt) — needs either that exact card recurring on stream, or
+another card that hits the same failure shape (wrong/unmatched name +
+legible number).
+
+**Left alone, per explicit instruction**: item (2) — getting Gemini to
+converge on PPT's actual chosen translation for untranslated Japanese
+card names — remains unsolved, with no proposed design. Not attempted
+this round.
 
 ## Related docs
 

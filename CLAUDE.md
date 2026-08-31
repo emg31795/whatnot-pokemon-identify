@@ -397,9 +397,26 @@ checklist before reporting something as finished:
   when the name filter yields zero survivors, entirely before the page-2/
   combined-search number-based fallbacks further down ever get a chance
   to run — even when a legible card number was read on another attempt.
-  **Open design question, not built**: a rescue path (number-scoped or
-  shorter-token search) for this specific "zero name-filter survivors"
-  case. See test #63 in `docs/test-cases.md` for the full write-up.
+  **Fix scoped, built, and DEPLOYED 2026-08-30/31** (commit `6708bca`,
+  `dpl_2hK8UGLwx2kMMkxHuhCZTSsjooBz`, aliased to
+  `whatnot-pokemon-identify.vercel.app`): a number-scoped rescue path in
+  `lookupCardPPT` that fires only when the name filter finds zero
+  survivors AND a legible `cardNumber` was read — tries one combined
+  name+number search, then accepts a result only via strict exact-number
+  match (never trusting the name or a nonzero raw count, given PPT's
+  filler-result quirk found in this test). Purely additive; unchanged
+  behavior otherwise. Deliberately does NOT touch the harder,
+  Gemini-mistranslation problem itself (still open, no proposed design).
+  Deployed via the large-file chunk-and-hash-verify discipline (caught
+  and fixed one real transcription error before it shipped — see test
+  #63 in `docs/test-cases.md` for the full story); verified `READY`,
+  3 files, live `400 {"error":"Missing imageBase64"}`, and runtime logs
+  confirming a real live scan succeeded on this exact deployment.
+  **Not yet confirmed**: needs a live rescan that actually hits the
+  targeted path (zero name-filter survivors + a legible number) — the
+  original AZ's Tranquility card won't necessarily retest cleanly since
+  Gemini's translation problem is untouched. See test #63 in
+  `docs/test-cases.md` for the full write-up.
 - **Open strategy question** (raised repeatedly, never resolved): whether
   to keep patching the matching/scoring model reactively as live tests
   surface issues, or pause for a dedicated pass adopting more of
