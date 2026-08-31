@@ -1070,9 +1070,62 @@ async function lookupCardPPT(read) {
   const wantedName = normalizeNameForMatch(matchName);
   let filtered = rawList.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
 
+  // FIX (2026-08-30, test #63 — "AZ's Comfort"/"AZ's Solace"): this branch
+  // used to give up immediately and unconditionally the moment the name
+  // filter passed zero candidates — even when Gemini had read a specific,
+  // legible cardNumber on this or a prior attempt. Real logs showed an
+  // untranslated Japanese Supporter card where Gemini invented 3 different
+  // English names across repeat scans, none matching PPT's actual name
+  // ("AZ's Tranquility") — a wrong/mistranslated cardName permanently
+  // blocked the page-2/combined-search fallbacks further down, since both
+  // are gated on `best` existing, which requires the name filter to have
+  // passed at least one candidate first. This is a different failure point
+  // than every crowding/coverage-gap case those fallbacks already handle
+  // (tests #35/#37/#49/#60/#66) — this one fails BEFORE ever reaching them,
+  // and no amount of pagination or query-widening helps when the name
+  // itself is wrong.
+  //
+  // Rescue path: if a legible cardNumber was read, try ONE more search
+  // combining name+number — the same query shape as the combined-search
+  // fallback below, already proven to work against PPT's real API (tests
+  // #49/#50) — then filter the results STRICTLY BY NUMBER, never by name.
+  // This is deliberate: live testing (test #63) confirmed PPT's `search`
+  // endpoint silently returns unrelated filler results instead of an empty
+  // array for multi-word queries that match nothing, so a nonzero raw
+  // candidate count here proves nothing on its own — only a candidate
+  // whose own cardNumber field exactly matches the read number is ever
+  // accepted. The (already-proven-wrong) name is never trusted again in
+  // this branch. If no legible cardNumber exists, or the rescue search
+  // still finds no exact number match, behavior is unchanged from before:
+  // `{ notFound: true }`.
+  let nameFilterRescuedByNumber = false;
   if (filtered.length === 0) {
     console.log("[lookup] zero candidates survived the name filter for name=", read.cardName);
-    return { notFound: true };
+
+    if (read.cardNumber) {
+      const rescueQuery = `${read.cardName} ${read.cardNumber}`;
+      console.log(`[lookup] zero name-filter survivors but a legible cardNumber was read — trying number-scoped rescue search= "${rescueQuery}"`);
+      const rescueResult = await fetchPokemonPriceTracker(rescueQuery, { language: read.language });
+      if (rescueResult && rescueResult.error === "rate-limited") return { error: "rate-limited", retryAfter: rescueResult.retryAfter, isDailyLimit: rescueResult.isDailyLimit };
+      const rescueList = rescueResult
+        ? Array.isArray(rescueResult.data)
+          ? rescueResult.data
+          : Array.isArray(rescueResult)
+          ? rescueResult
+          : []
+        : [];
+      console.log("[lookup] rescue search raw candidate count=", rescueList.length);
+      const rescueFiltered = rescueList.filter((c) => numbersMatch(read.cardNumber, c.cardNumber).match);
+      console.log("[lookup] rescue search candidates with exact number match=", rescueFiltered.length);
+      if (rescueFiltered.length > 0) {
+        filtered = rescueFiltered;
+        nameFilterRescuedByNumber = true;
+      }
+    }
+
+    if (filtered.length === 0) {
+      return { notFound: true };
+    }
   }
 
   let candidates = filtered.map(normalizePptCard);
@@ -1234,6 +1287,21 @@ async function lookupCardPPT(read) {
         console.log(`[lookup] NO NUMBER MATCH IN POOL: read number=${read.cardNumber}, language=${read.language}, best=${best.name} ${best.number} (matched on other signals only)`);
       }
     }
+  }
+
+  // FIX (2026-08-30, test #63): honest disclosure for the rescue path
+  // above — this match was found ONLY because its card number matched
+  // exactly; the card's NAME never matched anything in our search at all
+  // (most likely an untranslated or mistranslated read). Distinct from
+  // the "weak number match" case below (different numbering schemes) —
+  // here the number match is exact and trustworthy, but the name is
+  // outright unverified, which is unusual enough to always disclose
+  // regardless of how high the underlying score is.
+  if (!ambiguousNote && nameFilterRescuedByNumber) {
+    matchConfidence = matchConfidence === "High" ? "Medium" : matchConfidence;
+    ambiguousNote =
+      `The card name we read ("${read.cardName}") didn't match anything in our database — this match was found using only the card number ("${read.cardNumber}"), which matched exactly. This may mean the name was misread or mistranslated; verify the card name/printing before trusting this match or price.`;
+    console.log(`[lookup] NAME FILTER RESCUED BY NUMBER: read name="${read.cardName}" matched nothing, but number=${read.cardNumber} matched best=${best.name} ${best.number} exactly`);
   }
 
   if (!ambiguousNote && tieCount >= 2) {
