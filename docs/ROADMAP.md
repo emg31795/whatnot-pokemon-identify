@@ -50,6 +50,27 @@ for the fix history.
 - [ ] Decision made on the open strategy question (patch reactively vs.
       a dedicated pass adopting more of pallet.trade's hard
       "reject on number mismatch" model — see build-status.md part 4)
+- [x] Trainer subtype-extraction bug fixed — `normalizePptCard` now
+      pulls Trainer subtypes (Supporter/Item/Stadium/Tool/etc.) from
+      PPT's `pokemonType` field, mirroring the earlier `attackName` fix.
+      Deployed 2026-08-30 (`dpl_GnxKLpHTkcN8QuVXhY1gPgpmpk1P`, commit
+      `d589d46`), build/live-endpoint/runtime-log verified per CLAUDE.md's
+      deploy checklist. Shipped as an isolated fix, deliberately NOT
+      bundled with the item below — see test #53 in test-cases.md.
+- [ ] **Trainer/Supporter same-name tie-break design question** — test
+      #53 (first non-Pokémon card scanned) found this is more than the
+      extraction bug above: for Trainer cards, `number`+`set` are the
+      ONLY signals that can ever break a tie between same-name printings
+      — HP/attackName are always N/A by card type, and subtype (even
+      fixed) can't discriminate between printings that share the same
+      subtype (e.g. two different-set "Drayton" Supporter printings).
+      This makes Trainer-card matching structurally more fragile to a
+      bad Gemini number read than Pokémon-card matching, which has three
+      independent tie-break signals in reserve. Needs a deliberate
+      decision on how to handle this class of ambiguity (e.g. widen the
+      ambiguous-match safety net's messaging for Trainer cards
+      specifically, or something else) — not something to patch
+      reactively.
 
 **Do not start Phase 2 work until this phase's checklist above is
 substantially complete** — per the user's explicit direction, each build

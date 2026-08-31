@@ -373,6 +373,94 @@ original short-wait message). Committed as `02e3942`.
 
 **Resolved by the user directly**: bought 200,000 more PPT credits for $5.
 
+## Test #52 — Great Tusk ex: clean PASS, first live scan after repo migration (2026-08-30)
+
+Great Tusk ex, SV01: Scarlet & Violet Base Set, 246/198, English,
+Holofoil. Extension showed "Great Tusk ex - 246/198", SV01: Scarlet &
+Violet Base Set, Read: High / Match: High, none stamp, Market
+(Holofoil) $13.28. Condition prices: NM $13.28, LP $12.08, MP $8.52, HP
+$7.93, DMG $5.68. Scan cost $0.0007. **PASS — correct card and price.**
+
+Confirms two things end-to-end: (1) the reloaded Chrome extension from
+`~/Documents/whatnot-pokemon-extension/extension` (post repo migration)
+works correctly against the live backend; (2) the current deployed
+backend (post Gemini `thinkingLevel`/`media_resolution` fix, commit
+`3e895b1`) behaves correctly on a straightforward English card. **Not a
+hard/failure-class card** (see the "Open reliability concern" section
+above and CLAUDE.md's "What 'rescan' means" note) — doesn't confirm the
+read-instability fix itself. Still watching for that on a Japanese,
+promo/alphanumeric-number, or full-art/ex card as one naturally comes up
+on stream.
+
+## Test #53 — Drayton (Trainer/Supporter): first non-Pokémon card scanned, real card-type gap confirmed via logs (2026-08-30)
+
+Drayton, SV08: Surging Sparks, English Trainer/Supporter card (no HP, no
+attacks). Two repeat scans 10s apart both showed "couldn't confidently
+match." Vercel runtime logs (`dep=dpl_5eUq8D9vMY755WTnSRrNvggYQKvX`)
+pulled per CLAUDE.md convention before proposing anything:
+
+- **Scan 1**: Gemini read `cardNumber: null`, own `reason` field said
+  glare obscured the number. HP/attackName genuinely null (not
+  applicable to a Trainer card). PPT returned 4 real "Drayton"
+  candidates (different printings: 244/191, 232/191, 174/191, 172/131).
+  Zero usable signal on any axis → `bestScore=0, tieCount=4` → safety net
+  correctly fired. Same pattern as test #38 (Psyduck) — genuine OCR
+  limitation, not a bug.
+- **Scan 2** (same physical card, 10s later): Gemini read
+  `cardNumber: "212/191"` — a different read than 10s prior (another
+  instance of the tracked Gemini read-instability concern). "212"
+  doesn't match any of the same 4 candidates' numerators; the
+  name+number combined-search fallback for "Drayton 212/191" returned
+  **0 results** — that number doesn't exist anywhere in PPT's catalog
+  for this card. Given scan 1 already flagged glare over that exact
+  digit region, a bad/hallucinated read is more likely than a genuine
+  catalog gap, though a catalog gap can't be fully ruled out.
+
+**Real code bug found**: `normalizePptCard`'s subtype extraction
+(`api/identify.js:750-754`) only scans candidate names for Pokémon power
+tags (`VMAX/VSTAR/GX/EX/ex/V/BREAK`) — never Trainer subtypes
+(Supporter/Item/Stadium/Tool), even though PPT's raw payload carries
+this directly (`"cardType":"Trainer","pokemonType":"Trainer -
+Supporter"`, confirmed in the raw log). So even though Gemini correctly
+read `subtype: "Supporter"` on both scans, every candidate's `subtypes`
+array is `[]`, and the 5-point subtype signal silently never fires for
+any Trainer card. Same class of dead-signal bug as the already-fixed
+`attackName` bug (`api/identify.js:728-738`, Hitmontop, test #33-ish).
+**Not yet fixed** — checked whether it would have saved this scan: it
+would not have, since all 4 real candidates share the identical subtype
+("Supporter"), so subtype can never discriminate between different
+printings of the same Trainer card even once fixed.
+
+**Structural finding, not just a bug**: for Trainer cards, `number` and
+`set` are the *only* signals that can ever break a tie between same-name
+printings — HP and attackName are permanently inapplicable by card type,
+unlike Pokémon cards which get three independent tie-break signals in
+reserve. This makes Trainer-card matching inherently more fragile to a
+bad number read than Pokémon-card matching. **FAIL — real card-type gap,
+root-caused this session.** See new Phase 1 checklist item in
+ROADMAP.md.
+
+**Update (2026-08-30): subtype-extraction bug fixed and deployed as its
+own isolated change**, per explicit instruction NOT to bundle it with
+the deeper tie-break design question. `normalizePptCard` now extracts
+Trainer subtypes (Supporter/Item/Stadium/Tool/etc.) from PPT's
+`pokemonType` field (`"Trainer - <subtype>"`), mirroring the earlier
+attackName fix. Committed `d589d46`; deployed
+(`dpl_GnxKLpHTkcN8QuVXhY1gPgpmpk1P`), build log confirms 3 files
+downloaded, live `POST /api/identify {}` returns the real `400
+{"error":"Missing imageBase64"}`, runtime logs confirm that exact
+request was served by this deployment ID. **Deployed and verified
+serving — not yet confirmed via a live scan**, since as established
+above this fix would not have changed either of this test's two
+specific scans (all 4 real Drayton candidates shared the same
+subtype). What it *does* fix going forward: any future Trainer-card
+scan where distinguishable subtypes exist among same-name candidates
+(e.g. an Item vs. a Supporter sharing a name) will now use that signal
+instead of silently discarding it. Needs a live Trainer-card scan
+where that scenario actually applies to confirm in practice. The
+deeper tie-break design question (same-subtype same-name printings)
+remains open — see ROADMAP.md.
+
 ## Still outstanding (as of 2026-08-29, see CLAUDE.md for current state)
 
 - Hitmontop, Cinccino, Snorlax (tests #43-45): can only be re-verified
