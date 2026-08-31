@@ -141,7 +141,7 @@ const CONDITION_TIERS = ["NM", "LP", "MP", "HP", "DMG"];
 // pallet-trade-reverse-engineering.md) — bumping number's weight so it
 // structurally dominates any combination of the weaker signals moves us
 // closer to that same principle without a full rewrite: 20 > 6+5+3+4=18.
-const SCORE = { number: 20, hp: 6, subtype: 5, set: 3, attackName: 4, stampMatch: 3, stampMismatch: 8 };
+const SCORE = { number: 20, hp: 6, subtype: 5, set: 3, attackName: 4, stampMatch: 3, stampMismatch: 8, rarity: 2 };
 const MATCH_FLOOR = 3;
 const HIGH_THRESHOLD = 10;
 const MEDIUM_THRESHOLD = 5;
@@ -416,6 +416,54 @@ function numbersMatch(readRaw, candRaw) {
   return { match: true, points: SCORE.number * 0.35, strength: "weak" };
 }
 
+// ADDED (2026-08-31, research write-up + test #53 Drayton case):
+// PPT's raw `rarity` field is fetched on every single lookup already
+// (zero extra API cost) but was never used anywhere in scoring —
+// confirmed via `grep -n "\.rarity" api/identify.js` returning zero
+// hits before this change, the same "reliably-present-in-data-we-
+// already-have, silently unused" pattern as the earlier attackName and
+// Trainer-subtype dead-signal bugs.
+//
+// ARCHITECTURALLY DIFFERENT from every other signal in scoreCandidate:
+// every other signal compares Gemini's READ against the candidate
+// (read.hp vs candidate.hp, etc). Gemini is not asked to read rarity at
+// all (no schema/prompt change here, per explicit instruction — that
+// would need separate live-scan validation of Gemini's read reliability
+// before being trusted, a different, not-yet-answered question). This
+// is instead a candidate-side-only PRIOR: cards actually worth pausing a
+// livestream to identify and price-check skew heavily toward notable/
+// chase rarities rather than bulk commons (this project's own 66+ real
+// test cases bear this out — virtually none are plain Common/Uncommon
+// pulls), the same kind of evidence-grounded prior as isOddityCandidate
+// below (which similarly never compares against a read value).
+//
+// Deliberately a SMALL, OPT-IN allow-list, not a deny-list of "ordinary"
+// tiers: new rarity tier names get invented most sets (a live sweep this
+// session alone surfaced "Mega Hyper Rare", not something anyone would
+// have hand-guessed in advance), so an allow-list of tiers actually
+// CONFIRMED via live PPT queries this session is safer than trying to
+// guess every "ordinary" tier that should be excluded. A newly-invented
+// notable tier not yet in this list simply won't get the bonus — a
+// known, stated limitation, not a silent wrong answer.
+//
+// WEIGHT: deliberately the smallest in SCORE (2) — below every other
+// signal, including the softest existing one (set: 3) — so it can NEVER
+// on its own outweigh a single real matched signal, let alone override
+// an actual number/hp mismatch. It can only ever matter among
+// candidates that already tie on every stronger signal. Verified against
+// the real test #53 Drayton tie set (4 candidates, all scoring 0 on
+// every existing signal since cardNumber was unreadable and Trainer
+// cards have no HP/attackName/energyType to compare): rarities were
+// Special Illustration Rare / Ultra Rare / Uncommon / Special
+// Illustration Rare — this pattern matches 3 of the 4 (all but the
+// Uncommon one), narrowing bestScore from 0→2 and tieCount from 4→3.
+// Confirms the design goal exactly: helps narrow this real tie, does
+// NOT fully resolve it (the two Special Illustration Rare printings,
+// from different sets, remain genuinely tied) — the underlying
+// structural issue (Trainer cards have fewer independent tie-break
+// signals than Pokémon cards) is still open, see ROADMAP.md.
+const NOTABLE_RARITY_PATTERN = /double rare|hyper rare|illustration rare|secret rare|shiny holo rare|ultra rare|prism rare|radiant rare|rare break|mega attack rare/i;
+
 function scoreCandidate(candidate, read) {
   let score = 0;
   const detail = {};
@@ -469,6 +517,15 @@ function scoreCandidate(candidate, read) {
   } else if (read.stampType === "none" && candStamp) {
     score -= SCORE.stampMismatch;
     detail.stampMismatch = true;
+  }
+
+  // See the big comment above NOTABLE_RARITY_PATTERN for the full
+  // rationale — a small, candidate-side-only tie-break prior, not a
+  // read-comparison like every signal above. No `read.x` guard needed
+  // since there is no corresponding Gemini-read field.
+  if (candidate.rarity && NOTABLE_RARITY_PATTERN.test(candidate.rarity)) {
+    score += SCORE.rarity;
+    detail.rarity = true;
   }
 
   return { score, detail };
@@ -767,6 +824,11 @@ function normalizePptCard(raw) {
     number,
     hp: raw.hp || null,
     subtypes,
+    // ADDED (2026-08-31, test #53 Drayton tie-break): was fetched on
+    // every lookup already but never copied onto the normalized
+    // candidate — see NOTABLE_RARITY_PATTERN above scoreCandidate for
+    // why this is now a scoring signal.
+    rarity: raw.rarity || null,
     setName: raw.setName || null,
     attackName: raw.attackName || extractFirstAttackName(raw.attacks) || null,
     tcgPlayerUrl: raw.tcgPlayerUrl || null,
@@ -1129,7 +1191,7 @@ async function lookupCardPPT(read) {
   }
 
   let candidates = filtered.map(normalizePptCard);
-  console.log("[lookup] scored candidates=", JSON.stringify(candidates.map((c) => ({ name: c.name, number: c.number, hp: c.hp, subtypes: c.subtypes, hasVariants: !!c._rawVariants }))).slice(0, 3000));
+  console.log("[lookup] scored candidates=", JSON.stringify(candidates.map((c) => ({ name: c.name, number: c.number, hp: c.hp, subtypes: c.subtypes, rarity: c.rarity, hasVariants: !!c._rawVariants }))).slice(0, 3000));
 
   let { best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, "[lookup]");
 
