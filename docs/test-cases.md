@@ -576,19 +576,22 @@ CLAUDE.md's "Recent / in-flight work" for the same note.
   (Porygon2) is now a second confirmed case of that same fallback
   executing correctly and still coming back empty — a genuine
   catalog-coverage gap, not a fallback bug.
-- **Test #60 — RESOLVED (2026-08-30)**: ground truth confirmed live
-  against PPT's own API (Porygon2, Aquapolis, 028/147 — see the "Ground
-  truth confirmed live" section above). The initial Skyridge-specific
-  hypothesis was wrong (PPT has zero Porygon-line cards under Skyridge);
-  the real card is Aquapolis, the other e-Card-era set that also totals
-  147 cards. Open design question (4th search-fallback tier) written up
-  but not built — needs explicit sign-off before shipping.
 - Trainer/Supporter tie-break question (test #53/#58): test #58
   (Grimsley's Move) is one clean-looking data point since the
   subtype-extraction fix deployed, but not confirmed decisive without
   logs — needs a Trainer-card scan where multiple same-name candidates
   with genuinely different subtypes are pulled, then checked via logs
   that the subtype signal actually broke the tie.
+- **Test #63's name-filter rescue-path fix (NEW, 2026-08-30/31)**:
+  deployed (`dpl_2hK8UGLwx2kMMkxHuhCZTSsjooBz`, commit `6708bca`) and
+  build/live-endpoint/runtime-log verified, but has not yet been
+  exercised by any real scan — needs a live rescan that actually hits
+  the targeted path (zero name-filter survivors + a legible cardNumber)
+  to confirm it works in production. Watch for the `ambiguousNote`
+  disclosure text ("this match was found using only the card number...")
+  or the `[lookup] NAME FILTER RESCUED BY NUMBER` log line as the signal
+  this fix fired. Gemini's underlying mistranslation problem (the reason
+  test #63 hit this path at all) remains separately unsolved.
 
 ## Research: options to improve Gemini scan consistency (2026-08-29)
 

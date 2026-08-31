@@ -44,9 +44,36 @@ for the fix history.
 - [ ] **Gemini read-consistency fix** — `thinkingLevel: low` +
       `media_resolution: HIGH` (commit 3e895b1) deployed and confirmed
       against a live rescan of a hard card (target: no recurrence of
-      test #50's hallucination class of failure)
+      test #50's hallucination class of failure). **Still unconfirmed —
+      not resolved by tests #61-66** (2026-08-30). Those tests shipped a
+      different, separate fix (the name-filter rescue path below), and
+      if anything surfaced a further, distinct example of Gemini read
+      instability (test #63's Gemini guessing 3 different, all-wrong
+      English translations of the same Japanese card name across repeat
+      scans) — a different symptom than test #50's hallucination class,
+      not evidence for or against this specific fix either way.
 - [ ] Sustained trend of declining live-test failures in
-      `docs/test-cases.md` for at least 2 weeks of real stream use
+      `docs/test-cases.md` for at least 2 weeks of real stream use.
+      Tests #54-66 (2026-08-30) add more real data points (2 confirmed
+      correct, several honest low-confidence non-bugs working as
+      designed, 2 real bugs found and fixed — see test-cases.md) but
+      this is nowhere near the 2-week bar yet — not checkable.
+- [ ] **Name-filter rescue-path fix** (test #63) — when zero candidates
+      survive the name filter (e.g. an untranslated or mistranslated
+      Japanese card name) but a legible `cardNumber` was read on any
+      attempt, retry via a number-scoped search instead of giving up
+      immediately; only ever accepts a result via a strict exact-number
+      match, never trusting the name or PPT's raw result count (PPT was
+      confirmed live to return unrelated filler, not an empty array, for
+      multi-word queries that match nothing). Deployed 2026-08-30/31
+      (`dpl_2hK8UGLwx2kMMkxHuhCZTSsjooBz`, commit `6708bca`) —
+      build/live-endpoint/runtime-log verified per CLAUDE.md's deploy
+      checklist, but **not yet confirmed via a live rescan that actually
+      exercises this exact path** (zero name-filter survivors + a
+      legible number) — no real scan has hit it yet. Deliberately does
+      NOT attempt a fix for the underlying Gemini-mistranslation problem
+      itself (still open, no proposed design) — see test #63 in
+      `docs/test-cases.md` for the full write-up.
 - [ ] Decision made on the open strategy question (patch reactively vs.
       a dedicated pass adopting more of pallet.trade's hard
       "reject on number mismatch" model — see build-status.md part 4)

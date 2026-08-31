@@ -29,10 +29,17 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
-Immediate next step: the Gemini read-consistency fix (commit 3e895b1) is
-now deployed and verified live (see "Recent / in-flight work" below) —
-what's still needed is a live rescan of a hard card to confirm it
-actually helps, then update ROADMAP.md's Phase 1 checklist.
+Immediate next step: two separate fixes are deployed and verified but
+NOT yet live-confirmed (see "Recent / in-flight work" below for both) —
+(1) the Gemini read-consistency fix (commit `3e895b1`, `thinkingLevel`/
+`media_resolution`) needs a live rescan of a hard card to confirm it
+actually reduces hallucination-class failures; (2) the name-filter
+rescue-path fix (commit `6708bca`, test #63) needs a live rescan that
+actually hits its specific trigger (zero name-filter survivors + a
+legible cardNumber) — no real scan has exercised it yet. These are
+separate, unrelated fixes for separate problems — don't conflate them.
+Update ROADMAP.md's Phase 1 checklist once either gets a real
+confirmation.
 
 ## When to ask before acting
 
@@ -412,11 +419,19 @@ checklist before reporting something as finished:
   #63 in `docs/test-cases.md` for the full story); verified `READY`,
   3 files, live `400 {"error":"Missing imageBase64"}`, and runtime logs
   confirming a real live scan succeeded on this exact deployment.
+  **New signal to know about**: whenever a result comes from this rescue
+  path, `ambiguousNote` carries an explicit honest disclosure ("card name
+  we read didn't match anything... this match was found using only the
+  card number...") and confidence is capped at Medium even if the score
+  would otherwise be High — logged server-side as `[lookup] NAME FILTER
+  RESCUED BY NUMBER`. If a future session sees that log line or that
+  exact note text in a live panel, that's this fix firing, not a new bug.
   **Not yet confirmed**: needs a live rescan that actually hits the
-  targeted path (zero name-filter survivors + a legible number) — the
-  original AZ's Tranquility card won't necessarily retest cleanly since
-  Gemini's translation problem is untouched. See test #63 in
-  `docs/test-cases.md` for the full write-up.
+  targeted path (zero name-filter survivors + a legible number) — no
+  real scan has exercised this rescue path yet, only the general-health
+  check above. The original AZ's Tranquility card won't necessarily
+  retest cleanly since Gemini's translation problem is untouched. See
+  test #63 in `docs/test-cases.md` for the full write-up.
 - **Open strategy question** (raised repeatedly, never resolved): whether
   to keep patching the matching/scoring model reactively as live tests
   surface issues, or pause for a dedicated pass adopting more of
