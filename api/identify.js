@@ -752,6 +752,14 @@ function normalizePptCard(raw) {
   for (const tag of ["VMAX", "VSTAR", "GX", "EX", "ex", " V", "BREAK"]) {
     if (n.includes(tag)) subtypes.push(tag.trim());
   }
+  // FIX (2026-08-30, live test — Drayton, test #53): the scan above only
+  // ever looked for Pokémon power tags in the name, so the subtype
+  // scoring signal was silently dead for every Trainer/Supporter/Item/
+  // Stadium/Tool card — same dead-signal class as the attackName bug
+  // above. PPT's raw payload carries the real subtype directly on
+  // `pokemonType` as "Trainer - <subtype>" for non-Pokémon cards.
+  const trainerSubtypeMatch = String(raw.pokemonType || "").match(/^Trainer\s*-\s*(.+)$/i);
+  if (trainerSubtypeMatch) subtypes.push(trainerSubtypeMatch[1].trim());
 
   return {
     id: `${raw.name}|${number}`,
