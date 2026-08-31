@@ -451,17 +451,18 @@ function numbersMatch(readRaw, candRaw) {
 // on its own outweigh a single real matched signal, let alone override
 // an actual number/hp mismatch. It can only ever matter among
 // candidates that already tie on every stronger signal. Verified against
-// the real test #53 Drayton tie set (4 candidates, all scoring 0 on
-// every existing signal since cardNumber was unreadable and Trainer
-// cards have no HP/attackName/energyType to compare): rarities were
-// Special Illustration Rare / Ultra Rare / Uncommon / Special
-// Illustration Rare — this pattern matches 3 of the 4 (all but the
-// Uncommon one), narrowing bestScore from 0→2 and tieCount from 4→3.
-// Confirms the design goal exactly: helps narrow this real tie, does
-// NOT fully resolve it (the two Special Illustration Rare printings,
-// from different sets, remain genuinely tied) — the underlying
-// structural issue (Trainer cards have fewer independent tie-break
-// signals than Pokémon cards) is still open, see ROADMAP.md.
+// a live re-pull of the real test #53 Drayton candidate set (4
+// candidates: Special Illustration Rare / Ultra Rare / Uncommon /
+// Special Illustration Rare), with subtype scoring isolated as a
+// control (patched so all 4 credit identically for "Supporter",
+// removing an unrelated PPT data-completeness quirk on one row as a
+// confound): rarity alone narrows bestScore/tieCount from 5/4 to 7/3 —
+// the pattern matches 3 of the 4 (all but the Uncommon one). Confirms
+// the design goal exactly: helps narrow this real tie, does NOT fully
+// resolve it (the two Special Illustration Rare printings, from
+// different sets, remain genuinely tied) — the underlying structural
+// issue (Trainer cards have fewer independent tie-break signals than
+// Pokémon cards) is still open, see ROADMAP.md.
 const NOTABLE_RARITY_PATTERN = /double rare|hyper rare|illustration rare|secret rare|shiny holo rare|ultra rare|prism rare|radiant rare|rare break|mega attack rare/i;
 
 function scoreCandidate(candidate, read) {
