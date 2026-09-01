@@ -54,9 +54,12 @@ conflate them. Update ROADMAP.md's Phase 1 checklist once any of them
 gets a real confirmation.
 
 The `numbersMatch()` "totalMismatch" scoring bug found via test #67 is
-now **fixed and locally verified against live PPT data** (see "Recent /
-in-flight work" below) — **committed but NOT YET DEPLOYED**, pending the
-user's go-ahead per "When to ask before acting" below.
+now **fixed, deployed, and CONFIRMED in production** (commit `42429a5`,
+`dpl_DjjbNMqE5nHb45MGYb3Sjby6JXXB`, aliased to
+`whatnot-pokemon-identify.vercel.app`) — see "Recent / in-flight work"
+below for the full deploy trace and the real live confirmation (an
+organic Mega Excadrill ex scan hit the exact fixed scenario minutes
+after deploy).
 
 ## When to ask before acting
 
@@ -328,9 +331,10 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
-- **`numbersMatch()` "totalMismatch" scoring bug (test #67) — FIXED
-  AND LOCALLY VERIFIED 2026-08-31, NOT YET DEPLOYED** (pending the
-  user's go-ahead). `numbersMatch()` (`api/identify.js` — see the FIX
+- **`numbersMatch()` "totalMismatch" scoring bug (test #67) — FIXED,
+  DEPLOYED, AND CONFIRMED IN PRODUCTION 2026-08-31** (commit `42429a5`,
+  `dpl_DjjbNMqE5nHb45MGYb3Sjby6JXXB`, aliased to
+  `whatnot-pokemon-identify.vercel.app`). `numbersMatch()` (`api/identify.js` — see the FIX
   comment directly above the function) used to treat a candidate whose
   number shares Gemini's read numerator but has a *different*
   denominator/total (e.g. read `056/066`, candidate `056/197`) as
@@ -367,11 +371,41 @@ checklist before reporting something as finished:
   combined-search fallback chain run for this exact scenario, which the
   old spurious `match:true` had been silently short-circuiting. See test
   #67's "Fix shipped" note in `docs/test-cases.md` for the full
-  verification transcript. **Not yet deployed** — code change is
-  committed locally only; needs the user's go-ahead per "When to ask
-  before acting," then the usual deploy-verification checklist, then a
-  live rescan (any future card that hits a similar totalMismatch/tie
-  shape) for full production confirmation.
+  verification transcript.
+
+  **Deployed 2026-08-31** after explicit user go-ahead. Deploy checklist
+  followed in full: read the real 1825-line source directly (not
+  base64), transcribed it into a scratch file, and **diff-verified it
+  byte-for-byte against the real source before deploying** — this caught
+  a real transcription corruption on the FIRST attempt (the diacritic-
+  stripping regex `̀-ͯ` got rendered as literal Unicode
+  combining characters, the exact same failure class documented in test
+  #63's deploy and the GET-debug-endpoint commit message), fixed
+  non-generatively by copying the real line directly from the source via
+  `sed`/Python rather than retyping it, then re-diffed clean before
+  deploying. Confirmed: deployment state `READY`, aliased to production;
+  build log shows exactly 3 files downloaded; live `GET /api/identify`
+  returns `normalizeDiacriticTest: "pokemon collector"` (direct
+  behavioral proof the exact regex that almost got corrupted deployed
+  correctly); live `POST /api/identify {}` returns real `400
+  {"error":"Missing imageBase64"}`; runtime logs confirm both requests
+  were served by `dpl_DjjbNMqE5nHb45MGYb3Sjby6JXXB`.
+
+  **CONFIRMED in production via real organic traffic**, not just the
+  synthetic checklist requests: runtime logs from minutes after deploy
+  show a real live scan (Mega Excadrill ex, 2026-09-01T01:38:46Z, served
+  by the new deployment) that read cardNumber "111/108" — matching
+  neither of the 2 real candidates PPT returned ("103/084" Ultra Rare,
+  "065/084" Double Rare) — and the log shows `NO NUMBER MATCH IN POOL:
+  read number=111/108 ... best=Mega Excadrill ex - 103/084 (matched on
+  other signals only)` firing correctly, NOT the generic "wasn't
+  legible" tie-break note that the bug would have produced pre-fix. This
+  is a different card than the Froakie case that found the bug, but
+  hits the same failure shape (numerator/pool mismatch + a tie among
+  remaining candidates) — satisfying this project's own "confirm via
+  rescan" standard (any card in the same failure class, not the exact
+  same physical card, per "Standing working conventions" above). This
+  fix is now fully confirmed, not just deployed.
 - **Trainer-subtype extraction fix (commit `d589d46`) — DEPLOYED
   2026-08-30** (`dpl_GnxKLpHTkcN8QuVXhY1gPgpmpk1P`, aliased to
   `whatnot-pokemon-identify.vercel.app`). First non-Pokémon (Trainer/

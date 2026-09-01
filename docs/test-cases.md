@@ -1113,7 +1113,7 @@ Holo)`, $0.75) is **not independently confirmed correct or incorrect**
 reads never matched it, so the match rests on name+HP alone. Treat this
 as inconclusive on identification, confirmed on the messaging bug.
 
-### Fix shipped: `numbersMatch()` "totalMismatch" no longer counts as a match — FIXED AND LOCALLY VERIFIED 2026-08-31, NOT yet deployed
+### Fix shipped: `numbersMatch()` "totalMismatch" no longer counts as a match — FIXED, DEPLOYED, AND CONFIRMED IN PRODUCTION 2026-08-31
 
 Scoped narrowly to Finding B above only — deliberately leaves Finding A
 (the Gemini read-instability observation) untouched as a passive
@@ -1197,15 +1197,39 @@ fix doesn't change that; it only ensures the system is now honest about
 not having a confident number match, instead of showing a specific
 wrong-but-confident-sounding candidate under a false "illegible" excuse.
 
-**Not yet deployed.** Code change is committed locally only, pending
-the user's go-ahead per CLAUDE.md's "When to ask before acting" (every
-Vercel production deploy requires asking first, no exceptions carved
-out for "same discipline as before"). Once deployed: needs the usual
-deploy-verification checklist (hash match, live `400` on empty POST,
-runtime-log confirmation), then a live rescan — not necessarily the
-same Froakie card (won't reliably reappear), but any future card that
-hits a similar totalMismatch/tie shape — for full production
-confirmation, per this project's standing definition of "rescan."
+**Deployed 2026-08-31** after explicit user go-ahead (commit `42429a5`,
+`dpl_DjjbNMqE5nHb45MGYb3Sjby6JXXB`, aliased to
+`whatnot-pokemon-identify.vercel.app`). Deploy checklist followed in
+full — real source read directly (not base64), transcribed to a scratch
+file, **diff-verified byte-for-byte against the real source file before
+deploying**. This caught a real transcription error on the first
+attempt: the diacritic-stripping regex got rendered as literal Unicode
+combining characters instead of the escape sequence `̀-ͯ` —
+the exact same corruption class documented in test #63's deploy and the
+GET-debug-endpoint commit. Fixed non-generatively (copied the correct
+line directly from the real source via `sed`/Python, not retyped),
+re-diffed clean, then deployed. Confirmed: deployment `READY`, aliased
+to production; build log shows exactly 3 files downloaded; live `GET
+/api/identify` returns `normalizeDiacriticTest: "pokemon collector"` —
+direct behavioral proof the exact regex that almost got corrupted
+deployed intact; live `POST /api/identify {}` returns real `400
+{"error":"Missing imageBase64"}`; runtime logs confirm both were served
+by the new deployment.
+
+**CONFIRMED in production** — not just the synthetic checklist
+requests. Runtime logs from minutes after deploy show a real, organic
+live scan (Mega Excadrill ex, 2026-09-01T01:38:46Z) that read
+cardNumber "111/108," matching neither of the 2 real PPT candidates
+("103/084" Ultra Rare, "065/084" Double Rare). The log shows `NO NUMBER
+MATCH IN POOL: read number=111/108 ... best=Mega Excadrill ex - 103/084
+(matched on other signals only)` firing correctly — not the generic
+"wasn't legible" tie-break note the bug would have produced. Different
+card than the one that found the bug, but the same failure shape
+(read number missing from the pool + a tie among the remaining
+candidates) — satisfying this project's own "confirm via rescan"
+standard (any card in the same failure class, not literally the same
+physical card — see CLAUDE.md "Standing working conventions"). This fix
+is fully confirmed, not just deployed.
 
 ## Related docs
 
