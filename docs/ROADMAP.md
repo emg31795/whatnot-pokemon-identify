@@ -51,7 +51,18 @@ for the fix history.
       instability (test #63's Gemini guessing 3 different, all-wrong
       English translations of the same Japanese card name across repeat
       scans) — a different symptom than test #50's hallucination class,
-      not evidence for or against this specific fix either way.
+      not evidence for or against this specific fix either way. **Another
+      unfavorable data point: test #67** (2026-08-31, Froakie) — 4 repeat
+      scans of the same physical card 16s apart on
+      `dpl_41kEm9oM4u4gAMQsM3CDJtnkHdec` (which already includes this
+      fix) each returned a different, wrong `cardNumber` denominator
+      ("056/066", "056/066", "056/086", "056/064" — never the actual
+      "056/197"), every one at self-reported High confidence. Same
+      symptom class as test #50 (unstable number/field reads across
+      identical repeat scans), unlike test #63's mistranslation issue —
+      this one bears directly on the fix and isn't favorable. Still not
+      a verdict either way (one hard card doesn't settle it), but the
+      trend across #50/#63/#67 continues to show no clear resolution.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed
