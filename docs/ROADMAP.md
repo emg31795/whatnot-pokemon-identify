@@ -93,11 +93,28 @@ for the fix history.
       subtype (e.g. two different-set "Drayton" Supporter printings).
       This makes Trainer-card matching structurally more fragile to a
       bad Gemini number read than Pokémon-card matching, which has three
-      independent tie-break signals in reserve. Needs a deliberate
-      decision on how to handle this class of ambiguity (e.g. widen the
-      ambiguous-match safety net's messaging for Trainer cards
-      specifically, or something else) — not something to patch
-      reactively.
+      independent tie-break signals in reserve.
+      **PARTIAL ANSWER shipped 2026-08-31** (`dpl_FpQNxCVS1P1YiDrtLif8ViGsbgKv`,
+      commit `d941eb8`): `rarity` added as a small (`SCORE.rarity=2`)
+      candidate-side tie-break signal, using PPT data already fetched —
+      verified via the real test #53 Drayton candidates (isolated
+      subtype-scoring test) to narrow the tie from 4-way to 3-way.
+      **Explicitly a partial answer, not a resolution** — it helps some
+      ties (distinguishing e.g. an Uncommon reprint from chase-tier
+      printings) but does NOT discriminate between two same-rarity
+      printings from different sets (Drayton's own case still has 2
+      genuinely tied Special Illustration Rare printings even with
+      rarity scoring). The underlying structural gap — Trainer cards
+      have fewer independent tie-break signals than Pokémon cards — is
+      still open. Still needs a live rescan of a real Trainer-card tie
+      to confirm the signal fires as designed in production (only
+      verified via isolated scoring-logic tests + a clean unambiguous
+      live Trainer match so far, not yet a genuinely tied one). See test
+      #53/#61-66/"Fix shipped: rarity" in `docs/test-cases.md` for full
+      detail. A further, deliberate decision on the remaining structural
+      gap (e.g. widen the ambiguous-match safety net's messaging for
+      Trainer cards specifically, or something else) is still needed —
+      not something to patch reactively.
 
 **Do not start Phase 2 work until this phase's checklist above is
 substantially complete** — per the user's explicit direction, each build

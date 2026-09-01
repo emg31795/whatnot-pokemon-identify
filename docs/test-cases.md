@@ -760,6 +760,120 @@ their own API in the future.
 | energyType | High (Pokémon only) | Yes — always ties with HP/attack | No (always null on Trainer) | No | Not worth adding |
 | regulation mark | **Not in PPT's schema at all** | N/A | N/A | No | Dead end |
 
+## Fix shipped: `rarity` as a scoring signal — DEPLOYED 2026-08-31, partial answer to the test #53 Trainer/Supporter tie-break question
+
+Per explicit sign-off, implemented option (a) from the research above:
+score on `rarity` data already fetched on every lookup, no new Gemini
+prompt/schema change.
+
+**What shipped**: `SCORE.rarity = 2` — the smallest weight in `SCORE`,
+below every other signal including the previously-softest one (`set: 3`)
+— so it can never on its own outweigh a single real matched signal, let
+alone override an actual number/hp mismatch. `NOTABLE_RARITY_PATTERN` is
+a small allow-list of rarity-tier strings confirmed via live PPT queries
+this session (Double Rare, Hyper Rare, Illustration/Special Illustration
+Rare, Secret Rare, Shiny Holo Rare, Ultra Rare, Prism Rare, Radiant
+Rare, Rare BREAK, Mega Attack Rare) — deliberately opt-in rather than a
+deny-list of "ordinary" tiers, since new rarity names get invented most
+sets (this session's own live sweep surfaced "Mega Hyper Rare"
+unprompted). Architecturally different from every other `scoreCandidate`
+signal: it's a candidate-side-only prior (no `read.x` comparison exists,
+since Gemini was never asked to read rarity), grounded in this project's
+own test history — virtually none of 66+ real test cases are plain
+Common/Uncommon pulls.
+
+**Verified against the real test #53 Drayton tie set** before deploying
+(via a local Node script running the actual `scoreCandidate`/
+`pickBestCandidate` functions, not just reasoning about it): a fresh
+live re-pull of the same 4 real candidates (Special Illustration Rare /
+Ultra Rare / Uncommon / Special Illustration Rare), with subtype scoring
+isolated as a control (one candidate's PPT record was independently
+missing `pokemonType`, an unrelated data-completeness quirk patched out
+to avoid confounding the test) — rarity alone narrows bestScore/tieCount
+from 5/4 to 7/3. Confirms the design goal exactly: **helps narrow this
+real tie, does NOT fully resolve it** — the two Special Illustration
+Rare printings (different sets) remain genuinely tied, so this is a
+**partial answer**, not a fix, to the structural issue that Trainer
+cards have fewer independent tie-break signals than Pokémon cards. That
+structural gap remains open — see the ROADMAP.md checklist item.
+
+**Deploy discipline**: same chunk-read/scratch-file/hash-verify process
+as test #60/#63's fixes, given the file is 91-97KB and grew again this
+session. **The exact same diacritic-regex transcription corruption
+from the test #63 deploy recurred a THIRD time** during this
+deploy's own hash-verify step (caught before deploying, fixed via the
+same mechanical non-generative copy-from-source technique) — confirming
+this is a systemic, reproducible failure in how manual retyping handles
+this specific byte sequence, not a one-off fluke. See "Deploy-
+verification tooling" below for the real fix built in response.
+
+Deployed (`dpl_FpQNxCVS1P1YiDrtLif8ViGsbgKv`, commit `d941eb8` +
+comment-accuracy correction `d35ddc6`) — build/live-endpoint verified per
+CLAUDE.md's deploy checklist (`READY`, 3 files, live `400
+{"error":"Missing imageBase64"}`). Confirmed working on real live
+traffic immediately after: runtime logs show several real scans served
+cleanly on this exact deployment, including "Roxie's Performance" (a
+Trainer/Supporter card) correctly discriminating 3 same-name printings
+by number+rarity (`rarity` now appears in every `[lookup] scored
+candidates=` log line).
+
+**Not yet confirmed**: needs a live rescan of an actual ambiguous
+Trainer-card tie (zero number/hp signal, multiple same-name candidates)
+to see the rarity signal narrow a real tie in production, not just in
+the isolated Drayton re-test above.
+
+## Deploy-verification tooling: GET debug endpoint — DEPLOYED 2026-08-31, closes the diacritic-regex open question from test #63
+
+The rarity-signal deploy above hit the SAME diacritic-regex
+transcription corruption as test #63's deploy, for a third time, with no
+way at the time to confirm the final attempt didn't repeat it (no
+Vercel MCP tool can fetch deployed source for a byte diff against
+local — confirmed genuinely absent this session, though Vercel's own
+REST API does have `GET /v8/deployments/{id}/files/{fileId}` for this,
+gated behind a personal access token this session doesn't have).
+
+**What shipped**: `GET /api/identify` (previously unused — the real
+extension only ever POSTs an image, so this adds zero behavioral risk to
+production scans) now returns `{ ok, sourceHash, normalizeDiacriticTest
+}`. `sourceHash` is a runtime `sha1` of `__filename`.
+`normalizeDiacriticTest` runs the ACTUAL deployed `normalizeNameForMatch`
+against a fixed input (`"Pokémon Collector"`) — the correct value is
+exactly `"pokemon collector"`.
+
+**Deployed and tested live** (`dpl_41kEm9oM4u4gAMQsM3CDJtnkHdec`, commit
+`194facb`): `GET https://whatnot-pokemon-identify.vercel.app/api/identify`
+returned:
+```json
+{"ok":true,"sourceHash":"c6cd14b416280d19e536449eed0c4eaa3a11f2ad","normalizeDiacriticTest":"pokemon collector"}
+```
+
+**`normalizeDiacriticTest` is exactly correct — this is a direct,
+live, behavioral confirmation that the diacritic-stripping regex
+deployed correctly**, closing the open question from test #63/this
+session's rarity deploy without needing to wait for a Pokémon
+Collector-style card to come up live on stream.
+
+**Real finding, honestly reported**: `sourceHash` did **NOT** match the
+local `shasum -a 1 api/identify.js` (`85e51bf5...` local vs.
+`c6cd14b4...` live), even though the file was confirmed byte-identical
+to source before deploying (hash-verified pre-deploy, same as every
+other fix this session) and `node -c`/local behavior both checked out.
+Investigated rather than dismissed: local file has no CRLF, no trailing-
+byte anomaly, clean `};\n` ending — ruling out an obvious local cause.
+The most likely explanation is that Vercel's own Node.js function build
+pipeline (bundling via `@vercel/node`, even with `"framework": null` and
+no custom build command) transforms the file in some way before it's
+what `fs.readFileSync(__filename)` actually reads at runtime — meaning
+`sourceHash` reflects the **post-build bundle**, not the raw uploaded
+source, so it can *not* be directly compared against a local `shasum` as
+originally intended. This is a real limitation of the tool as built, not
+a deploy failure — the `normalizeDiacriticTest` behavioral check is
+unaffected by this and remains the reliable, decisive signal. **Open
+follow-up, not urgent**: correct the code comment (currently overclaims
+a "one-line comparison against local shasum") next time this file is
+touched — not worth a dedicated deploy on its own given how fragile this
+file's manual-deploy process has already proven to be this session.
+
 ## Tests #61-66 (2026-08-30, 6 scans from `blorgotron`'s stream, root-caused via real Vercel logs + live PPT API queries)
 
 User reported "a lot of incorrect scannings" across 6 screenshots with no
@@ -877,7 +991,7 @@ transcribe in a single pass per this project's established large-file
 discipline. Read in 4 verified chunks, reconstructed to a local scratch
 file, and hash-compared against the real source (`sha1
 1d9c2d5bcd8512afc45fe6860d6b33468e3e9c23`) *before* deploying — this
-caught a real transcription error (a `̀-ͯ` regex escape got
+caught a real transcription error (the diacritic-stripping regex got
 mangled into literal Unicode combining characters on the first attempt),
 fixed via a direct non-generative copy from the verified source (Python
 line-replace, not retyped), then re-verified hash-identical before

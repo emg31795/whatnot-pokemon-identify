@@ -29,17 +29,20 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
-Immediate next step: two separate fixes are deployed and verified but
-NOT yet live-confirmed (see "Recent / in-flight work" below for both) —
-(1) the Gemini read-consistency fix (commit `3e895b1`, `thinkingLevel`/
-`media_resolution`) needs a live rescan of a hard card to confirm it
-actually reduces hallucination-class failures; (2) the name-filter
-rescue-path fix (commit `6708bca`, test #63) needs a live rescan that
-actually hits its specific trigger (zero name-filter survivors + a
-legible cardNumber) — no real scan has exercised it yet. These are
-separate, unrelated fixes for separate problems — don't conflate them.
-Update ROADMAP.md's Phase 1 checklist once either gets a real
-confirmation.
+Immediate next step: three separate fixes are deployed and verified but
+NOT yet live-confirmed in production (see "Recent / in-flight work"
+below for all three) — (1) the Gemini read-consistency fix (commit
+`3e895b1`, `thinkingLevel`/`media_resolution`) needs a live rescan of a
+hard card to confirm it actually reduces hallucination-class failures;
+(2) the name-filter rescue-path fix (commit `6708bca`, test #63) needs a
+live rescan that actually hits its specific trigger (zero name-filter
+survivors + a legible cardNumber) — no real scan has exercised it yet;
+(3) the `rarity` tie-break signal (commit `d941eb8`, test #53) needs a
+live rescan of a genuinely tied Trainer card to confirm it narrows a
+real tie in production, not just in isolated scoring-logic tests. These
+are three separate, unrelated fixes for separate problems — don't
+conflate them. Update ROADMAP.md's Phase 1 checklist once any of them
+gets a real confirmation.
 
 ## When to ask before acting
 
@@ -432,29 +435,59 @@ checklist before reporting something as finished:
   check above. The original AZ's Tranquility card won't necessarily
   retest cleanly since Gemini's translation problem is untouched. See
   test #63 in `docs/test-cases.md` for the full write-up.
-- **Research (2026-08-30/31): additional scoring signals — nothing
-  built, one real finding worth acting on.** Live-checked `weakness`/
-  `resistance`/`retreatCost`/`energyType` against real PPT data: all
-  reliably populated but confirmed redundant with existing HP/attack
-  tie groups (verified against the real test #61 tie set — identical
-  across every tied candidate), and structurally `null` for every
-  Trainer card, so none of them help the Trainer/Supporter gap above.
-  `artist` is real but too sparse (~40-60% populated) and too hard for
-  Gemini to OCR reliably to trust yet. **Regulation mark is a hard dead
-  end — confirmed via PPT's own full field list that no such field
-  exists in their schema at all**, independent of Gemini's read
-  reliability. **`rarity` is a real, actionable finding**: populated on
-  100% of every real candidate sampled, and confirmed via source
-  (`grep -n "\.rarity" api/identify.js` → zero hits) to be completely
-  unused in scoring despite being fetched on every lookup already at
-  zero extra cost — same dead-signal class as the historical
-  `attackName`/Trainer-subtype bugs. It's also the only reliably-
-  populated field left unused for Trainer cards specifically, and
-  checked against the real Drayton tie set it does meaningfully
-  discriminate (though not completely). Not built — see the full
-  write-up in `docs/test-cases.md` for the two separable pieces (score
-  on existing `rarity` data vs. also asking Gemini to read it) and needs
-  explicit sign-off before either is built.
+- **Research (2026-08-30/31) → shipped: `rarity` as a scoring signal,
+  DEPLOYED 2026-08-31** (`dpl_FpQNxCVS1P1YiDrtLif8ViGsbgKv`, commit
+  `d941eb8`). Live-checked `weakness`/`resistance`/`retreatCost`/
+  `energyType` against real PPT data first: all reliably populated but
+  confirmed redundant with existing HP/attack tie groups (identical
+  across every tied candidate in the real test #61 tie set), and
+  structurally `null` for every Trainer card, so none of them help the
+  Trainer/Supporter gap above. `artist` is real but too sparse (~40-60%
+  populated) and too hard for Gemini to OCR reliably. **Regulation mark
+  is a hard dead end** — confirmed via PPT's own full field list that no
+  such field exists in their schema at all. **`rarity` was the real,
+  actionable finding and is now shipped**: was 100% populated in every
+  sample but completely unused in scoring (confirmed via source before
+  the fix — same dead-signal class as the historical `attackName`/
+  Trainer-subtype bugs), the only reliably-populated field left unused
+  for Trainer cards specifically. `SCORE.rarity = 2` — the smallest
+  weight, below every other signal — so it's purely a tie-break prior,
+  never able to override a real number/hp mismatch. Verified via a
+  local test running the actual scoring functions against the real test
+  #53 Drayton candidates: narrows a 4-way tie to 3-way (a **partial
+  answer**, explicitly not a full fix — two same-rarity printings from
+  different sets still tie). Per explicit instruction, Gemini's own
+  mistranslation problem (test #63) was left untouched, and asking
+  Gemini to also read rarity remains a separate, not-yet-answered
+  question (would need its own live-scan validation). **Not yet
+  confirmed**: needs a live rescan of a genuinely tied Trainer card in
+  production. See "Fix shipped: rarity" in `docs/test-cases.md` for the
+  full write-up and the ROADMAP.md Trainer/Supporter checklist item for
+  current status.
+- **Deploy-verification tooling: GET debug endpoint, DEPLOYED
+  2026-08-31** (`dpl_41kEm9oM4u4gAMQsM3CDJtnkHdec`, commit `194facb`).
+  Built after the SAME diacritic-regex transcription corruption from
+  test #63's deploy recurred a third time during the rarity deploy above
+  (caught pre-deploy via hash-verify each time, but with no way to
+  confirm the final attempt didn't repeat it, since no Vercel MCP tool
+  can fetch deployed source for a byte diff — a real, repeated gap;
+  Vercel's own REST API does have `GET /v8/deployments/{id}/files/
+  {fileId}` for this, but it needs a personal access token this session
+  doesn't have). `GET /api/identify` (never used by the real extension,
+  which only POSTs images — zero production risk) now returns
+  `{ sourceHash, normalizeDiacriticTest }`. **Confirmed live**:
+  `normalizeDiacriticTest` returned exactly `"pokemon collector"` —
+  direct, decisive, behavioral proof the diacritic-stripping regex
+  deployed correctly, closing the open question from test #63 without
+  waiting for a real accented-name card on stream. **Real finding**:
+  `sourceHash` did NOT match local `shasum` even on a confirmed-correct
+  deploy — investigated, and the most likely cause is Vercel's own
+  Node.js build pipeline transforming the file before runtime, meaning
+  `sourceHash` reflects the post-build bundle, not raw source, so it
+  can't be used as originally intended (a direct local-vs-deployed byte
+  comparison). Doesn't affect `normalizeDiacriticTest`'s reliability.
+  Open, low-priority follow-up: fix the code comment that overclaims
+  this next time the file is touched.
 - **Open strategy question** (raised repeatedly, never resolved): whether
   to keep patching the matching/scoring model reactively as live tests
   surface issues, or pause for a dedicated pass adopting more of
