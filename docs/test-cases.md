@@ -1018,6 +1018,195 @@ converge on PPT's actual chosen translation for untranslated Japanese
 card names — remains unsolved, with no proposed design. Not attempted
 this round.
 
+## Test #67 — Froakie (056/197, Cosmos Holo?): real logs contradict the panel's own warning text — two distinct, confirmed findings (2026-08-31)
+
+User flagged a live scan (`poke_yak`'s stream) and asked "what happened
+here?" from a screenshot alone. Panel showed: Read=High, Match=Low,
+matched "Froakie - 056/197 (Cosmos Holo)", Market (Holofoil) $0.75, with
+the generic ambiguous-match warning ("Multiple different printings of
+this card share identical HP, attack, and type — the card number is the
+only thing that tells them apart, and it wasn't legible this scan.").
+
+**Process note**: the first answer given in chat, based on the
+screenshot alone, called this "normal, correct behavior, not a bug" —
+without pulling logs first. That's a direct violation of this project's
+own standing convention (verify via real logs before concluding
+anything — CLAUDE.md "Standing working conventions" #1, now reworded to
+close this gap explicitly). Pulling the real Vercel logs for this exact
+scan (`dpl_41kEm9oM4u4gAMQsM3CDJtnkHdec`, the current production
+deployment, UTC 2026-09-01T01:02:16Z–01:02:32Z — 4 repeat scans of the
+same physical card, ~16s apart) showed the screenshot-only explanation
+was wrong on two separate, confirmable counts.
+
+**Finding A — the warning text's own claim ("wasn't legible this scan")
+is false for what actually happened.** Gemini reported `confidence:
+"High"` and a specific, non-null `cardNumber` on all 4 scans — never
+"illegible" or null. But the number was different, and wrong, every
+single time:
+
+| Scan (UTC) | Gemini `cardNumber` read | Confidence |
+|---|---|---|
+| 01:02:16 | `056/066` | High |
+| 01:02:23 | `056/066` | High |
+| 01:02:27 | `056/086` | High |
+| 01:02:32 | `056/064` | High |
+
+None of the 4 reads equals `056/197` — the number of the candidate the
+panel actually displayed. Every read shares the numerator "056" but the
+denominator is wrong and inconsistent across repeats — never matching.
+Same class of read-instability as tests #50/#63, and this scan ran on
+the deployment that already includes the `thinkingLevel`/
+`media_resolution` consistency fix (commit `3e895b1`, still present in
+the code as of `dpl_41kEm9oM4u4gAMQsM3CDJtnkHdec`). This is a real, live
+data point for that fix's still-open "needs live confirmation" status
+(see CLAUDE.md "Immediate next step") — and on this card it's an
+unfavorable one: the fix did not produce a stable, consistent number
+read across 4 back-to-back scans of the identical physical card. One
+hard card is not proof the fix doesn't help in general, but it's real
+evidence, not a clean confirmation.
+
+**Finding B — a genuine, un-shipped code bug: `numbersMatch()`'s
+partial-credit "totalMismatch" branch masks a real non-match from the
+more accurate warning path, so the misleading generic message fires
+instead.** Traced through `api/identify.js`:
+
+- `numbersMatch()` (`api/identify.js:394-417`) parses "056/066" (or
+  /086, /064) against candidate number "056/197": same prefix (none),
+  same numerator ("56"), but a different denominator/total ("66"/"86"/
+  "64" vs "197"). This hits the `bothHaveTotal` branch
+  (`api/identify.js:403-405`) and returns `{ match: true, points:
+  SCORE.number * 0.7 = 14, strength: "totalMismatch" }` — **`match:
+  true`**, even though these are not actually the same card number.
+- That spurious `match: true` causes the more accurate warning check at
+  `api/identify.js:1334-1352` ("No printing in our database has the
+  exact card number that was read...") to be **skipped**, since it only
+  fires when `numberMatchedForBest` is false.
+- The score math confirms this exactly: `14` (totalMismatch number
+  credit) `+ 6` (`SCORE.hp`, read HP "70" = candidate HP "70") `= 20`,
+  matching the logged `bestScore= 20` precisely.
+- Two raw PPT candidates for "Froakie" literally share the number
+  "056/197" — `"Froakie - 056/197 (Cosmos Holo)"` (rarity Promo) and
+  `"Froakie"` (rarity Common) — both score 20 identically, producing
+  `tieCount= 2`, which falls through to the generic hardcoded
+  `ambiguousNoteText()` (`api/identify.js:633-634`) — the "...wasn't
+  legible this scan" text — because Finding A's more accurate branch
+  never got the chance to fire ahead of it.
+
+Net effect: the panel told the user the number "wasn't legible," when
+the log-confirmed story is Gemini read a specific, high-confidence,
+wrong number four different times, and the code's own partial-credit
+logic for near-miss numbers silently absorbed that mismatch instead of
+surfacing the more honest "no candidate has the number that was read"
+message that already exists in the code for exactly this situation.
+**Not yet fixed** — needs a design decision (should a "totalMismatch"
+result still count as `match: true` for the Finding-A check, given a
+differing denominator usually means a genuinely different printing/
+set?). See CLAUDE.md "Recent / in-flight work" for the open item.
+
+**Verdict**: two distinct, confirmed findings from real logs — a live
+(unfavorable, one-card) data point on the still-open Gemini-consistency
+question, and a real, un-shipped messaging bug in how the ambiguous-
+match warning text is chosen when a "totalMismatch"-strength number is
+involved. The underlying candidate shown (`Froakie - 056/197 (Cosmos
+Holo)`, $0.75) is **not independently confirmed correct or incorrect**
+— no ground truth was given for this card, and Gemini's own number
+reads never matched it, so the match rests on name+HP alone. Treat this
+as inconclusive on identification, confirmed on the messaging bug.
+
+### Fix shipped: `numbersMatch()` "totalMismatch" no longer counts as a match — FIXED AND LOCALLY VERIFIED 2026-08-31, NOT yet deployed
+
+Scoped narrowly to Finding B above only — deliberately leaves Finding A
+(the Gemini read-instability observation) untouched as a passive
+tracked data point; this fix does not and cannot address that, since
+it's a Gemini vision-read issue, not a scoring bug.
+
+**What changed** (`api/identify.js`, in `numbersMatch()`): the
+`bothHaveTotal` branch used to return `{ match: true, points:
+SCORE.number * 0.7, strength: "totalMismatch" }` whenever the numerator
+matched but the total/denominator differed. Now returns `{ match:
+false, points: 0, strength: "none" }` for that case — treated as no
+match at all, the same as a numerator mismatch. A genuinely different
+total normally means a genuinely different set/printing, not a
+near-miss worth partial credit. The `neitherHasTotal` ("exact", both
+bare promo-style numbers) and asymmetric ("weak", one side has a total
+and the other doesn't) branches are **unchanged** — those are the
+legitimate partial/coincidental-match cases from tests #18 and #23
+respectively, a different situation from two candidates that both carry
+totals and disagree on what they are. Re-read both original fix
+comments before touching this function again; do not conflate the three
+cases.
+
+**Verification** (local, before any deploy — same discipline as the
+rarity-signal fix in test #53):
+
+1. **Unit-level**, calling the real (edited) `numbersMatch()` directly:
+   - `numbersMatch("056/066", "056/197")` → `{ match: false, points: 0,
+     strength: "none" }` (same for the "056/086" and "056/064" reads
+     from the other 3 real test #67 scans) — confirms the bug case is
+     fixed.
+   - `numbersMatch("056/197", "056/197")` → `{ match: true, points: 20,
+     strength: "exact" }` — a true exact match is unaffected.
+   - `numbersMatch("052", "52/108")` (test #23's original case) → `{
+     match: true, points: 7, strength: "weak" }` — unchanged, confirms
+     no regression of the earlier fix.
+   - `numbersMatch("SM91", "SM91")` (test #18's original case) → `{
+     match: true, points: 20, strength: "exact" }` — unchanged.
+2. **`scoreCandidate()` check**: the two real tied test #67 candidates
+   (`Froakie - 056/197 (Cosmos Holo)` and `Froakie` 056/197, both HP 70)
+   now score 6 each (HP match only) instead of 20 — the spurious 14-point
+   number credit is gone from both.
+3. **End-to-end against LIVE PokemonPriceTracker data** — the real,
+   unmodified `lookupCardPPT()` was called (via a local harness that
+   loads the actual `api/identify.js` source, not a reimplementation)
+   with the exact Gemini read from the 2026-09-01T01:02:16Z test #67 log
+   entry (`cardName: "Froakie"`, `cardNumber: "056/066"`, `hp: "70"`,
+   `subtype: "Basic"`, `attackName: "Collect"`, `language: "English"`)
+   against a live `search=Froakie&language=english` PPT fetch. The live
+   fetch returned the **same 23-candidate raw pool** seen in the
+   original production log (byte-for-byte matching sample), confirming
+   this is a faithful replay, not a cherry-picked fixture. Result:
+   ```
+   [lookup] best= { name: 'Froakie - 088/086', number: '088/086', hp: '70',
+     setName: 'ME04: Chaos Rising' } bestScore= 12 tieCount= 1
+   [lookup] number still missing after page1+2 — trying combined name+number
+     search= "Froakie 056/066"
+   [lookup] combined name+number search raw candidate count= 0
+   [lookup] NO NUMBER MATCH IN POOL: read number=056/066, language=English,
+     best=Froakie - 088/086 088/086 (matched on other signals only)
+   matchConfidence: Low
+   ambiguousNote: No printing in our database has the exact card number that
+     was read ("056/066") — this may be a set or promo PokemonPriceTracker
+     doesn't track yet. Showing the closest match found on other details
+     (HP/attack/set) as a rough estimate only; verify the exact printing
+     before trusting this price.
+   ```
+   The spurious 056/197 tie is gone; the accurate "NO NUMBER MATCH IN
+   POOL" warning fires instead of the misleading "wasn't legible"
+   generic tie-break note. As a side benefit, the fix also let the
+   page-2 → combined-search fallback chain run for this case (it
+   correctly tried `"Froakie 056/066"` and correctly found nothing) —
+   the old spurious `match:true` had been silently short-circuiting that
+   chain (`stillMissingAfterPage2` was false whenever a totalMismatch
+   candidate existed), so this is a secondary correctness improvement,
+   not just a messaging fix.
+
+**Not independently re-confirmed**: which candidate is the *actual*
+correct Froakie printing for the real physical card in test #67 is
+still unknown — no ground truth was ever given for that card, and this
+fix doesn't change that; it only ensures the system is now honest about
+not having a confident number match, instead of showing a specific
+wrong-but-confident-sounding candidate under a false "illegible" excuse.
+
+**Not yet deployed.** Code change is committed locally only, pending
+the user's go-ahead per CLAUDE.md's "When to ask before acting" (every
+Vercel production deploy requires asking first, no exceptions carved
+out for "same discipline as before"). Once deployed: needs the usual
+deploy-verification checklist (hash match, live `400` on empty POST,
+runtime-log confirmation), then a live rescan — not necessarily the
+same Froakie card (won't reliably reappear), but any future card that
+hits a similar totalMismatch/tie shape — for full production
+confirmation, per this project's standing definition of "rescan."
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

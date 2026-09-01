@@ -33,9 +33,18 @@ Immediate next step: three separate fixes are deployed and verified but
 NOT yet live-confirmed in production (see "Recent / in-flight work"
 below for all three) — (1) the Gemini read-consistency fix (commit
 `3e895b1`, `thinkingLevel`/`media_resolution`) needs a live rescan of a
-hard card to confirm it actually reduces hallucination-class failures;
-(2) the name-filter rescue-path fix (commit `6708bca`, test #63) needs a
-live rescan that actually hits its specific trigger (zero name-filter
+hard card to confirm it actually reduces hallucination-class failures —
+**one real, unfavorable data point exists now** (test #67, 2026-08-31,
+Froakie): on `dpl_41kEm9oM4u4gAMQsM3CDJtnkHdec` (which already includes
+this fix), 4 repeat scans of the same physical card 16s apart produced
+a *different, wrong* cardNumber denominator every time ("056/066",
+"056/066", "056/086", "056/064" — never the actual "056/197"), each at
+self-reported High confidence. One hard card doesn't settle the
+question either way (it may still help on other cards/failure shapes),
+but it's real evidence the fix hasn't fully solved read-instability —
+not the clean confirmation this item is waiting for; (2) the
+name-filter rescue-path fix (commit `6708bca`, test #63) needs a live
+rescan that actually hits its specific trigger (zero name-filter
 survivors + a legible cardNumber) — no real scan has exercised it yet;
 (3) the `rarity` tie-break signal (commit `d941eb8`, test #53) needs a
 live rescan of a genuinely tied Trainer card to confirm it narrows a
@@ -43,6 +52,11 @@ real tie in production, not just in isolated scoring-logic tests. These
 are three separate, unrelated fixes for separate problems — don't
 conflate them. Update ROADMAP.md's Phase 1 checklist once any of them
 gets a real confirmation.
+
+The `numbersMatch()` "totalMismatch" scoring bug found via test #67 is
+now **fixed and locally verified against live PPT data** (see "Recent /
+in-flight work" below) — **committed but NOT YET DEPLOYED**, pending the
+user's go-ahead per "When to ask before acting" below.
 
 ## When to ask before acting
 
@@ -220,13 +234,29 @@ checklist before reporting something as finished:
 
 ## Standing working conventions (established over many sessions — follow these)
 
-1. **Verify via real logs before assuming a root cause.** Vercel runtime
-   logs (`mcp__Vercel__get_runtime_logs`) are ground truth; a plausible
-   guess from reading the code is not enough, and neither is a
-   WebFetch/docs summary of a third-party API (see the `cardNumber`
-   parameter saga in docs/test-cases.md test #31/#32 — a docs summary
-   claimed a parameter existed; the API's own 400 error, naming its real
-   accepted parameters, proved it never had).
+1. **Verify via real logs before assuming a root cause — including a
+   quick chat answer, not just a formal fix.** Vercel runtime logs
+   (`mcp__Vercel__get_runtime_logs`) are ground truth; a plausible guess
+   from reading the code is not enough, and neither is a WebFetch/docs
+   summary of a third-party API (see the `cardNumber` parameter saga in
+   docs/test-cases.md test #31/#32 — a docs summary claimed a parameter
+   existed; the API's own 400 error, naming its real accepted
+   parameters, proved it never had). **This applies just as much to an
+   informal "what happened here?" screenshot question as to a scoped
+   bug investigation.** Pull the logs for that exact scan BEFORE
+   characterizing a panel's behavior as correct/expected/working-as-
+   designed — not only after the user pushes back, and not only when
+   the task already smells like a bug. A confident-sounding explanation
+   built from a screenshot alone is exactly the plausible-but-unverified
+   guess this rule exists to prevent — see test #67 in
+   `docs/test-cases.md` (2026-08-31), where an initial "this is normal,
+   not a bug" read of a Froakie scan's screenshot got the mechanism
+   wrong on two separate, confirmable counts once the real logs were
+   pulled: the warning text's own claim ("card number wasn't legible")
+   was false (Gemini read a specific High-confidence number every time,
+   just a different wrong one each scan), and the real reason the
+   accurate warning path didn't fire was a separate, still-unfixed
+   scoring bug (see CLAUDE.md "Recent / in-flight work" below).
 2. **If a user pushes back with a specific correction, re-investigate —
    don't just re-assert the prior conclusion.** Several real root causes
    in this project's history were only found because the user corrected
@@ -298,6 +328,50 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **`numbersMatch()` "totalMismatch" scoring bug (test #67) — FIXED
+  AND LOCALLY VERIFIED 2026-08-31, NOT YET DEPLOYED** (pending the
+  user's go-ahead). `numbersMatch()` (`api/identify.js` — see the FIX
+  comment directly above the function) used to treat a candidate whose
+  number shares Gemini's read numerator but has a *different*
+  denominator/total (e.g. read `056/066`, candidate `056/197`) as
+  `match: true` (0.7x partial credit, `strength: "totalMismatch"`) —
+  even though that's a different card number, not a legibility issue.
+  This spuriously satisfied the `numberMatchedForBest` check
+  (`api/identify.js:1334-1352`), which exists specifically to show an
+  honest "no candidate has the number that was read" note — so that
+  more accurate note got skipped, and when a tie resulted (as in test
+  #67, two same-number candidates scoring 20 = 14 totalMismatch + 6 HP),
+  the generic hardcoded `ambiguousNoteText()` fired instead, falsely
+  claiming the number "wasn't legible this scan." **Fix**: a
+  `bothHaveTotal` mismatch now returns `{ match: false, points: 0,
+  strength: "none" }` — treated as no match at all, same as a numerator
+  mismatch. Deliberately left the `neitherHasTotal`/asymmetric-"weak"
+  branches untouched — those are the legitimate partial-match cases
+  from test #23 (bare promo number vs. numbered-set candidate, one side
+  has no total at all), a different situation from two totals that
+  disagree. **Verified two ways**: (1) unit-level — `numbersMatch`
+  called directly confirms the totalMismatch pair now returns
+  `match:false`, while test #23's case (`"052"` vs `"52/108"` →
+  `weak`, 7 points) and test #18's case (`"SM91"` vs `"SM91"` → exact,
+  20 points) are unchanged; (2) end-to-end against LIVE PokemonPriceTracker
+  data — ran the real `lookupCardPPT()` (not a reimplementation) with
+  the exact test #67 read (`cardNumber: "056/066"`, `hp: "70"`, etc.)
+  against a live PPT fetch that returned the identical 23-candidate raw
+  pool seen in the original production log. Result: `best` is no longer
+  the spurious 056/197 tie — it's `Froakie - 088/086` (score 12, tieCount
+  1, decided on HP/attackName/rarity signals only), `matchConfidence:
+  "Low"`, and `ambiguousNote` is now the accurate "No printing in our
+  database has the exact card number that was read (\"056/066\")..."
+  message — the misleading "wasn't legible" text no longer fires for
+  this case. Also confirmed the fix correctly lets the page-2 →
+  combined-search fallback chain run for this exact scenario, which the
+  old spurious `match:true` had been silently short-circuiting. See test
+  #67's "Fix shipped" note in `docs/test-cases.md` for the full
+  verification transcript. **Not yet deployed** — code change is
+  committed locally only; needs the user's go-ahead per "When to ask
+  before acting," then the usual deploy-verification checklist, then a
+  live rescan (any future card that hits a similar totalMismatch/tie
+  shape) for full production confirmation.
 - **Trainer-subtype extraction fix (commit `d589d46`) — DEPLOYED
   2026-08-30** (`dpl_GnxKLpHTkcN8QuVXhY1gPgpmpk1P`, aliased to
   `whatnot-pokemon-identify.vercel.app`). First non-Pokémon (Trainer/

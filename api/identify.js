@@ -391,6 +391,29 @@ function normalizeNumber(raw) {
 // entirely, so a shared numerator is weak coincidental evidence, not
 // confirmation. Downgraded to well below MEDIUM_THRESHOLD on its own so a
 // bare-number-only match can no longer surface as a confident answer.
+// FIX (2026-08-31, test #67 — Froakie 056/066 vs 056/197): the
+// `bothHaveTotal` branch used to give 0.7x partial credit AND
+// `match: true` when the numerator matched but the total/denominator
+// didn't ("056/066" vs "056/197") — but a different total is normally a
+// different set/printing entirely, not a near-miss. That spurious
+// `match: true` fed straight into every caller that asks "did the read
+// number match anything" (the page-2/combined-search retry triggers,
+// the name-filter rescue path, the Shadowless-sibling lookup, and —
+// worst — the `numberMatchedForBest`/`anyNumberMatch` check that gates
+// the accurate "no candidate has this number" warning). Confirmed via
+// real logs: two candidates sharing the literal number "056/197" tied
+// at score 20 (14 from this 0.7x credit + 6 HP) purely because of this
+// coincidental-numerator credit, which suppressed the accurate warning
+// and let the generic "wasn't legible" message fire instead, even
+// though Gemini had read a specific, wrong, denominator every time.
+// Now treated as NO match at all (same as a numerator mismatch) — a
+// mismatched total is disqualifying, not partial evidence. Deliberately
+// leaves the `neitherHasTotal`/asymmetric-"weak" branches below
+// untouched — those are the legitimate partial-match cases from test
+// #23 (a bare promo number vs. a numbered-set candidate, where one side
+// simply doesn't carry a total at all) and are a different situation
+// from two candidates that both HAVE totals and disagree on what they
+// are.
 function numbersMatch(readRaw, candRaw) {
   const a = normalizeNumber(readRaw);
   const b = normalizeNumber(candRaw);
@@ -402,7 +425,7 @@ function numbersMatch(readRaw, candRaw) {
 
   if (bothHaveTotal) {
     if (a.total !== b.total || a.totalPrefix !== b.totalPrefix) {
-      return { match: true, points: SCORE.number * 0.7, strength: "totalMismatch" };
+      return { match: false, points: 0, strength: "none" };
     }
     return { match: true, points: SCORE.number, strength: "exact" };
   }
