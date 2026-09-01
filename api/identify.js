@@ -1602,6 +1602,45 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  // DEBUG (2026-08-31): deploy-verification endpoint. Added specifically
+  // because (a) no Vercel MCP tool can fetch deployed source for a byte
+  // diff against local — a real, repeated gap noted in CLAUDE.md's
+  // "Known gotchas" — and (b) the manual chunk-based deploy of this exact
+  // file hit the SAME diacritic-stripping regex transcription corruption
+  // twice in a row during the rarity-signal deploy (see
+  // test #6x in test-cases.md), with no way at the time to confirm the
+  // third (final) attempt didn't repeat it. `sourceHash` lets any future
+  // deploy be verified with a one-line comparison against `shasum -a 1
+  // api/identify.js` run locally before deploying, instead of hoping.
+  // `normalizeDiacriticTest` runs the ACTUAL deployed normalizeNameForMatch
+  // on a fixed known input, so a corrupted diacritic-stripping regex is
+  // directly and permanently observable via a plain GET request instead
+  // of staying an open question until a Pokémon Collector-style card
+  // happens to come up live on stream. The real extension only ever
+  // POSTs an image — GET is never used by real user traffic, so this
+  // carries zero behavioral risk to production scans.
+  if (req.method === "GET") {
+    let sourceHash = null;
+    try {
+      const crypto = require("crypto");
+      const fs = require("fs");
+      sourceHash = crypto.createHash("sha1").update(fs.readFileSync(__filename)).digest("hex");
+    } catch (e) {
+      sourceHash = null;
+    }
+    res.status(200).json({
+      ok: true,
+      sourceHash,
+      // Correct value MUST be exactly "pokemon collector" (diacritic
+      // stripped, lowercased, punctuation normalized to spaces, trimmed).
+      // If this ever shows "pok mon collector" or literal combining-mark
+      // characters instead, the diacritic-stripping regex got corrupted in
+      // transit during deploy — the same failure class as test #6x.
+      normalizeDiacriticTest: normalizeNameForMatch("Pokémon Collector"),
+    });
+    return;
+  }
+
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
