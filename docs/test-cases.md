@@ -1231,6 +1231,170 @@ standard (any card in the same failure class, not literally the same
 physical card — see CLAUDE.md "Standing working conventions"). This fix
 is fully confirmed, not just deployed.
 
+## Research: latency and PPT rate-limit options (2026-09-01) — options only, nothing built
+
+Two separate questions, kept separate below. Pulled from real Vercel
+runtime-error data (`get_runtime_errors`, 7-day window — raw per-request
+`[timing]` log lines were NOT available: this project is on Vercel's
+Hobby-tier 1h log retention, and there had been no live scans in the
+prior 24h, so no fresh per-request breakdown could be pulled; the
+pre-aggregated error table was the real data source instead) and one
+live, read-only PPT API request (existing `.env.local` key, `limit=1`,
+no card lookup logic touched — consistent with "running the app
+locally" being free rein per CLAUDE.md).
+
+### 1. Latency
+
+**Real finding — Gemini is the dominant, and sometimes total, latency
+cost.** `GEMINI_TIMEOUT_MS = 5000` (`api/identify.js:107`). Real error
+data: **31 real "Gemini call failed: This operation was aborted after
+ms= 5002-5004" full timeouts** between 2026-08-31T00:18:32Z and
+2026-09-01T01:40:53Z (~25h window), all on deployments that already
+include the `thinkingLevel: "low"` + `media_resolution: HIGH` fix
+(commit `3e895b1`). These are complete scan failures (no card ID
+returned at all), not just slow ones — worse than a latency problem.
+The code's own comment trail (`api/identify.js:279-295`) already flags
+the likely cause: `thinkingLevel` was deliberately raised
+`"minimal" → "low"` on 2026-08-29 for accuracy (test #50's hallucination
+case), an explicitly acknowledged latency trade-off that was never
+confirmed with a real timing measurement afterward — this 31-timeout
+count in the following ~25h is the first real evidence that trade-off
+has a cost. No fresh successful-scan `[timing] gemini ms=` /
+`lookup ms=` breakdown could be pulled (see retention note above) to
+compare against the pre-fix baseline (1511-2602ms total, recorded
+pre-rescue-path/pre-rarity/pre-`low` in the "Speed benchmarks" section
+above) — that comparison needs a live rescan once retention/traffic
+allows.
+
+Known sequential timeout ceilings (worst case, not typical latency):
+Gemini 5000ms → PPT page-1 2500ms (+1200ms retry on 5xx) → PPT page-2
+2500ms (+1200ms retry) → PPT combined-search 2500ms (+1200ms retry) →
+TCGplayer price-history 2500ms. Only Gemini's ceiling has real evidence
+of being hit in practice; no runtime-error data shows PPT/TCGplayer
+`fetchWithTimeout` aborts as a meaningful contributor to total latency
+recently.
+
+**Options, most to least clearly worth it:**
+
+1. **Lower `thinkingLevel` back toward `"minimal"`, or cap Gemini's own
+   timeout below 5000ms with a fallback.** Directly targets the
+   confirmed 31-timeout data point. Real trade-off: `"low"` was raised
+   specifically to fight test #50's hallucination class — reverting
+   risks reopening that (unconfirmed either direction; test #50 was
+   never re-run at `"low"` under controlled conditions). A live-scan
+   comparison (several scans at `"low"` vs `"minimal"`, real timing +
+   real accuracy) would settle this without guessing.
+2. **Raise `GEMINI_TIMEOUT_MS` above 5000ms.** Would convert some of
+   the 31 hard failures into slow-but-successful scans instead — but
+   directly conflicts with the project's own "2-5s target for a live
+   buy/bid decision" design goal (`api/identify.js:93`), so this trades
+   completeness for staying inside the window that makes the tool
+   useful at all. Only worth it if most of the 31 timeouts are "just
+   barely" over 5000ms (real data available: all three sampled were
+   5002-5004ms, i.e. right at the edge) rather than genuinely hung
+   calls — the sample suggests the model IS finishing, just marginally
+   too slowly, which favors this option over a real hung-request theory.
+3. **Drop `includeHistory=true` from every PPT search call** (see
+   credit-cost finding in section 2 below) — pure latency win is
+   secondary here (smaller response payload) but real: this flag was
+   added for a pricing architecture (`buildPriceVariantsFromPPT`/
+   `buildAggregatePricing`) that no longer exists in the code (removed
+   2026-08-30, replaced by direct TCGplayer live pricing) but was never
+   removed from the request. Confirmed live: a `limit=1` PPT request
+   with `includeHistory` omitted still returns the full `prices` object
+   (`market`, `low`, `primaryPrinting`, `variants`) — the only field of
+   `prices` still read anywhere in the code (`best.prices?.primaryPrinting`,
+   `api/identify.js:1525`) does not require `includeHistory=true` at
+   all. Zero accuracy risk (the removed data is provably unused); the
+   real payoff is on the rate-limit side (question 2) more than raw
+   latency.
+4. **Don't touch page-2/combined-search/rarity fallback logic to save
+   latency.** Explicitly flagging per the research brief: no evidence
+   in the error data that these fallbacks are a meaningful latency
+   contributor (no timeout aborts attributed to them), and cutting them
+   would reopen the catalog-coverage-gap and Trainer-tie-break problems
+   they were built to fix (tests #35/#37/#49/#53/#63). Not recommended.
+
+### 2. Rate limiting
+
+**Real finding — PPT bills by requested `limit`, not by result count,
+and every one of this project's search calls already pays a hidden 2x
+multiplier.** Confirmed via PPT's own live docs (pokemonpricetracker.com/docs,
+fetched via browser, not a cached WebFetch summary — same discipline as
+the `cardNumber` doc-summary lesson from test #31/#32) and cross-checked
+against a real API response:
+
+- **Credit formula**: `limit × (1 + includeHistory + includeEbay +
+  includeCardmarket + premiumGranularity)`. Billed on the *requested*
+  `limit`, not the number of cards actually returned.
+- **This project's every search call** (`api/identify.js:740`) requests
+  `limit=30, includeHistory=true` → **60 credits per call**, confirmed
+  exactly against a real production 429 body from test #51: `"Request
+  requires 60 credits, you have 17 daily... remaining"`.
+- **`includeHistory=true` is the entire reason it's 60 and not 30.**
+  Per the latency section above, nothing in the code reads the deep
+  history time-series this flag adds — only `prices.primaryPrinting`,
+  which is present on every card object regardless (verified live: a
+  bare `limit=1` request with no `includeHistory` param returned
+  `apiCallsConsumed.breakdown.history: 0` and still included
+  `prices.primaryPrinting`). This looks like leftover cost from the
+  pre-2026-08-30 PPT-sourced pricing architecture that TCGplayer
+  live-pricing replaced.
+- **Fallback chain cost, concretely**: a scan that needs page-1 only =
+  60 credits. Page-1 + page-2 = 120. Page-1 + page-2 + combined-search
+  (the test #63 rescue path) = 180 credits — a single hard scan can
+  cost 3x a clean one, on top of the extra latency.
+- **Plan/limits** (confirmed live via docs + real response headers):
+  current plan is "API" ($9.99/mo) = 20,000 daily credits + 60
+  calls/min, same per-minute cap as every paid tier below Business
+  ($99/mo, 500/min). A large prepaid balance exists right now
+  (~191,550 credits remaining from the 2026-08-29 $5 top-up per test
+  #51) — daily-quota exhaustion is NOT an near-term risk at current
+  balance, but the **per-minute cap (60/min, unchanged by prepaid
+  credits)** is: real per-minute 429s already happened twice (test #30,
+  Palkia, 4 rescans/30s; 2026-08-31, Celebi VMAX) and a 3-call fallback
+  chain burns through that per-minute budget 3x faster than a 1-call
+  scan during a burst of rapid rescans on one card.
+
+**Options:**
+
+1. **Drop `includeHistory=true`.** Cuts every call from 60→30 credits
+   (33% → 50% more daily headroom depending on how you count it; a
+   3-call worst-case scan drops from 180→90 credits). No known accuracy
+   or behavior change — the data it adds is unread. Lowest-risk item in
+   this whole list; worth verifying once more against a second real
+   card before shipping (confirm `primaryPrinting` isn't sometimes
+   `includeHistory`-only for some card types), but nothing found in
+   PPT's docs suggests that.
+2. **Client-side caching of recent identical-card lookups** (real
+   option, since PPT's own docs explicitly permit this: "Caching in
+   your own database and serving your own first-party apps is
+   permitted"). A short-lived in-memory or KV cache keyed on Gemini's
+   `cardName`+`cardNumber`+`language` read would eliminate PPT calls
+   entirely on the rapid-rescan pattern that caused test #30 and the
+   2026-08-31 Celebi 429 — the same physical card scanned 2-4x in
+   under a minute is exactly this project's own real usage pattern
+   (per "What 'rescan' means in this project" above). Real trade-off:
+   a cache keyed on Gemini's *read* (not ground truth) would also cache
+   a wrong read's wrong result for its TTL — needs a short TTL (e.g.
+   30-60s) to stay inside the "rapid rescan" window without persisting
+   a bad match across a genuinely different card later in the stream.
+3. **Smarter fallback triggering** (e.g. skip page-2 pagination when
+   page-1's candidate pool is small enough that a missing number is
+   more likely a genuine catalog gap than a crowding-out problem) —
+   real option, but no data in this pull suggests fallback *frequency*
+   is currently a problem (only 2 real per-minute 429s found across the
+   full log history checked); flagging this as lower-priority than
+   options 1-2 rather than dropping it, since it wasn't the brief's
+   focus and deserves its own accuracy-tradeoff analysis before
+   changing when fallbacks fire.
+4. **Accept current limits as a cost of accuracy.** Legitimate given
+   the daily quota isn't under near-term pressure (large prepaid
+   balance) and per-minute hits have been rare (2 confirmed instances).
+   Options 1-2 above are low-risk enough that "do nothing" doesn't look
+   like the strongest choice here, but it's the honest baseline this
+   list should be compared against.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
