@@ -85,9 +85,21 @@ for the fix history.
       `thinkingLevel` was in question. See `docs/test-cases.md`'s
       "Research: latency and PPT rate-limit options" for the full
       trade-off writeup and the new dated entry logging this decision.
-      Not yet confirmed via live rescan — needs both a timeout-rate check
-      over the following ~24h and continued watching for any recurrence
-      of the #50/#63/#67 instability pattern now that `thinkingLevel` is
+      **DEPLOYED 2026-09-01** (commit `d25584b`, `dpl_5omfXcn98uMcZ4ZzUNpaTvVN38VP`,
+      aliased to `whatnot-pokemon-identify.vercel.app`) — deploy checklist
+      followed in full (scratch-file byte diff against real source before
+      deploying, which caught and fixed the same recurring diacritic-regex
+      transcription corruption from test #63/#6x one more time before it
+      shipped); confirmed `READY`, build log shows "Downloading 3
+      deployment files", live `GET /api/identify` returns
+      `normalizeDiacriticTest: "pokemon collector"`, live `POST
+      /api/identify {}` returns real `400 {"error":"Missing imageBase64"}`,
+      and runtime logs confirm both requests were served by
+      `dpl_5omfXcn98uMcZ4ZzUNpaTvVN38VP`. Pushed to GitHub
+      (`cbbf8b1..d25584b`). Not yet confirmed via live rescan — needs both a
+      timeout-rate check over the following ~24h and continued watching for
+      any recurrence of the #50/#63/#67 instability pattern now that
+      `thinkingLevel` is
       back at `"minimal"`.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.

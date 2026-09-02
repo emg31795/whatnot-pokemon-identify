@@ -1482,14 +1482,35 @@ cost -> reverted `thinkingLevel` back to `"minimal"` in `api/identify.js`.
 Scope deliberately excludes the still-open rate-limiting options
 (client-side caching, etc.) from the same research pass.
 
-**Not yet confirmed via live rescan.** Two things to watch once this is
-deployed and back on live traffic: (1) whether the timeout rate actually
-drops over the following ~24h (compare against the 31-in-25h baseline
-above), and (2) whether the #50/#63/#67 instability pattern (wrong
-reads, hallucinated fields, at High confidence) recurs, holds steady, or
-improves now that `thinkingLevel` is back at `"minimal"` — reverting
-removes an unproven mitigation, so a recurrence wouldn't be a regression
-from this change, just the original problem still being unsolved.
+**Deployed 2026-09-01** (commit `d25584b`, deployment
+`dpl_5omfXcn98uMcZ4ZzUNpaTvVN38VP`, aliased to
+`whatnot-pokemon-identify.vercel.app`). Deploy checklist followed in
+full: read the real file, reconstructed it to a scratch file, and
+hash-verified byte-for-byte against the real source before deploying —
+this caught the SAME recurring diacritic-stripping-regex transcription
+corruption documented in test #63/#6x one more time on the first attempt
+(`.replace(/[̀-ͯ]/g, "")` came out as literal Unicode combining
+characters), fixed non-generatively by copying the exact bytes for that
+one line directly from the source file via a small Python script, then
+re-verified a clean 0-diff / matching sha1
+(`9ed91b96052cebaa952893f768f3ac85b92fb25b`) before deploying. Confirmed:
+deployment state `READY`, aliased to production; build log shows
+"Downloading 3 deployment files"; live `GET /api/identify` returns
+`normalizeDiacriticTest: "pokemon collector"` (direct proof the
+diacritic regex deployed intact); live `POST /api/identify {}` returns
+real `400 {"error":"Missing imageBase64"}`; runtime logs confirm both
+requests were served by `dpl_5omfXcn98uMcZ4ZzUNpaTvVN38VP`. Pushed to
+GitHub (`cbbf8b1..d25584b`).
+
+**Not yet confirmed via live rescan.** Two things to watch now that this
+is deployed and back on live traffic: (1) whether the timeout rate
+actually drops over the following ~24h (compare against the 31-in-25h
+baseline above), and (2) whether the #50/#63/#67 instability pattern
+(wrong reads, hallucinated fields, at High confidence) recurs, holds
+steady, or improves now that `thinkingLevel` is back at `"minimal"` —
+reverting removes an unproven mitigation, so a recurrence wouldn't be a
+regression from this change, just the original problem still being
+unsolved.
 
 ## Related docs
 

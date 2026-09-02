@@ -331,6 +331,30 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Reverted Gemini `thinkingLevel` from `"low"` back to `"minimal"` —
+  DECIDED, DEPLOYED, AND PUSHED 2026-09-01** (commit `d25584b`,
+  `dpl_5omfXcn98uMcZ4ZzUNpaTvVN38VP`, aliased to
+  `whatnot-pokemon-identify.vercel.app`). Resolves the open
+  latency-vs-accuracy trade-off from the 2026-09-01 research pass (see
+  `docs/test-cases.md`'s "Research: latency and PPT rate-limit options").
+  `thinkingLevel` was raised `"minimal"` → `"low"` on 2026-08-29 (test
+  #50) to try to reduce Gemini read instability, but never showed a
+  confirmed benefit — tests #63 and #67, both on deployments already
+  carrying `"low"`, still showed the same instability class — while a
+  real cost showed up: 31 confirmed hard Gemini timeouts in a ~25h
+  window (2026-08-31 to 2026-09-01), all at the `GEMINI_TIMEOUT_MS =
+  5000` wall. No confirmed benefit, confirmed cost → reverted.
+  `media_resolution: MEDIA_RESOLUTION_HIGH` is untouched — only
+  `thinkingLevel` was in question. Deploy checklist followed in full,
+  including the scratch-file byte-diff-verify step, which again caught
+  the same recurring diacritic-regex transcription corruption (fixed
+  non-generatively, re-verified clean before deploying — see
+  `docs/test-cases.md` for the full trace). Confirmed `READY`, 3 files in
+  the build log, live `GET`/`POST` checks, and runtime logs served by
+  this exact deployment; pushed to GitHub (`cbbf8b1..d25584b`). **Not yet
+  confirmed via live rescan** — needs a ~24h timeout-rate check and
+  continued watching for any recurrence of the #50/#63/#67 instability
+  pattern now that `thinkingLevel` is back at `"minimal"`.
 - **Removed redundant `includeHistory=true` from every PokemonPriceTracker
   search call — FIXED AND DEPLOYED 2026-09-01** (commit pending push,
   `dpl_6z5qNTuhHbmWzuK5WD4ryA4kmTTm`, aliased to
