@@ -728,16 +728,32 @@ const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracke
 // $27.59, MP $21.79, HP $20.41, DMG $12.50 — ratios nowhere close to our
 // flat 85/70/55/40% multiplier table) instead of the single NM-only number
 // we'd been extrapolating from this whole time. `includeHistory=true` was
-// simply never being requested. Turning it on here (permanently, on the
-// existing request — NOT a second network call, so no latency hit) and
-// reading the real per-condition breakdown in buildPriceVariantsFromPPT /
-// buildAggregatePricing below. CONDITION_MULTIPLIERS is now only a
-// fallback for whichever specific condition(s) PPT doesn't have real data
-// for on a given printing (e.g. Raichu GX SM90 above was missing a real
-// "Heavily Played" figure) — the UI marks exactly those estimated tiers,
-// not the whole table, since most of the table is now real.
+// turned on here to feed buildPriceVariantsFromPPT/buildAggregatePricing
+// below with that per-condition breakdown.
+//
+// REMOVED (2026-09-01, credit-cost research): buildPriceVariantsFromPPT/
+// buildAggregatePricing (the only consumers of includeHistory's extra
+// data) were themselves removed 2026-08-30 when pricing moved to live
+// TCGplayer per-condition fetches (see the live-pricing section below) —
+// `includeHistory=true` kept running on every call anyway, silently
+// doubling PPT credit cost (confirmed live: PPT bills
+// limit × (1 + includeHistory + includeEbay + ...), so limit=30 +
+// includeHistory=true = 60 credits/call, not 30 — matches a real
+// production 429 body verbatim: "Request requires 60 credits"). Verified
+// live before removing: `prices.primaryPrinting` — the only field of
+// `prices` still read anywhere downstream (pickDefaultVariantKey via
+// `best.prices?.primaryPrinting`) — and the top-level `variants` field
+// (source of `_rawVariants`, used only in diagnostic logging, never in
+// scoring/pricing) are BYTE-IDENTICAL with and without includeHistory on
+// a real request (Charizard, both returned primaryPrinting "Holofoil"
+// and an identical variants object). includeHistory=true only adds
+// `prices.variants`' per-condition breakdown, a new `prices.conditions`
+// object, and a top-level `priceHistory` key — none referenced anywhere
+// in this file (confirmed via grep). Halves the credit cost of every PPT
+// call (60→30) and every fallback (page-2/combined-search each drop the
+// same way) with no behavior change.
 async function fetchPokemonPriceTracker(name, { graded = false, language = "English", offset = null } = {}) {
-  const params = new URLSearchParams({ search: name, limit: "30", includeHistory: "true" });
+  const params = new URLSearchParams({ search: name, limit: "30" });
   if (graded) params.set("includeEbay", "true");
   if (String(language).toLowerCase() === "japanese") params.set("language", "japanese");
   if (offset) params.set("offset", String(offset));

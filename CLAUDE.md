@@ -331,6 +331,39 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Removed redundant `includeHistory=true` from every PokemonPriceTracker
+  search call — FIXED AND DEPLOYED 2026-09-01** (commit pending push,
+  `dpl_6z5qNTuhHbmWzuK5WD4ryA4kmTTm`, aliased to
+  `whatnot-pokemon-identify.vercel.app`). Came out of the 2026-09-01
+  latency/rate-limit research pass (see `docs/test-cases.md`'s "Research:
+  latency and PPT rate-limit options"): PPT bills credits as
+  `limit × (1 + includeHistory + includeEbay + ...)`, and every call in
+  `fetchPokemonPriceTracker` (`api/identify.js`) was requesting
+  `limit=30, includeHistory=true` — 60 credits/call, not 30, confirmed
+  against a real production 429 body. `includeHistory=true`'s only
+  purpose (feeding `buildPriceVariantsFromPPT`/`buildAggregatePricing`)
+  was dead — those functions were removed 2026-08-30 when pricing moved
+  to live TCGplayer fetches, but the flag kept running anyway. Verified
+  live (two real PPT queries, with/without the flag) that the one field
+  still read from `prices` downstream (`primaryPrinting`) and the
+  `variants` field (diagnostic-logging only) are byte-identical either
+  way — zero behavior change. Halves the credit cost of every PPT call
+  and every fallback (page-2/combined-search each drop 60→30; a full
+  page1+page2+combined scan drops from 180→90). Deploy checklist
+  followed in full, including a scratch-file diff-verify step that again
+  caught the same diacritic-regex transcription corruption documented in
+  test #63 — fixed non-generatively (copied the exact bytes from source
+  via a small script) and re-verified clean before deploying; see the
+  full write-up in `docs/test-cases.md` for that story and one other
+  real mistake (a deploy call that initially omitted `api/identify.js`
+  entirely, caught immediately, never reached `READY`/production). Not
+  yet behaviorally confirmed via a live scan — this has no accuracy
+  claim to verify via rescan (the pre-deploy live comparison already
+  confirmed the removed data was unused); real confirmation would be a
+  lower observed daily-credit burn over time. The timeout/thinkingLevel
+  latency question from the same research pass is explicitly NOT
+  touched here — that's a separate decision still pending the user's
+  review of the full options writeup.
 - **`numbersMatch()` "totalMismatch" scoring bug (test #67) — FIXED,
   DEPLOYED, AND CONFIRMED IN PRODUCTION 2026-08-31** (commit `42429a5`,
   `dpl_DjjbNMqE5nHb45MGYb3Sjby6JXXB`, aliased to

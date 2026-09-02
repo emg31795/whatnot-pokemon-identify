@@ -1395,6 +1395,74 @@ against a real API response:
    like the strongest choice here, but it's the honest baseline this
    list should be compared against.
 
+## Fix shipped: removed `includeHistory=true` from every PPT search call — DEPLOYED 2026-09-01
+
+Option 1 from the research above (commit pending push, deploy
+`dpl_6z5qNTuhHbmWzuK5WD4ryA4kmTTm`, aliased to
+`whatnot-pokemon-identify.vercel.app`). `fetchPokemonPriceTracker`
+(`api/identify.js`) requested `limit=30, includeHistory=true` on every
+single PPT search — confirmed via PPT's own live docs and a real 429
+body that this costs 60 credits/call, not 30 (PPT bills
+`limit × (1 + includeHistory + ...)`). `includeHistory=true`'s only
+purpose was feeding `buildPriceVariantsFromPPT`/`buildAggregatePricing`,
+both removed 2026-08-30 when pricing moved to live TCGplayer
+per-condition fetches — the flag kept running anyway, silently doubling
+cost for data nothing reads anymore.
+
+**Verified live before removing, not just via code inspection**: queried
+PPT's real API twice (once with `includeHistory=true`, once without) for
+the same card. `prices.primaryPrinting` — the only field of `prices`
+still read downstream (`pickDefaultVariantKey` via
+`best.prices?.primaryPrinting`) — and the top-level `variants` field
+(source of `_rawVariants`, used only in diagnostic `console.log` calls,
+never in scoring/pricing) were byte-identical in both responses
+(Charizard, both returned `primaryPrinting: "Holofoil"` and an identical
+`variants` object). `includeHistory=true` only added `prices.variants`'
+per-condition breakdown, a `prices.conditions` object, and a top-level
+`priceHistory` key — confirmed via `grep` that none of the three are
+referenced anywhere else in the file. Zero behavior change; halves the
+credit cost of every PPT call and every fallback (page-2/combined-search
+each drop from 60→30 the same way — a full page1+page2+combined scan
+drops from 180→90 credits).
+
+**Deploy checklist followed in full**, including a scratch-file
+diff-verify step before deploying (per "Before you deploy" above): the
+first transcription attempt reproduced the SAME diacritic-regex
+corruption documented in test #63 and the rarity-signal deploy
+(`[̀-ͯ]` rendered as literal Unicode combining characters) —
+caught by diffing the scratch file against the real source *before*
+constructing the deploy call, fixed non-generatively via a small Python
+script that copied the exact bytes for the two mismatched lines
+straight from the source file, then re-diffed clean (0 differences,
+identical sha1 `2a439c3181c72a810482e5f42a33ca8979148b9f`) before
+deploying. Separately, the first deploy call itself was sent with only
+`package.json`/`vercel.json` and no `api/identify.js` — a real mistake,
+caught immediately from the tool's own response rather than by a later
+check. That deployment (`dpl_FaZ4vErw1WGgtmAUfJRDihBvwjur`) errored at
+the Vercel build step (`unused_function` — `vercel.json` referenced a
+function file that wasn't in the uploaded tree) and was confirmed via
+`get_deployment` to have never reached `READY` or the production alias
+— zero production impact, but flagging it here rather than glossing
+over it, since it's exactly the kind of mistake this project's deploy
+discipline exists to catch downstream of. The corrected redeploy
+(`dpl_6z5qNTuhHbmWzuK5WD4ryA4kmTTm`) confirmed: `READY`, aliased to
+production; build log shows "Downloading 3 deployment files"; live
+`GET /api/identify` returns `normalizeDiacriticTest: "pokemon collector"`
+(the same live canary from the earlier debug-endpoint work, confirming
+this deploy's diacritic regex is intact); live `POST /api/identify {}`
+returns real `400 {"error":"Missing imageBase64"}`; runtime logs confirm
+both requests were served by `dpl_6z5qNTuhHbmWzuK5WD4ryA4kmTTm`.
+
+**Not yet behaviorally confirmed via a live scan** — this is a
+credit-cost/latency optimization with no intended behavior change (the
+pre-deploy live PPT comparison already confirmed the removed data is
+unused), so there's no accuracy claim to verify via rescan the way a
+matching-logic fix would need. The real-world confirmation this needs
+instead: a live scan's real `X-API-Calls-Consumed` / rate-limit headers
+(not currently logged — `fetchPokemonPriceTracker` doesn't read PPT's
+response headers today) or a lower observed daily-credit burn rate over
+time.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
