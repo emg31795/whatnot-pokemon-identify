@@ -63,6 +63,20 @@ for the fix history.
       this one bears directly on the fix and isn't favorable. Still not
       a verdict either way (one hard card doesn't settle it), but the
       trend across #50/#63/#67 continues to show no clear resolution.
+      **New data point on the LATENCY side of this same trade-off
+      (2026-09-01 research pass, see `docs/test-cases.md`'s "Research:
+      latency and PPT rate-limit options")**: real Vercel error data
+      shows 31 real Gemini calls fully aborted by the 5000ms timeout in
+      a ~25h window (2026-08-31 to 2026-09-01), all on deployments that
+      already include `thinkingLevel: "low"` — this is a genuinely open
+      decision, not yet acted on: lower `thinkingLevel` back toward
+      `"minimal"` (risks reopening the accuracy problem it was raised to
+      fix, per #50/#63/#67 above) vs. raise `GEMINI_TIMEOUT_MS` above
+      5000ms (converts hard failures to slow successes, but conflicts
+      with the project's 2-5s target) vs. leave as-is. Explicitly flagged
+      as the user's call to make, not something to build speculatively —
+      see the research write-up for the full options list with
+      trade-offs. Deliberately NOT resolved in this pass.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed
