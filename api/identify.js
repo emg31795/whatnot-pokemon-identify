@@ -277,23 +277,17 @@ async function identifyWithGemini(imageBase64, apiKey) {
       // image into a fixed schema, not something requiring deep reasoning.
       //
       // RAISED minimal -> low (2026-08-29, research task prompted by test
-      // #50's severe Gemini read instability — see the "options to improve
-      // Gemini scan consistency" research note below/in this file's
-      // history): "minimal" is tuned for simple instruction-following,
-      // which mostly fits this task, but test #50's worst failure (a full
-      // hallucinated Chinese attack name on a Japanese card, not just a
-      // hard-to-read digit) looks more like a "didn't double-check itself"
-      // gap than a pure legibility problem. "low" is a real documented
-      // step between "no thinking" and the "medium" default this project
-      // was originally trying to avoid — should cost less than the
-      // 400-600 thinking-token default while giving a bit more room to
-      // self-check before committing to an answer. Needs a real timing
-      // measurement on a live rescan to confirm this stays inside the
-      // 2-5s target, and a recurrence of a hard card to see if it actually
-      // helps — nothing here proves it will fix a hallucination, only that
-      // it's a documented, low-cost lever worth trying before something
-      // more invasive (e.g. dual-frame capture).
-      thinkingConfig: { thinkingLevel: "low" },
+      // #50's severe Gemini read instability), then REVERTED low -> minimal
+      // (2026-09-01): the "low" experiment never showed a confirmed benefit
+      // — tests #63 and #67, both on deployments that already included this
+      // change, still showed the same instability class (wrong
+      // translations, wrong card numbers at High confidence) — while a real
+      // cost showed up: 31 confirmed hard Gemini timeouts in a ~25h window
+      // (2026-08-31 to 2026-09-01), all landing at 5002-5004ms, right at
+      // the GEMINI_TIMEOUT_MS = 5000 wall. No confirmed benefit, confirmed
+      // cost -> reverted. Full write-up: docs/test-cases.md, "Research:
+      // latency and PPT rate-limit options (2026-09-01)".
+      thinkingConfig: { thinkingLevel: "minimal" },
       // ADDED (2026-08-29, same research task): explicitly request the
       // model's max media resolution instead of relying on the
       // undocumented "unspecified" default. Per Google's current docs

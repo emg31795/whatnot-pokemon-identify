@@ -77,6 +77,18 @@ for the fix history.
       as the user's call to make, not something to build speculatively —
       see the research write-up for the full options list with
       trade-offs. Deliberately NOT resolved in this pass.
+      **DECIDED (2026-09-01): reverted `thinkingLevel` from `"low"` back
+      to `"minimal"`** — no confirmed benefit (tests #63/#67 both landed
+      on deployments already carrying `"low"` and still showed the same
+      instability class) against a confirmed cost (the 31-timeout data
+      point above). `media_resolution: HIGH` is untouched — only
+      `thinkingLevel` was in question. See `docs/test-cases.md`'s
+      "Research: latency and PPT rate-limit options" for the full
+      trade-off writeup and the new dated entry logging this decision.
+      Not yet confirmed via live rescan — needs both a timeout-rate check
+      over the following ~24h and continued watching for any recurrence
+      of the #50/#63/#67 instability pattern now that `thinkingLevel` is
+      back at `"minimal"`.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed

@@ -1463,6 +1463,34 @@ instead: a live scan's real `X-API-Calls-Consumed` / rate-limit headers
 response headers today) or a lower observed daily-credit burn rate over
 time.
 
+## Decision: revert thinkingLevel "low" -> "minimal" (2026-09-01)
+
+Resolves the open trade-off flagged at the end of the "Research: latency
+and PPT rate-limit options (2026-09-01)" section above. `thinkingLevel`
+was raised from `"minimal"` to `"low"` on 2026-08-29 (test #50, the
+Ogerpon hallucination case) to try to reduce Gemini read instability. It
+never showed a confirmed benefit: tests #63 and #67, both on deployments
+that already included the `"low"` change, still showed the same
+instability class (wrong translations, wrong card numbers returned at
+self-reported High confidence). Meanwhile a real cost showed up in the
+2026-09-01 research pass: 31 confirmed hard Gemini timeouts in a ~25h
+window (2026-08-31 to 2026-09-01), all landing at 5002-5004ms — right at
+the `GEMINI_TIMEOUT_MS = 5000` wall. No confirmed benefit, confirmed
+cost -> reverted `thinkingLevel` back to `"minimal"` in `api/identify.js`.
+`media_resolution: MEDIA_RESOLUTION_HIGH` (the other half of the
+2026-08-29 fix) is untouched — only `thinkingLevel` was in question here.
+Scope deliberately excludes the still-open rate-limiting options
+(client-side caching, etc.) from the same research pass.
+
+**Not yet confirmed via live rescan.** Two things to watch once this is
+deployed and back on live traffic: (1) whether the timeout rate actually
+drops over the following ~24h (compare against the 31-in-25h baseline
+above), and (2) whether the #50/#63/#67 instability pattern (wrong
+reads, hallucinated fields, at High confidence) recurs, holds steady, or
+improves now that `thinkingLevel` is back at `"minimal"` — reverting
+removes an unproven mitigation, so a recurrence wouldn't be a regression
+from this change, just the original problem still being unsolved.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
