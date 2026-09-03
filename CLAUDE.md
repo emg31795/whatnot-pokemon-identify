@@ -68,10 +68,12 @@ live Claude Haiku 4.5 shadow test, now confirmed working with 14 real
 data points. Given how severe the cluster was, the user decided to
 promote Haiku from shadow-only logging to an **active fallback** — when
 Gemini fails, show the user Haiku's result (clearly labeled as a
-fallback, not the primary provider) instead of nothing. **This is the
-next planned build, not yet started as of this note.** See the
-shadow-test entry in "Recent / in-flight work" and `docs/test-cases.md`'s
-full tally before starting.
+fallback, not the primary provider) instead of nothing. **Built and
+locally committed 2026-09-03 — NOT yet deployed, and not yet
+live-confirmed.** See the "Haiku active fallback" entry in "Recent /
+in-flight work" below for what was built and what's still needed before
+this can be marked done, and `docs/test-cases.md`'s full shadow-test
+tally for the accuracy context behind the decision.
 
 ## When to ask before acting
 
@@ -355,6 +357,58 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Claude Haiku 4.5 active fallback — BUILT AND LOCALLY COMMITTED
+  2026-09-03, NOT YET DEPLOYED.** Promotes Haiku from shadow-only logging
+  (see the entry directly below) to a real, user-facing fallback: when
+  `identifyWithGemini()` itself throws (timeout, 5xx incl. the new 503
+  "high demand" error, unparseable response — a genuine call failure,
+  never a successful-but-low-confidence read), the handler now shows the
+  user Haiku's read instead of the old `{ found: false, error:
+  "gemini-failed" }`. `api/identify.js`: `haikuPromise` is fired
+  immediately after `geminiPromise`, in parallel and unconditionally
+  (whenever `ANTHROPIC_API_KEY` is set) — not started only after Gemini
+  fails — so a fallback response is bounded by
+  `max(GEMINI_TIMEOUT_MS, HAIKU_TIMEOUT_MS)` (both 5000ms today), not the
+  two timeouts added together; a successful Gemini scan's latency is
+  unchanged, since the response is sent without waiting on `haikuPromise`
+  at all in that case. Every response now carries an explicit
+  `visionProvider` field (`"gemini"` on the normal path, `"haiku-fallback"`
+  when Haiku's read was used) — the extension panel
+  (`extension/content.js`'s `renderResult`) shows a visible `⚡ Fallback
+  read (Gemini unavailable) — identified by Claude Haiku 4.5` badge
+  (`.wnpk-fallback-badge` in `extension/content.css`) whenever
+  `visionProvider === "haiku-fallback"`, so a fallback result is never a
+  silent substitution. If Gemini fails AND Haiku's own read also comes
+  back `found:false`/no `cardName`/erroring, the response includes a new
+  `haikuFallbackError` field and the panel shows an honest "both the
+  primary and fallback AI failed" message rather than the generic one. No
+  `ANTHROPIC_API_KEY` degrades to exactly today's pre-fallback behavior
+  (Gemini-only) — same gating the shadow test already used. The existing
+  `[haiku-shadow-test]` same-frame comparison logging (see the entry
+  below) is unchanged in purpose and still fires on every scan where
+  `ANTHROPIC_API_KEY` is set, including fallback scans — it was
+  restructured to reuse the same `haikuPromise` instead of firing a
+  second, separate Haiku API call (`runHaikuShadowTest` now takes
+  `(geminiPromise, haikuPromise, tStart, tHaikuStart)` instead of calling
+  `identifyWithHaiku` itself), so this change does not double Haiku API
+  costs. Matching/scoring/pricing code was not touched — both providers'
+  schemas already share the exact same field set (confirmed by reading
+  `GEMINI_SCHEMA` and `HAIKU_SCHEMA` side by side before writing this),
+  so a Haiku-sourced `read` flows through `lookupCardPPT`/
+  `lookupGradedPrice` identically to a Gemini one. Cost-estimate display
+  (`usage`, the "This scan: $X" panel text) now branches on
+  `visionProvider` so a fallback scan's estimated cost is computed from
+  Haiku's own token usage (`estimateHaikuCostUsd`) instead of silently
+  returning null. **Committed locally, not deployed** (per this project's
+  explicit "always ask before deploying" rule — see "When to ask before
+  acting" above and the 2026-09-03 incident note there). **Still needed
+  before this can be marked done**: your go-ahead to deploy, the full
+  "Before you deploy" checklist (hash-verify, live GET/POST checks, log
+  confirmation), and — per the "Definition of done" checklist — a real
+  live Gemini failure (a timeout or 503) after deploy to confirm the
+  fallback actually fires end-to-end in production, not just in code
+  review. See `docs/ROADMAP.md`'s Phase 1 checklist for the matching
+  entry.
 - **Temporary Haiku 4.5 vs. Gemini shadow test — DEPLOYED, PUSHED, AND
   CONFIRMED LIVE 2026-09-03** (commit `276dc13`, originally deployed as
   `dpl_ERt8XAWARe1rDgEWEgf4wcVQrmh4`; confirmed collecting real data on

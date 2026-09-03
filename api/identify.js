@@ -347,31 +347,54 @@ async function identifyWithGemini(imageBase64, apiKey) {
 }
 
 // =============================================================================
-// TEMPORARY SHADOW TEST (added 2026-09-03) — Claude Haiku 4.5 vs. Gemini,
-// real-scan accuracy comparison. NOT a permanent architecture piece.
+// CLAUDE HAIKU 4.5 — SHADOW-TEST LOGGING + ACTIVE FALLBACK
+// (shadow test added 2026-09-03; promoted to an active fallback 2026-09-03,
+// see CLAUDE.md's "Current priority" for why — a severe live Gemini failure
+// cluster, 13/14 scans failed in one ~9-minute window including a new 503
+// "high demand" error type, while 14 real shadow-test data points showed
+// Haiku succeeding on every one of those Gemini failures.)
 //
-// This exists to answer the one question the "is Gemini the right vision
-// provider?" research (docs/test-cases.md, 2026-09-02, corrected 2026-09-03)
-// could NOT settle from docs alone: real accuracy on this exact task
-// (photo of a card in hand -> structured JSON). Everything else in that
-// research (pricing, structured-output support, timeout config, migration
-// cost) came from documentation; this is the live-data piece.
+// Two DIFFERENT things now live in this section and coexist deliberately:
 //
-// STRICT CONSTRAINT: this must never change what the user sees or how the
-// extension behaves. Gemini remains the sole source of the result shown in
-// the panel and used for matching/pricing — Haiku's read is a read-only
-// shadow call, logged for comparison only, never consumed by anything else
-// in this file. Entirely gated on ANTHROPIC_API_KEY being present in the
+// 1. SHADOW-TEST COMPARISON LOGGING (unchanged in purpose from 2026-09-03):
+//    answers the accuracy question the "is Gemini the right vision
+//    provider?" research (docs/test-cases.md) couldn't settle from docs
+//    alone. Logs a `[haiku-shadow-test]` line comparing both providers'
+//    reads on the SAME frame whenever both are available. Still just
+//    logging — never itself shown to the user or fed into matching/pricing.
+//    Still removable independently once enough same-frame comparisons exist
+//    to answer the accuracy question (see docs/test-cases.md) — the
+//    fallback below does NOT depend on this logging function.
+//
+// 2. ACTIVE FALLBACK (new, 2026-09-03): when Gemini's call itself fails
+//    (timeout, 5xx, unparseable response — anything that throws out of
+//    identifyWithGemini), the handler now uses Haiku's read as the actual
+//    response shown to the user and fed into matching/pricing, instead of
+//    the old `{ found: false, error: "gemini-failed" }`. This IS a
+//    permanent, user-facing behavior change and is NOT removable the way
+//    the shadow-test logging is. A fallback-sourced result is always
+//    labeled `visionProvider: "haiku-fallback"` in the API response (vs.
+//    `"gemini"` for the normal path) so the extension panel can show the
+//    user which provider actually identified the card — never a silent
+//    substitution. Gemini's own successful responses, including Low-
+//    confidence ones, are completely untouched — the fallback only ever
+//    fires when Gemini's call itself throws.
+//
+// Both are entirely gated on ANTHROPIC_API_KEY being present in the
 // environment (see the handler below) — a complete no-op, zero added
-// latency/cost/risk, for anyone without that key configured.
+// latency/cost/risk, for anyone without that key configured: Gemini-only,
+// today's exact pre-fallback behavior.
 //
-// REMOVE WHEN DONE: this whole section (through runHaikuShadowTest), its
-// two call sites in the handler (the `anthropicKey`/`geminiPromise`/
-// `waitUntil` block, and the switch from `read = await
-// identifyWithGemini(...)` back to a plain inline call), and the
-// `@vercel/functions` dependency in package.json, once enough scan
-// variance has been collected — see docs/test-cases.md for the
-// recommended sample size before drawing a conclusion.
+// LATENCY: haikuPromise is fired in parallel with geminiPromise, before
+// either is awaited — not sequentially after Gemini fails. So when Gemini
+// does fail, awaiting the already-in-flight haikuPromise adds at most
+// max(GEMINI_TIMEOUT_MS, HAIKU_TIMEOUT_MS) - (time already elapsed) to the
+// response, not the two timeouts added together. Both are 5000ms, so
+// worst case for a fallback response is bounded by ~5000ms total, not
+// ~10000ms. On the far more common path (Gemini succeeds), the response
+// is sent immediately without waiting on Haiku at all — Haiku's promise is
+// left to resolve in the background (via waitUntil) purely for shadow-test
+// logging, so a successful Gemini scan's latency is unchanged from before.
 //
 // Pricing confirmed LIVE 2026-09-03 against platform.claude.com/docs/en/
 // about-claude/pricing (not reused from the earlier research doc without
@@ -536,21 +559,23 @@ function haikuShadowFieldsMatch(a, b) {
   return na === nb;
 }
 
-// Orchestrates the shadow comparison: fires the Haiku call, independently
-// awaits the SAME geminiPromise the main handler is already awaiting
-// (promises are safe to await from multiple places — this never affects
-// what the main handler sees), and logs one greppable line either way,
-// including when Gemini itself failed (that's one of the more interesting
-// comparison points, not a case to skip). Never throws past its own
-// try/catches — the caller wraps this in one more .catch() as a second
-// safety net (see the handler below) so a bug here can never surface to
-// the real response.
-async function runHaikuShadowTest(imageBase64, anthropicKey, geminiPromise, tStart) {
-  const tHaikuStart = Date.now();
+// Orchestrates the shadow comparison: awaits the SAME geminiPromise and
+// haikuPromise the main handler already created (promises are safe to
+// await from multiple places — a promise's underlying work only ever runs
+// once no matter how many places `await` it, so this never fires a second
+// Haiku API call and never affects what the main handler sees), and logs
+// one greppable line either way, including when Gemini itself failed
+// (that's one of the more interesting comparison points, not a case to
+// skip — and, since 2026-09-03, also the case where Haiku's read was just
+// used as the real fallback response, not only logged). Never throws past
+// its own try/catches — the caller wraps this in one more .catch() as a
+// second safety net (see the handler below) so a bug here can never
+// surface to the real response.
+async function runHaikuShadowTest(geminiPromise, haikuPromise, tStart, tHaikuStart) {
   let haikuResult = null;
   let haikuErrorMsg = null;
   try {
-    haikuResult = await identifyWithHaiku(imageBase64, anthropicKey);
+    haikuResult = await haikuPromise;
   } catch (e) {
     haikuErrorMsg = (e && e.message) || String(e);
   }
@@ -1969,36 +1994,92 @@ module.exports = async function handler(req, res) {
 
   const geminiPromise = identifyWithGemini(imageBase64, geminiKey);
 
-  // TEMPORARY SHADOW TEST (2026-09-03) — see the big comment block above
-  // identifyWithHaiku for the full story. Entirely gated on
+  // See the big comment block above ("CLAUDE HAIKU 4.5 — SHADOW-TEST
+  // LOGGING + ACTIVE FALLBACK") for the full story. Entirely gated on
   // ANTHROPIC_API_KEY: a complete no-op for anyone without that key set
-  // (no extra call, no extra cost, no extra latency, no behavior change).
-  // Fired here (not awaited) so it can never delay the response below —
-  // waitUntil (when available) keeps it alive after the response is sent;
-  // the .catch() is a second safety net so a bug in the shadow test itself
-  // can never throw into the real request path either way.
+  // (no extra call, no extra cost, no extra latency, no behavior change —
+  // Gemini-only, same as before 2026-09-03).
+  //
+  // haikuPromise is fired here, in parallel with geminiPromise, whether or
+  // not Gemini ends up failing — this is what keeps a fallback response
+  // bounded by max(geminiMs, haikuMs) instead of additive (see the comment
+  // block above for the full latency reasoning). tHaikuStart is captured
+  // here too so both the fallback path below and the shadow-test logger
+  // measure from the same real start time.
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const tHaikuStart = Date.now();
+  const haikuPromise = anthropicKey ? identifyWithHaiku(imageBase64, anthropicKey) : null;
+
+  // Shadow-test comparison logging: fires in the background regardless of
+  // outcome (including when Haiku ends up used as the real fallback below —
+  // that's still a valid, interesting comparison data point). Awaits the
+  // SAME geminiPromise/haikuPromise the code below uses, so this never
+  // triggers a second Haiku API call. Not awaited here so it can never
+  // delay the response; waitUntil (when available) keeps it alive after
+  // the response is sent, and the .catch() is a second safety net so a bug
+  // in the logger itself can never throw into the real request path.
   if (anthropicKey) {
-    const shadowPromise = runHaikuShadowTest(imageBase64, anthropicKey, geminiPromise, tStart).catch((e) => {
+    const shadowPromise = runHaikuShadowTest(geminiPromise, haikuPromise, tStart, tHaikuStart).catch((e) => {
       console.error("[haiku-shadow-test] shadow test itself threw:", e && e.message);
     });
     if (waitUntil) waitUntil(shadowPromise);
   }
 
   let read;
+  let visionProvider = "gemini";
   try {
     read = await geminiPromise;
     console.log("[identify] Gemini read:", JSON.stringify(read));
   } catch (e) {
-    console.error("[identify] Gemini call failed:", e && e.message, "after ms=", Date.now() - tStart);
-    res.status(200).json({ found: false, error: "gemini-failed", detail: e && e.message });
-    return;
+    const geminiErrorMsg = (e && e.message) || String(e);
+    console.error("[identify] Gemini call failed:", geminiErrorMsg, "after ms=", Date.now() - tStart);
+
+    // FALLBACK (2026-09-03): Gemini's call itself failed (timeout, 5xx,
+    // unparseable response, etc.) — if we have a Haiku key, haikuPromise is
+    // already in flight (fired above, in parallel with Gemini, not started
+    // just now), so awaiting it here adds at most the remaining slice of
+    // max(GEMINI_TIMEOUT_MS, HAIKU_TIMEOUT_MS), not a second full timeout.
+    if (haikuPromise) {
+      let haikuResult = null;
+      let haikuErrorMsg = null;
+      try {
+        haikuResult = await haikuPromise;
+      } catch (he) {
+        haikuErrorMsg = (he && he.message) || String(he);
+      }
+
+      if (haikuResult && haikuResult.found && haikuResult.cardName) {
+        console.log("[identify] Gemini failed — using Haiku fallback read:", JSON.stringify(haikuResult));
+        read = haikuResult;
+        visionProvider = "haiku-fallback";
+      } else {
+        console.error(
+          "[identify] Gemini failed and Haiku fallback unavailable too:",
+          haikuErrorMsg || "Haiku returned found:false or no cardName"
+        );
+        res.status(200).json({
+          found: false,
+          error: "gemini-failed",
+          detail: geminiErrorMsg,
+          haikuFallbackError: haikuErrorMsg || "Haiku fallback also did not identify a card",
+        });
+        return;
+      }
+    } else {
+      // No ANTHROPIC_API_KEY — degrade to the exact pre-fallback behavior.
+      res.status(200).json({ found: false, error: "gemini-failed", detail: geminiErrorMsg });
+      return;
+    }
   }
 
   const tGemini = Date.now();
   console.log("[timing] gemini ms=", tGemini - tStart);
 
-  const usage = estimateGeminiCostUsd(read._geminiUsage);
+  // Cost estimate must key off whichever provider actually produced `read`
+  // — a Haiku-fallback read carries `_haikuUsage`, not `_geminiUsage`, and
+  // estimateGeminiCostUsd would silently return null (no cost shown) for
+  // it otherwise.
+  const usage = visionProvider === "haiku-fallback" ? estimateHaikuCostUsd(read._haikuUsage) : estimateGeminiCostUsd(read._geminiUsage);
 
   if (!read.found || !read.cardName) {
     res.status(200).json({ found: false, reason: read.reason || "Couldn't identify the card. Try again when it's clearly visible.", usage });
@@ -2118,5 +2199,9 @@ module.exports = async function handler(req, res) {
 
   result.usage = usage;
   result.timingMs = { gemini: tGemini - tStart, lookup: tEnd - tGemini, total: tEnd - tStart };
+  // Always explicit ("gemini" on the normal path, not just omitted) so the
+  // extension can reliably tell which provider actually identified the
+  // card — see the "CLAUDE HAIKU 4.5" comment block above.
+  result.visionProvider = visionProvider;
   res.status(200).json(result);
 };

@@ -177,6 +177,25 @@
   margin-bottom: 6px;
 }
 
+/* ADDED (2026-09-03, Haiku active-fallback build): shown whenever Gemini's
+   call itself failed and Claude Haiku 4.5's read was used instead. Must
+   read as clearly distinct from a normal result — never a silent
+   substitution — but this isn't an error state (the identification still
+   worked), so it's a distinct amber/blue tone rather than reusing
+   .wnpk-warning's "something may be wrong" styling or .wnpk-price-error's
+   "this failed" styling. */
+.wnpk-fallback-badge {
+  display: block;
+  background: #2a230f;
+  color: #ffd580;
+  border: 1px solid #6b551a;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
 .wnpk-warning {
   background: #3a2a12;
   color: #ffc266;

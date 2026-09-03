@@ -424,11 +424,29 @@
 
   function renderResult(data) {
     if (!data.found) {
-      setStatus(data.reason || "Couldn't identify the card. Try again when it's clearly visible.");
+      // ADDED (2026-09-03, Haiku active-fallback build): when Gemini's call
+      // itself failed AND the Haiku fallback also couldn't identify a card
+      // (see api/identify.js's `haikuFallbackError` field), say so honestly
+      // instead of the generic message — both providers were tried, not
+      // just one.
+      const msg = data.haikuFallbackError
+        ? "Couldn't identify — both the primary and fallback AI failed to read this card. Try again."
+        : data.reason || "Couldn't identify the card. Try again when it's clearly visible.";
+      setStatus(msg);
       return;
     }
 
     const header = `
+      ${
+        // ADDED (2026-09-03, Haiku active-fallback build): Gemini failed on
+        // this scan (timeout, 5xx, etc.) and Claude Haiku 4.5's read was
+        // used instead — this must always be visible, never a silent
+        // substitution, so the user can judge the result accordingly (see
+        // CLAUDE.md's "Recent / in-flight work" for why this exists).
+        data.visionProvider === "haiku-fallback"
+          ? `<div class="wnpk-fallback-badge">⚡ Fallback read (Gemini unavailable) — identified by Claude Haiku 4.5</div>`
+          : ""
+      }
       <div class="wnpk-card-name">${escapeHtml(data.cardName)}${
         data.cardLanguage === "Japanese" ? ' <span class="wnpk-lang-badge">JP</span>' : ""
       }</div>

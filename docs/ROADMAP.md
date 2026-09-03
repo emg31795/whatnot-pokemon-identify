@@ -161,9 +161,26 @@ for the fix history.
       fails (timeout or error), show the user Haiku's result instead of
       nothing, clearly labeled as a fallback read rather than the
       primary provider — a real, user-facing behavior change, unlike the
-      shadow test above. Not yet started. See the shadow-test tally in
-      `docs/test-cases.md` and CLAUDE.md's "Current priority" for full
-      context before starting.
+      shadow test above. **Built and locally committed 2026-09-03, NOT yet
+      deployed or live-confirmed.** `api/identify.js`: `haikuPromise` now
+      fires in parallel with `geminiPromise` (not sequentially) whenever
+      `ANTHROPIC_API_KEY` is set, so a fallback response is bounded by
+      max(GEMINI_TIMEOUT_MS, HAIKU_TIMEOUT_MS) rather than additive; when
+      Gemini's call itself throws (timeout/5xx/unparseable — a genuine
+      call failure, never a successful-but-low-confidence read), the
+      already-in-flight Haiku result is used as the real response and
+      matching/pricing input instead of the old `{found:false}`. Every
+      response now carries an explicit `visionProvider` field
+      (`"gemini"` or `"haiku-fallback"`); the extension panel shows a
+      visible `⚡ Fallback read...` badge whenever it's `"haiku-fallback"`
+      — never a silent substitution. No `ANTHROPIC_API_KEY` degrades to
+      the exact pre-fallback behavior (Gemini-only). The existing
+      `[haiku-shadow-test]` same-frame comparison logging is untouched in
+      purpose and still fires (now reusing the same `haikuPromise`
+      instead of firing a second Haiku call). Needs: your deploy
+      go-ahead, then a live Gemini failure (timeout/503) to confirm the
+      fallback actually fires end-to-end in production — see CLAUDE.md's
+      "Current priority" for status.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed
