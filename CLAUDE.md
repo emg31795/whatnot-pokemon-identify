@@ -61,6 +61,18 @@ below for the full deploy trace and the real live confirmation (an
 organic Mega Excadrill ex scan hit the exact fixed scenario minutes
 after deploy).
 
+**Update, 2026-09-03**: a severe live Gemini failure cluster (13 of 14
+scans failed in a ~9-minute window, including a new `503 "high demand"`
+error type — see "Recent / in-flight work" below) led to setting up a
+live Claude Haiku 4.5 shadow test, now confirmed working with 14 real
+data points. Given how severe the cluster was, the user decided to
+promote Haiku from shadow-only logging to an **active fallback** — when
+Gemini fails, show the user Haiku's result (clearly labeled as a
+fallback, not the primary provider) instead of nothing. **This is the
+next planned build, not yet started as of this note.** See the
+shadow-test entry in "Recent / in-flight work" and `docs/test-cases.md`'s
+full tally before starting.
+
 ## When to ask before acting
 
 - **Free rein, no need to ask**: local file edits, local git commits,
@@ -72,6 +84,18 @@ after deploy).
   etc.), deleting any file. These are irreversible or user-facing —
   the user has explicitly said they want to approve these, not just
   review after the fact.
+
+**Incident, 2026-09-03**: a session deployed to production without
+asking first, despite the user's prompt containing detailed post-deploy
+verification instructions — those described how to check a deploy once
+authorized, they were not themselves a go-ahead. The deploy was also
+found to have never been locally committed, meaning production ran ahead
+of any git record until this was caught (working tree hash-verified
+against what was actually live, then committed after the fact).
+Acknowledged and corrected same session. **Lesson**: however detailed a
+prompt's verification steps are, they never substitute for an explicit
+go-ahead to deploy or push — ask first, every time, regardless of how
+much process detail is included.
 
 **Project facts belong in this repo, not Claude Code's own memory feature.**
 Claude Code has a separate per-project memory store outside git (e.g.
@@ -346,12 +370,24 @@ checklist before reporting something as finished:
   `[haiku-shadow-test]` lines in Vercel runtime logs, never consumed
   elsewhere. Not awaited before responding — uses `@vercel/functions`'
   `waitUntil()` (new dependency) so it can't add latency to the real
-  response. **Data collection is live**: 1 real data point so far (see
-  `docs/test-cases.md`'s "Shadow test: Claude Haiku 4.5 vs. Gemini" —
-  running tally + per-scan log, updated as the user reports more real
-  scans). Recommended before drawing any conclusion: ~20-30 real scans
-  covering Japanese/promo-number/foil-glare cases specifically, extending
-  further if the first batch is mixed. **Fully removable when done** —
+  response. **Data collection is live and has grown fast**: 14 real data points as
+  of 2026-09-03 (1 individually reported live, 13 backfilled from a
+  severe same-night Gemini failure cluster — verified against real
+  Vercel logs before backfilling, not taken from the user's live tally
+  at face value; commits `a2ff424`/`b080740`, both local-only, awaiting
+  push go-ahead). Of the 14: 13 are Gemini-failed/Haiku-succeeded (11
+  timeouts + 2 confirmed `503 "high demand"` errors — a new Gemini
+  failure mode for this project), and 1 is the first real same-frame
+  comparison — both succeeded but disagreed (Gemini's read matched a
+  real PPT candidate cleanly, `tieCount=1`; Haiku's didn't), tracked as
+  "disagreed, unresolved" since no ground truth was confirmed from the
+  physical card. Full tally/per-scan log in `docs/test-cases.md`'s
+  "Shadow test: Claude Haiku 4.5 vs. Gemini". **Given how severe the
+  cluster was, the user decided (2026-09-03) to promote Haiku from
+  shadow-only to an active fallback** — see "Current priority" above for
+  the next planned build. Still want more same-frame comparisons (only 1
+  so far) before drawing a full accuracy conclusion, alongside the
+  continued failure-coverage data. **Fully removable when done** —
   see the "TEMPORARY SHADOW TEST" comment block in `api/identify.js` for
   the exact removal list (the function, its two handler call sites, and
   the `@vercel/functions` dependency in `package.json`).

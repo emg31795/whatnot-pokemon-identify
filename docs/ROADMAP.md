@@ -155,6 +155,15 @@ for the fix history.
       accurate*, not just more available right now. See
       `docs/test-cases.md` for the full per-scan log and running tally,
       updated as more scans come in.
+- [ ] **Build: promote Claude Haiku 4.5 from shadow-only to an active
+      fallback** — decided 2026-09-03, given the severe live Gemini
+      cluster above (13 of 14 scans failed in one window). When Gemini
+      fails (timeout or error), show the user Haiku's result instead of
+      nothing, clearly labeled as a fallback read rather than the
+      primary provider — a real, user-facing behavior change, unlike the
+      shadow test above. Not yet started. See the shadow-test tally in
+      `docs/test-cases.md` and CLAUDE.md's "Current priority" for full
+      context before starting.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed
