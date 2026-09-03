@@ -1820,24 +1820,35 @@ not just single-shot accuracy — see the full reasoning in CLAUDE.md's
 
 | Metric | Count |
 |---|---|
-| Total data points | 1 |
+| Total data points | 14 |
 | Both succeeded, all compared fields agree | 0 |
-| Both succeeded, fields disagree | 0 |
-| Gemini failed/timed out, Haiku succeeded | 1 |
+| Both succeeded, fields disagree | 1 |
+| Gemini failed/timed out, Haiku succeeded | 13 |
 | Gemini succeeded, Haiku failed/timed out | 0 |
 | Both failed | 0 |
 | Ground truth confirmed — Gemini correct | 0 |
 | Ground truth confirmed — Haiku correct | 0 |
 | Ground truth confirmed — both correct | 0 |
 | Ground truth confirmed — both wrong | 0 |
-| Ground truth confirmed — disagreed, unresolved | 0 |
+| Ground truth confirmed — disagreed, unresolved | 1 |
 
-**Latency (successful calls only):**
+Of the 13 Gemini failures: 11 hard timeouts (5002-5010ms, the
+`GEMINI_TIMEOUT_MS = 5000` wall) and 2 confirmed `503 "This model is
+currently experiencing high demand"` errors — a new Gemini failure mode
+for this project, distinct from every timeout documented so far (see
+ROADMAP.md's "Gemini read-consistency fix" item for the full cluster
+write-up). No ground-truth row has a real confirmed count yet — the one
+disagreement (#5 below) has strong *indirect* evidence favoring Gemini's
+read (it matched a real PPT candidate cleanly, `tieCount=1`), but that's
+not the same as a confirmed ground truth from the physical card, so it's
+tracked as "disagreed, unresolved" rather than a confirmed-correct count.
 
-| Provider | n | min | max | mean |
-|---|---|---|---|---|
-| Gemini | 0 | — | — | — |
-| Haiku | 1 | 2705ms | 2705ms | 2705ms |
+**Latency:**
+
+| Provider | n | min | max | mean | note |
+|---|---|---|---|---|---|
+| Gemini | 1 (successful calls only) | 2445ms | 2445ms | 2445ms | 13 failed calls excluded — see per-entry notes for their abort/error timings |
+| Haiku | 14 (every call succeeded) | 2273ms | 3414ms | ~2879ms | includes the one low-value "nothing legible" result (#12) — a valid response, not an error |
 
 ### Data points
 
@@ -1863,6 +1874,172 @@ not just single-shot accuracy — see the full reasoning in CLAUDE.md's
   where Gemini hard-timed-out — exactly the failure mode that prompted
   this whole shadow test (see the severe timeout cluster in test #68's
   update, 2026-09-02).
+
+**Data points #2-#14 below were backfilled 2026-09-03 from the same
+`dpl_C8BLGSCBXJn7geR1DETfbQuVgVAk` runtime logs already pulled and
+verified for the ROADMAP.md cluster write-up — not individually reported
+live by the user at the time each scan happened, unlike #1 above. Noted
+here so the trail stays accurate: these are real, log-verified data
+(same standard as every other entry in this file), just added to this
+doc in a batch after the fact rather than one at a time as they occurred.**
+
+#### #2 — 2026-09-03 02:20:29 UTC
+
+- **Gemini**: FAILED — timeout, 5003ms.
+- **Haiku**: SUCCEEDED — 3002ms, Medium confidence. `cardName="Lapras"`,
+  `cardNumber="072/063"`, `hp="110"`, `language="Japanese"`,
+  `attackName="いしじょおよぐ"`, `stampType="none"`. Cost $0.003124.
+- **Ground truth**: not available (Gemini failed).
+
+#### #3 — 2026-09-03 02:20:40 UTC
+
+- **Gemini**: FAILED — timeout, 5003ms.
+- **Haiku**: SUCCEEDED — 3371ms, High confidence. `cardName="Ditto"`,
+  `cardNumber="070/078"`, `hp="60"`, `language="Japanese"`,
+  `attackName="てらしてもやす"`, `stampType="none"`. Cost $0.003044.
+- **Ground truth**: not available (Gemini failed).
+
+#### #4 — 2026-09-03 02:20:49 UTC
+
+- **Gemini**: FAILED — timeout, 5004ms.
+- **Haiku**: SUCCEEDED — 2273ms, High confidence. `cardName="Litwick"`,
+  `cardNumber="259"`, `hp="60"`, `language="Japanese"`, `attackName=null`,
+  `stampType="none"`. Cost $0.002959.
+- **Ground truth**: not available (Gemini failed).
+
+#### #5 — 2026-09-03 02:21:04 UTC
+
+**The one Gemini success in this batch — and the first real same-frame
+accuracy comparison, not just a failure-mode data point.**
+
+- **Gemini**: SUCCEEDED — 2445ms (per the request's own
+  `[timing] gemini ms=` line; the shadow-test log's own `geminiMs=2910`
+  for this entry is inflated because `runHaikuShadowTest` awaits Haiku
+  *before* re-awaiting the already-resolved `geminiPromise`, so its
+  `geminiMs` reflects elapsed time including Haiku's own call, not
+  Gemini's true latency — worth knowing for any future entry where
+  Gemini resolves faster than Haiku; use the main request's own timing
+  line when the two disagree). High confidence. `cardName="Minior"`,
+  `cardNumber="070/062"`, `hp="70"`, `language="Japanese"`,
+  `subtype="AR"`, `attackName="じゅうりょくタックル"`. Matched a real PPT
+  candidate cleanly downstream (`bestScore=26`, `tieCount=1`,
+  `SV3a: Raging Surf`) — strong indirect evidence this read was correct,
+  though not a confirmed ground truth.
+- **Haiku**: SUCCEEDED but DISAGREED — 2906ms, High confidence.
+  `cardName="Meteono"`, `cardNumber="070/102"`, `hp="70"` (agrees),
+  `subtype=null`, `attackName="ひらりよくタックル"`,
+  `language="Japanese"` (agrees), `stampType="none"` (agrees). Cost
+  $0.003089.
+- **Field agreement** (from the real log line): `hp` ✓, `setName` ✓,
+  `language` ✓, `stampType` ✓, `isSlab` ✓, `confidence` ✓ — but
+  `cardName` ✗, `cardNumber` ✗, `subtype` ✗, `attackName` ✗. Overall
+  `match=false`.
+- **Ground truth**: not confirmed (no physical-card check) — tracked as
+  "disagreed, unresolved" in the tally above. The PPT-match evidence
+  leans toward Gemini's read being right here, but that's inference, not
+  confirmation.
+- **Relevance**: the only entry in this batch where both providers
+  produced a confident, structured read of the SAME frame and disagreed
+  — exactly the comparison this shadow test needs more of. One data
+  point isn't a pattern; needs more like this to say anything about
+  relative accuracy rather than relative availability.
+
+#### #6 — 2026-09-03 02:21:33 UTC
+
+- **Gemini**: FAILED — timeout, 5004ms.
+- **Haiku**: SUCCEEDED — 3329ms, Medium confidence. `cardName="Vanillite"`,
+  `cardNumber=null`, `hp="150"`, `language="Japanese"`, `attackName=null`,
+  `stampType="none"`, **`isSlab=true`** (Haiku's reasoning: "Card is in a
+  clear protective slab but grader, grade, and certification number are
+  not legible" — worth watching for whether this is a real slab detection
+  or Haiku over-calling a sleeve/toploader as a slab; no way to confirm
+  from this data point alone). Cost $0.003109.
+- **Ground truth**: not available (Gemini failed).
+
+#### #7 — 2026-09-03 02:21:40 UTC
+
+- **Gemini**: FAILED — timeout, 5003ms.
+- **Haiku**: SUCCEEDED — 2599ms, High confidence. `cardName="Palafin"`,
+  `cardNumber="112/093"`, `hp="150"`, `language="Japanese"`,
+  `attackName="ぶつかる"`, `stampType="none"`. Cost $0.003079.
+- **Ground truth**: not available (Gemini failed).
+
+#### #8 — 2026-09-03 02:22:03 UTC
+
+- **Gemini**: FAILED — timeout, 5002ms.
+- **Haiku**: SUCCEEDED — 2773ms, High confidence. `cardName="Silthous"`,
+  `cardNumber=null`, `hp="70"`, `language="Japanese"`,
+  `attackName="Psychoshot"`, `stampType="none"`. Cost $0.003064.
+- **Ground truth**: not available (Gemini failed).
+
+#### #9 — 2026-09-03 02:22:09 UTC
+
+- **Gemini**: FAILED — **`503 UNAVAILABLE`, "This model is currently
+  experiencing high demand"**, 1577ms (not a timeout — Gemini's own API
+  actively rejected the request). The first confirmed instance of this
+  error in the batch.
+- **Haiku**: SUCCEEDED — 3005ms, Medium confidence. `cardName="Iono"`,
+  `cardNumber="083/070"`, `hp="30"`, `language="Japanese"`,
+  `attackName="Iono Shot"`, `stampType="none"`. Cost $0.003179.
+- **Ground truth**: not available (Gemini failed).
+
+#### #10 — 2026-09-03 02:23:27 UTC
+
+- **Gemini**: FAILED — timeout, 5003ms.
+- **Haiku**: SUCCEEDED — 3040ms, Medium confidence. `cardName="Yamper"`,
+  `cardNumber="073/071"`, `hp="70"`, `language="Japanese"`,
+  `attackName=null`, `stampType="none"`. Cost $0.003159.
+- **Ground truth**: not available (Gemini failed).
+
+#### #11 — 2026-09-03 02:24:06 UTC
+
+- **Gemini**: FAILED — **`503 UNAVAILABLE`, "This model is currently
+  experiencing high demand"**, 981ms. Second confirmed instance in this
+  batch.
+- **Haiku**: SUCCEEDED — 3414ms, High confidence. `cardName="Oinkologne"`,
+  `cardNumber=null`, `hp="120"`, `language="Japanese"`,
+  `attackName="Mind Jack"`, `stampType="none"`. Cost $0.003044.
+- **Ground truth**: not available (Gemini failed).
+
+#### #12 — 2026-09-03 02:24:08 UTC
+
+- **Gemini**: FAILED — timeout, 5003ms.
+- **Haiku**: technically SUCCEEDED (valid 200 response) but low-value —
+  2741ms, Low confidence, every field null except `stampType="none"`/
+  `isSlab=false`. Haiku's own reason: the card was "too blurry and
+  obscured to legibly read any text, numbers, HP, attack names." A
+  genuine "neither provider could read this frame" case, not a Haiku
+  failure — an honest low-confidence non-answer is the correct behavior
+  here, same design principle this whole project already follows for
+  Gemini. Cost $0.003104.
+- **Ground truth**: not available (Gemini failed; Haiku found nothing to
+  cross-check either).
+
+#### #13 — 2026-09-03 02:24:14 UTC
+
+- **Gemini**: FAILED — timeout, 5002ms.
+- **Haiku**: SUCCEEDED — 2657ms, Medium confidence. `cardName="Shaymin"`,
+  `cardNumber=null`, `hp="120"`, `language="Japanese"`,
+  `attackName="Mind Jack"`, `stampType="none"`. Cost $0.003099.
+- **Ground truth**: not available (Gemini failed).
+
+#### #14 — 2026-09-03 02:24:21 UTC
+
+- **Gemini**: FAILED — timeout, 5002ms.
+- **Haiku**: SUCCEEDED — 2485ms, Medium confidence. `cardName="Zoroark"`,
+  `cardNumber=null`, `hp="120"`, `language="Japanese"`,
+  `attackName="Mind Jack"`, `stampType="none"`. Cost $0.003059.
+- **Ground truth**: not available (Gemini failed).
+
+**Observation across #6, #9, #11, #13, #14** (Vanillite/Iono/Oinkologne/
+Shaymin/Zoroark): several of these share `hp="120"` + `attackName="Mind
+Jack"` (or its Japanese `マインドジャック`) with entry #1 (Shadowark) and
+#2 (Zoroark again at #14) — plausibly the same physical card or a small
+set of cards being rescanned repeatedly during this cluster (consistent
+with rapid-fire rescanning during a real timeout streak), not 13
+independent unique cards. Worth keeping in mind when eyeballing this
+batch for variety — the *language*/*failure-mode* coverage is real, but
+the *card* coverage is probably much narrower than 13 distinct cards.
 
 ## Related docs
 
