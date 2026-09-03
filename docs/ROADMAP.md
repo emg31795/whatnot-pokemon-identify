@@ -126,6 +126,35 @@ for the fix history.
       made — full write-up in `docs/test-cases.md`, "Research: is Gemini
       the right vision provider?" — explicitly the user's call, not
       built speculatively.
+      **New, 2026-09-03: the live-test key from the item above now
+      exists and the shadow test is confirmed live** — see
+      `docs/test-cases.md`'s "Shadow test: Claude Haiku 4.5 vs. Gemini".
+      The same evening produced the worst Gemini cluster yet, verified
+      directly against real Vercel logs (not the user's live tally alone):
+      **13 of 14 scans failed in the 02:15:59-02:24:21 UTC window** (11
+      hard timeouts at the `GEMINI_TIMEOUT_MS = 5000` wall, plus **2
+      confirmed `503 "This model is currently experiencing high demand"`
+      errors** — a genuinely new Gemini failure mode for this project,
+      distinct from every timeout documented so far). **Claude Haiku 4.5
+      succeeded on all 13 of those failures** (High/Medium confidence,
+      plausible structured reads in every case) — direct, real evidence
+      that whatever is degrading Gemini right now (rate-limiting/server
+      load on Google's side, given the new 503 alongside the existing
+      timeouts) is not something Haiku is also hitting. The 1 scan where
+      Gemini succeeded (Minior, 070/062, High confidence, clean
+      `tieCount=1` PPT match — strong indirect evidence Gemini was
+      correct here) also had Haiku succeed but **disagree** on
+      cardName/cardNumber/subtype/attackName (Haiku read "Meteono
+      070/102" instead) — a first real look at same-frame accuracy, not
+      just failure-mode coverage, though with only one such data point
+      it's not yet a pattern. This is real-time evidence for the still-
+      open strategy question this whole item is about, but with only
+      ~14 data points (13 of them are "Gemini failed vs. Haiku succeeded"
+      rather than "both succeeded, compare accuracy") it does not yet
+      answer the harder question — whether Haiku is actually *more
+      accurate*, not just more available right now. See
+      `docs/test-cases.md` for the full per-scan log and running tally,
+      updated as more scans come in.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed
