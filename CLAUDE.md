@@ -331,8 +331,9 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
-- **Fixed stale Gemini pricing constants — display-accuracy bug, COMMITTED
-  LOCALLY 2026-09-03, NOT YET DEPLOYED**. `GEMINI_INPUT_USD_PER_1M`/
+- **Fixed stale Gemini pricing constants — display-accuracy bug, DEPLOYED
+  AND PUSHED 2026-09-03** (commit `2071105`, `dpl_5ePhiMrMphWwTqro85C7GS3sHFFr`,
+  aliased to `whatnot-pokemon-identify.vercel.app`). `GEMINI_INPUT_USD_PER_1M`/
   `GEMINI_OUTPUT_USD_PER_1M` in `api/identify.js` (used by
   `estimateGeminiCostUsd()` for the extension's own "This scan: $X" /
   session-total cost display) were `0.30`/`2.50` — stale. Confirmed live
@@ -350,9 +351,25 @@ checklist before reporting something as finished:
   was a **display bug only** — real Gemini billing was always correct,
   since Google bills independently of what this constant says; only the
   cost shown in the extension panel was wrong, undercounting real spend
-  by a bit over 2x. Deploy checklist not yet run — needs the user's
-  go-ahead before deploying to Vercel production and pushing to GitHub,
-  per standing rule.
+  by a bit over 2x. Deploy checklist followed in full: scratch-file
+  transcription diff-verified against the real source before deploying —
+  this caught, on the first attempt, the SAME recurring diacritic-regex
+  transcription corruption documented repeatedly elsewhere in this file
+  (`̀-ͯ` came out as literal Unicode combining characters),
+  fixed non-generatively by copying the exact byte-correct line from the
+  source via a Python script, then re-verified a clean 0-diff / matching
+  sha1 (`b51af47995ebe2b37f18a8e5ac0d73f70377376e`) before deploying.
+  Confirmed: deployment state `READY`; build log shows "Downloading 3
+  deployment files"; live `GET /api/identify` returns
+  `normalizeDiacriticTest: "pokemon collector"` (proof the diacritic
+  regex deployed intact); live `POST /api/identify {}` returns real
+  `400 {"error":"Missing imageBase64"}`; runtime logs confirm both
+  requests (plus a real organic scan that hit a Gemini timeout seconds
+  later) were served by `dpl_5ePhiMrMphWwTqro85C7GS3sHFFr`. Pushed to
+  GitHub (`d76b160..2071105`). **No live-rescan confirmation needed**
+  for this one — it's a pure display-math fix with no accuracy claim to
+  verify; the pre-deploy corrected-cost recomputation in
+  `docs/test-cases.md` already is the confirmation.
 - **Reverted Gemini `thinkingLevel` from `"low"` back to `"minimal"` —
   DECIDED, DEPLOYED, AND PUSHED 2026-09-01** (commit `d25584b`,
   `dpl_5omfXcn98uMcZ4ZzUNpaTvVN38VP`, aliased to
