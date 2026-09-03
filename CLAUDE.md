@@ -331,6 +331,30 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Temporary Haiku 4.5 vs. Gemini shadow test — DEPLOYED, PUSHED, AND
+  CONFIRMED LIVE 2026-09-03** (commit `276dc13`, originally deployed as
+  `dpl_ERt8XAWARe1rDgEWEgf4wcVQrmh4`; confirmed collecting real data on
+  `dpl_C8BLGSCBXJn7geR1DETfbQuVgVAk`). Answers the one question the
+  vision-provider research (`docs/test-cases.md`) couldn't settle from
+  docs alone — real accuracy on this exact task. `identifyWithHaiku()`/
+  `runHaikuShadowTest()` in `api/identify.js` fire a read-only shadow call
+  to Claude Haiku 4.5 alongside every real Gemini call, gated entirely on
+  `ANTHROPIC_API_KEY` (now set in Vercel's Production environment — the
+  user added it there after the initial deploy, which is what unblocked
+  data collection). Gemini remains the sole source of what the user sees
+  and what matching/pricing runs on; Haiku's read is logged only, via
+  `[haiku-shadow-test]` lines in Vercel runtime logs, never consumed
+  elsewhere. Not awaited before responding — uses `@vercel/functions`'
+  `waitUntil()` (new dependency) so it can't add latency to the real
+  response. **Data collection is live**: 1 real data point so far (see
+  `docs/test-cases.md`'s "Shadow test: Claude Haiku 4.5 vs. Gemini" —
+  running tally + per-scan log, updated as the user reports more real
+  scans). Recommended before drawing any conclusion: ~20-30 real scans
+  covering Japanese/promo-number/foil-glare cases specifically, extending
+  further if the first batch is mixed. **Fully removable when done** —
+  see the "TEMPORARY SHADOW TEST" comment block in `api/identify.js` for
+  the exact removal list (the function, its two handler call sites, and
+  the `@vercel/functions` dependency in `package.json`).
 - **Fixed stale Gemini pricing constants — display-accuracy bug, DEPLOYED
   AND PUSHED 2026-09-03** (commit `2071105`, `dpl_5ePhiMrMphWwTqro85C7GS3sHFFr`,
   aliased to `whatnot-pokemon-identify.vercel.app`). `GEMINI_INPUT_USD_PER_1M`/

@@ -1789,6 +1789,81 @@ documented tradeoffs, clearly marked confirmed vs. unknown:
   new key is a separate ask if the user wants to pursue a live
   comparison.
 
+## Shadow test: Claude Haiku 4.5 vs. Gemini, live data (started 2026-09-03)
+
+Answers the "genuinely unknown" item directly above — the one question
+the research couldn't settle from docs. **Not built into the extension**:
+`identifyWithHaiku()`/`runHaikuShadowTest()` in `api/identify.js` are a
+read-only shadow call, gated entirely on `ANTHROPIC_API_KEY` being set in
+Vercel's environment. Gemini remains the sole source of what the user
+sees and what matching/pricing runs on; Haiku's read is logged to Vercel
+runtime logs only (`[haiku-shadow-test]` lines), never consumed anywhere
+else. Fully removable — see the "TEMPORARY SHADOW TEST" comment block in
+`api/identify.js`. This section is pure doc-tracking, updated as the user
+reports real scans; no comparison logic lives in the app itself.
+
+**How entries get added**: the user reports a real scan (directly, or via
+a screenshot); pull the matching `[haiku-shadow-test]` line from Vercel
+runtime logs for that deployment/timestamp (never take the user's
+paraphrase as the record — same standing convention as everywhere else in
+this file) and log it below in the fixed format, then update the running
+tally.
+
+**Recommended before drawing any conclusion**: ~20-30 real scans covering
+the failure classes that actually motivated this (Japanese cards, promo/
+alphanumeric numbers, foil glare), including a few 2-3-scan-while-the-
+card-is-on-screen sequences to compare each provider's own consistency,
+not just single-shot accuracy — see the full reasoning in CLAUDE.md's
+"Recent / in-flight work". Extend further if the first batch is mixed.
+
+### Running tally (updated as each data point is added)
+
+| Metric | Count |
+|---|---|
+| Total data points | 1 |
+| Both succeeded, all compared fields agree | 0 |
+| Both succeeded, fields disagree | 0 |
+| Gemini failed/timed out, Haiku succeeded | 1 |
+| Gemini succeeded, Haiku failed/timed out | 0 |
+| Both failed | 0 |
+| Ground truth confirmed — Gemini correct | 0 |
+| Ground truth confirmed — Haiku correct | 0 |
+| Ground truth confirmed — both correct | 0 |
+| Ground truth confirmed — both wrong | 0 |
+| Ground truth confirmed — disagreed, unresolved | 0 |
+
+**Latency (successful calls only):**
+
+| Provider | n | min | max | mean |
+|---|---|---|---|---|
+| Gemini | 0 | — | — | — |
+| Haiku | 1 | 2705ms | 2705ms | 2705ms |
+
+### Data points
+
+#### #1 — 2026-09-03 02:15:59 UTC (`dpl_C8BLGSCBXJn7geR1DETfbQuVgVAk`)
+
+- **Gemini**: FAILED — hard timeout, aborted at 5008ms (the `GEMINI_TIMEOUT_MS
+  = 5000` wall). This is the "Couldn't identify the card" message the user
+  saw in the panel.
+- **Haiku**: SUCCEEDED — 2705ms, High confidence. `cardName="Shadowark"`,
+  `cardNumber="082/071"`, `hp="120"`, `language="Japanese"`,
+  `attackName="Mind Shock"`, `stampType="none"`, `subtype=null`,
+  `setName=null`. Cost $0.002999 (2354 input / 129 output tokens) — notably
+  higher input-token count than Gemini's typical ~1551 for a comparable
+  frame, consistent with the research doc's expectation that Anthropic's
+  patch-based image tokenization runs higher than Gemini's for a real
+  (non-tiny) photo.
+- **Ground truth**: not available from this data point alone — since
+  Gemini itself failed, there's nothing to cross-check Haiku's read
+  against yet. Real ground truth (e.g. from the physical card, or from a
+  successful Gemini rescan of the same/a similar card) would be needed to
+  confirm Haiku's read was actually correct, not just confident.
+- **Relevance**: a direct, real example of Haiku succeeding on a frame
+  where Gemini hard-timed-out — exactly the failure mode that prompted
+  this whole shadow test (see the severe timeout cluster in test #68's
+  update, 2026-09-02).
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
