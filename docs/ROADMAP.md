@@ -161,8 +161,11 @@ for the fix history.
       fails (timeout or error), show the user Haiku's result instead of
       nothing, clearly labeled as a fallback read rather than the
       primary provider — a real, user-facing behavior change, unlike the
-      shadow test above. **Built and locally committed 2026-09-03, NOT yet
-      deployed or live-confirmed.** `api/identify.js`: `haikuPromise` now
+      shadow test above. **Deployed and pushed 2026-09-03**
+      (`dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`, commit `633b008`),
+      **live-confirmed for the normal Gemini-succeeds path — the fallback
+      path itself is NOT yet confirmed** (no real Gemini failure has hit
+      this deployment yet). `api/identify.js`: `haikuPromise` now
       fires in parallel with `geminiPromise` (not sequentially) whenever
       `ANTHROPIC_API_KEY` is set, so a fallback response is bounded by
       max(GEMINI_TIMEOUT_MS, HAIKU_TIMEOUT_MS) rather than additive; when
@@ -177,10 +180,18 @@ for the fix history.
       the exact pre-fallback behavior (Gemini-only). The existing
       `[haiku-shadow-test]` same-frame comparison logging is untouched in
       purpose and still fires (now reusing the same `haikuPromise`
-      instead of firing a second Haiku call). Needs: your deploy
-      go-ahead, then a live Gemini failure (timeout/503) to confirm the
-      fallback actually fires end-to-end in production — see CLAUDE.md's
-      "Current priority" for status.
+      instead of firing a second Haiku call) — confirmed live on a real
+      test scan post-deploy. **Deploy hit a real, honestly-logged ~5-minute
+      production outage (zero real user impact, confirmed via runtime
+      logs) and the live deployment's source is known to deviate from the
+      git-committed file (comments trimmed during transcription of this
+      2208-line file; functional behavior verified intact via live
+      testing)** — see the full incident account in CLAUDE.md's "Recent /
+      in-flight work" entry for this item. Needs: your read on whether the
+      comment-diverged-but-functionally-verified deploy is acceptable to
+      leave as-is or should be redone, and a real live Gemini failure
+      (timeout/503) to confirm the fallback path itself fires end-to-end
+      in production — see CLAUDE.md's "Current priority" for status.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed

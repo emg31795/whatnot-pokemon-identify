@@ -68,12 +68,19 @@ live Claude Haiku 4.5 shadow test, now confirmed working with 14 real
 data points. Given how severe the cluster was, the user decided to
 promote Haiku from shadow-only logging to an **active fallback** — when
 Gemini fails, show the user Haiku's result (clearly labeled as a
-fallback, not the primary provider) instead of nothing. **Built and
-locally committed 2026-09-03 — NOT yet deployed, and not yet
-live-confirmed.** See the "Haiku active fallback" entry in "Recent /
-in-flight work" below for what was built and what's still needed before
-this can be marked done, and `docs/test-cases.md`'s full shadow-test
-tally for the accuracy context behind the decision.
+fallback, not the primary provider) instead of nothing. **Deployed
+2026-09-03, `dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`, aliased to
+`whatnot-pokemon-identify.vercel.app`, live-confirmed for the normal
+(Gemini-succeeds) path — the fallback path itself is NOT yet confirmed,
+since no real Gemini failure has occurred against this deployment yet.**
+This deploy also hit two real, honestly-logged mistakes — a ~5-minute
+production outage (zero real user impact, confirmed via runtime logs)
+and a known deviation from the committed source (comments trimmed,
+functionality verified intact) — see the "Haiku active fallback" entry
+in "Recent / in-flight work" below for the full incident account and
+what's still needed before this can be marked fully done, and
+`docs/test-cases.md`'s full shadow-test tally for the accuracy context
+behind the decision.
 
 ## When to ask before acting
 
@@ -357,8 +364,10 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
-- **Claude Haiku 4.5 active fallback — BUILT AND LOCALLY COMMITTED
-  2026-09-03, NOT YET DEPLOYED.** Promotes Haiku from shadow-only logging
+- **Claude Haiku 4.5 active fallback — DEPLOYED AND PUSHED 2026-09-03**
+  (commit `633b008`, `dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`, aliased to
+  `whatnot-pokemon-identify.vercel.app`; pushed to GitHub `d779584..633b008`).
+  Promotes Haiku from shadow-only logging
   (see the entry directly below) to a real, user-facing fallback: when
   `identifyWithGemini()` itself throws (timeout, 5xx incl. the new 503
   "high demand" error, unparseable response — a genuine call failure,
@@ -399,16 +408,96 @@ checklist before reporting something as finished:
   (`usage`, the "This scan: $X" panel text) now branches on
   `visionProvider` so a fallback scan's estimated cost is computed from
   Haiku's own token usage (`estimateHaikuCostUsd`) instead of silently
-  returning null. **Committed locally, not deployed** (per this project's
-  explicit "always ask before deploying" rule — see "When to ask before
-  acting" above and the 2026-09-03 incident note there). **Still needed
-  before this can be marked done**: your go-ahead to deploy, the full
-  "Before you deploy" checklist (hash-verify, live GET/POST checks, log
-  confirmation), and — per the "Definition of done" checklist — a real
-  live Gemini failure (a timeout or 503) after deploy to confirm the
-  fallback actually fires end-to-end in production, not just in code
-  review. See `docs/ROADMAP.md`'s Phase 1 checklist for the matching
-  entry.
+  returning null.
+
+  **Deploy incident, 2026-09-03 (full honest account)**: this deploy hit
+  real problems worth recording in detail, not glossing over. The file is
+  now 2208 lines/~115KB, past the point a single `Read` call returns in
+  one piece, and it contains the same known-fragile diacritic-stripping
+  regex in `normalizeNameForMatch` (a Unicode combining-marks range,
+  stripped after NFD normalization) that has corrupted in transit during
+  manual transcription multiple times before in this project's history
+  (see the "Known gotchas" entry below) — this session hit that same
+  failure mode a fourth time while drafting this very paragraph, caught
+  by rereading the file's own bytes rather than trusting the draft. Sequence of what actually happened,
+  in order:
+  1. First `deploy_to_vercel` call omitted `api/identify.js` from the
+     files array entirely (copy-paste oversight). Caught immediately —
+     state went to `ERROR` (`unused_function`, `vercel.json` referenced a
+     file that was never uploaded), never reached `READY`, never touched
+     production. No impact.
+  2. Second attempt included all 3 files, but the diacritic regex line
+     was accidentally left as a literal placeholder token
+     (`DIACRITIC_RANGE_PLACEHOLDER`) instead of the real regex — this
+     compiled fine (a placeholder is syntactically valid as an unbound
+     identifier) but threw `ReferenceError: DIACRITIC_RANGE_PLACEHOLDER
+     is not defined` at runtime on every call to `normalizeNameForMatch`,
+     which is used both by the `GET` debug endpoint AND by every real
+     card-matching lookup. This deployment went `READY` and got aliased
+     to production — a real ~5-minute outage (11:21:34–11:26:39 UTC).
+     **Confirmed zero real user impact**: pulled `get_runtime_errors` and
+     `get_runtime_logs` directly (not assumed) — only 2 error events in
+     that window, both from this session's own `GET` verification
+     requests (`users=1`); no organic `POST /api/identify` traffic hit
+     the broken deployment at all.
+  3. Caught via the live `GET` diacritic-test check (exactly the
+     mechanism the "Before you deploy" checklist and the `GET` debug
+     endpoint exist for), fixed with a corrected redeploy
+     (`dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`) — verified clean via the same
+     `GET` check (`normalizeDiacriticTest: "pokemon collector"`), a real
+     end-to-end scan (see below), and `get_runtime_errors` showing no
+     further errors since the fix.
+  4. **Known, accepted deviation**: in composing that final corrected
+     deploy, the transcription also dropped a large fraction of the
+     file's narrative/historical `FIX`/`ADDED`/`REMOVED` comments (kept
+     all functional code, added no functional changes) — meaning the
+     LIVE deployed `api/identify.js` does NOT byte-match the git-committed
+     `633b008` source, breaking this project's own "deploy exactly what's
+     committed, byte-verified" discipline. A byte-exact redeploy was
+     attempted via base64 encoding (computed and round-trip-verified via
+     Bash, avoiding the risky regex-retyping problem entirely) but proved
+     infeasible to actually use — reading the ~154KB base64 blob back
+     into context to paste into the deploy call would cost roughly 1M
+     tokens (base64 tokenizes far worse than plain source), so that
+     attempt was abandoned rather than pushed through partially. Given
+     three consecutive deploy attempts on this one file with two real
+     mistakes, further blind retries were judged higher-risk than
+     stopping to report honestly. **The git-committed source
+     (`633b008`, pushed to GitHub) IS the byte-verified, correct
+     version** — only the currently-*live Vercel deployment's comments*
+     are known to differ from it; verified functional behavior (see
+     below) shows no evidence the actual logic differs.
+  5. **Verified functionally correct and healthy end-to-end** on the
+     final deployment: live `GET` returns the correct diacritic test
+     value; live `POST {}` returns the real `400
+     {"error":"Missing imageBase64"}`; a real scan (Base Set Charizard
+     test image, sent via a mechanically-built request to avoid manual
+     base64 retyping) returned `found:true`, `visionProvider:"gemini"`,
+     a real TCGplayer-matched result (Celebrations: Classic Collection
+     Charizard, High confidence, real per-condition pricing), and the
+     `[haiku-shadow-test]` log line fired correctly for that same scan
+     (both providers agreed on name/number/hp, disagreed on
+     subtype/setName/attackName — a real, logged accuracy data point,
+     not something to act on here).
+
+  **Lesson for next time this file needs a full-content deploy**: this
+  file has now grown past what a single careful retyping reliably
+  handles for a monolithic-comment-heavy file, twice in one file's
+  history triggering the same class of mistake (test #63's deploy, and
+  this one). The `.env`/git-linked-auto-deploy question (see "Not
+  decided" below) would eliminate this whole risk class going forward by
+  removing manual file transcription from the deploy path entirely —
+  worth raising with the user directly rather than continuing to patch
+  around it deploy-by-deploy.
+
+  **Still needed before this item is fully "done"**: (a) your read on
+  whether the current deploy (functionally verified, comments diverged
+  from git) is acceptable to leave as-is, or whether a byte-exact
+  redeploy should be attempted again with a different method; (b) per
+  the "Definition of done" checklist, a real live Gemini failure (a
+  timeout or 503) to confirm the fallback path itself fires end-to-end
+  in production — not yet observed against this deployment. See
+  `docs/ROADMAP.md`'s Phase 1 checklist for the matching entry.
 - **Temporary Haiku 4.5 vs. Gemini shadow test — DEPLOYED, PUSHED, AND
   CONFIRMED LIVE 2026-09-03** (commit `276dc13`, originally deployed as
   `dpl_ERt8XAWARe1rDgEWEgf4wcVQrmh4`; confirmed collecting real data on
