@@ -5,5 +5,8 @@
   "description": "Free backend for the Whatnot Pokemon Card ID extension (identifies cards from a livestream video frame and looks up pricing). Deployed as a Vercel serverless function.",
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "@vercel/functions": "^3.9.5"
   }
 }

@@ -346,6 +346,262 @@ async function identifyWithGemini(imageBase64, apiKey) {
   return parsed;
 }
 
+// =============================================================================
+// TEMPORARY SHADOW TEST (added 2026-09-03) — Claude Haiku 4.5 vs. Gemini,
+// real-scan accuracy comparison. NOT a permanent architecture piece.
+//
+// This exists to answer the one question the "is Gemini the right vision
+// provider?" research (docs/test-cases.md, 2026-09-02, corrected 2026-09-03)
+// could NOT settle from docs alone: real accuracy on this exact task
+// (photo of a card in hand -> structured JSON). Everything else in that
+// research (pricing, structured-output support, timeout config, migration
+// cost) came from documentation; this is the live-data piece.
+//
+// STRICT CONSTRAINT: this must never change what the user sees or how the
+// extension behaves. Gemini remains the sole source of the result shown in
+// the panel and used for matching/pricing — Haiku's read is a read-only
+// shadow call, logged for comparison only, never consumed by anything else
+// in this file. Entirely gated on ANTHROPIC_API_KEY being present in the
+// environment (see the handler below) — a complete no-op, zero added
+// latency/cost/risk, for anyone without that key configured.
+//
+// REMOVE WHEN DONE: this whole section (through runHaikuShadowTest), its
+// two call sites in the handler (the `anthropicKey`/`geminiPromise`/
+// `waitUntil` block, and the switch from `read = await
+// identifyWithGemini(...)` back to a plain inline call), and the
+// `@vercel/functions` dependency in package.json, once enough scan
+// variance has been collected — see docs/test-cases.md for the
+// recommended sample size before drawing a conclusion.
+//
+// Pricing confirmed LIVE 2026-09-03 against platform.claude.com/docs/en/
+// about-claude/pricing (not reused from the earlier research doc without
+// rechecking): Claude Haiku 4.5 is $1.00 input / $5.00 output per MTok,
+// standard (non-batch) rate — unchanged from the research doc's numbers,
+// but re-verified live per the same discipline that research used.
+const ANTHROPIC_INPUT_USD_PER_1M = 1.0;
+const ANTHROPIC_OUTPUT_USD_PER_1M = 5.0;
+const HAIKU_MODEL = "claude-haiku-4-5-20251001";
+// Same budget as Gemini's own GEMINI_TIMEOUT_MS, deliberately — this is a
+// fair latency comparison, not a generous allowance for the shadow call.
+const HAIKU_TIMEOUT_MS = 5000;
+
+// Waits for the given promise without holding open the response to the
+// user — see the big comment above. @vercel/functions' waitUntil() is
+// confirmed (via its own docs, checked live 2026-09-03) to work in
+// Node.js Vercel Functions, not just Edge, and to extend the invocation's
+// lifetime up to the function's own maxDuration (15s here, per
+// vercel.json — comfortably covers HAIKU_TIMEOUT_MS). Guarded require:
+// if the package is somehow unavailable at runtime, this shadow test
+// degrades to best-effort fire-and-forget rather than breaking anything
+// in the real request path.
+let waitUntil = null;
+try {
+  ({ waitUntil } = require("@vercel/functions"));
+} catch (e) {
+  waitUntil = null;
+}
+
+// Same field set as GEMINI_SCHEMA, re-expressed in standard JSON Schema
+// (Anthropic's output_config.format uses plain JSON Schema, not Gemini's
+// OpenAPI-flavored `nullable: true` — nullable fields here use a
+// `["string", "null"]` type union instead). Anthropic's own structured-
+// outputs example requires every defined property when
+// `additionalProperties: false` is set (confirmed live 2026-09-03,
+// platform.claude.com/docs/en/build-with-claude/structured-outputs) —
+// followed here even though Gemini's own schema only required 4 fields,
+// since that's how Anthropic's strict-schema validation is documented to
+// work.
+const HAIKU_SCHEMA = {
+  type: "object",
+  properties: {
+    found: { type: "boolean" },
+    confidence: { type: "string", enum: ["High", "Medium", "Low"] },
+    cardName: { type: ["string", "null"] },
+    cardNumber: { type: ["string", "null"] },
+    hp: { type: ["string", "null"] },
+    subtype: { type: ["string", "null"] },
+    setName: { type: ["string", "null"] },
+    attackName: { type: ["string", "null"] },
+    // FIX (2026-09-03, caught by a local smoke test before deploying —
+    // see the shadow-test comment above): `type: ["string", "null"]`
+    // combined with `enum` including `null` was rejected live by
+    // Anthropic's schema validator ("Enum value 'English' does not match
+    // declared type"). `enum` alone (which already implies the allowed
+    // value set, null included) is what actually works.
+    language: { enum: ["English", "Japanese", null] },
+    stampType: {
+      type: "string",
+      enum: ["none", "1st Edition", "Staff", "Prerelease", "Winner", "Pokemon Center", "World Championship", "other"],
+    },
+    isSlab: { type: "boolean" },
+    grader: { type: ["string", "null"] },
+    grade: { type: ["string", "null"] },
+    certNumber: { type: ["string", "null"] },
+    reason: { type: ["string", "null"] },
+  },
+  required: [
+    "found",
+    "confidence",
+    "cardName",
+    "cardNumber",
+    "hp",
+    "subtype",
+    "setName",
+    "attackName",
+    "language",
+    "stampType",
+    "isSlab",
+    "grader",
+    "grade",
+    "certNumber",
+    "reason",
+  ],
+  additionalProperties: false,
+};
+
+function estimateHaikuCostUsd(usage) {
+  if (!usage) return null;
+  const inTok = usage.input_tokens || 0;
+  const outTok = usage.output_tokens || 0;
+  const cost = (inTok / 1_000_000) * ANTHROPIC_INPUT_USD_PER_1M + (outTok / 1_000_000) * ANTHROPIC_OUTPUT_USD_PER_1M;
+  return { estCostUsd: cost, promptTokens: inTok, outputTokens: outTok };
+}
+
+// Same shape/contract as identifyWithGemini(imageBase64, apiKey) — takes
+// the raw image + an API key, returns a plain object with the same field
+// set (plus its own _haikuUsage instead of _geminiUsage). Reuses
+// GEMINI_PROMPT verbatim, per the task's explicit instruction to share
+// prompt content where possible.
+async function identifyWithHaiku(imageBase64, apiKey) {
+  const body = {
+    model: HAIKU_MODEL,
+    max_tokens: 1024,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: imageBase64 } },
+          { type: "text", text: GEMINI_PROMPT },
+        ],
+      },
+    ],
+    output_config: {
+      format: { type: "json_schema", schema: HAIKU_SCHEMA },
+    },
+  };
+
+  const resp = await fetchWithTimeout(
+    "https://api.anthropic.com/v1/messages",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(body),
+    },
+    HAIKU_TIMEOUT_MS
+  );
+
+  if (!resp.ok) {
+    const errBody = await resp.text().catch(() => "");
+    throw new Error(`Haiku error ${resp.status}: ${errBody}`);
+  }
+
+  const json = await resp.json();
+  const text = json.content?.[0]?.text;
+  if (!text) throw new Error("Haiku returned no content");
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    throw new Error("Haiku returned unparseable JSON: " + text.slice(0, 200));
+  }
+
+  parsed._haikuUsage = json.usage || null;
+  return parsed;
+}
+
+// Fields compared between the two providers' reads for the shadow-test
+// log line. Deliberately the fields that actually drive matching/scoring
+// downstream (see scoreCandidate below) — not every raw field Gemini
+// returns (e.g. `reason` is free text, not meaningfully comparable).
+const HAIKU_SHADOW_COMPARE_FIELDS = ["cardName", "cardNumber", "hp", "subtype", "setName", "attackName", "language", "stampType", "isSlab", "confidence"];
+
+function haikuShadowFieldsMatch(a, b) {
+  const na = a == null ? "" : String(a).trim().toLowerCase();
+  const nb = b == null ? "" : String(b).trim().toLowerCase();
+  return na === nb;
+}
+
+// Orchestrates the shadow comparison: fires the Haiku call, independently
+// awaits the SAME geminiPromise the main handler is already awaiting
+// (promises are safe to await from multiple places — this never affects
+// what the main handler sees), and logs one greppable line either way,
+// including when Gemini itself failed (that's one of the more interesting
+// comparison points, not a case to skip). Never throws past its own
+// try/catches — the caller wraps this in one more .catch() as a second
+// safety net (see the handler below) so a bug here can never surface to
+// the real response.
+async function runHaikuShadowTest(imageBase64, anthropicKey, geminiPromise, tStart) {
+  const tHaikuStart = Date.now();
+  let haikuResult = null;
+  let haikuErrorMsg = null;
+  try {
+    haikuResult = await identifyWithHaiku(imageBase64, anthropicKey);
+  } catch (e) {
+    haikuErrorMsg = (e && e.message) || String(e);
+  }
+  const haikuMs = Date.now() - tHaikuStart;
+
+  let geminiResult = null;
+  let geminiErrorMsg = null;
+  try {
+    geminiResult = await geminiPromise;
+  } catch (e) {
+    geminiErrorMsg = (e && e.message) || String(e);
+  }
+  const geminiMs = Date.now() - tStart;
+
+  const haikuUsage = haikuResult ? estimateHaikuCostUsd(haikuResult._haikuUsage) : null;
+
+  let fieldAgreement = null;
+  let overallMatch = "n/a";
+  if (geminiResult && haikuResult) {
+    fieldAgreement = {};
+    let allAgree = true;
+    for (const field of HAIKU_SHADOW_COMPARE_FIELDS) {
+      const agree = haikuShadowFieldsMatch(geminiResult[field], haikuResult[field]);
+      fieldAgreement[field] = agree;
+      if (!agree) allAgree = false;
+    }
+    overallMatch = allAgree;
+  }
+
+  console.log(
+    "[haiku-shadow-test]",
+    "gemini=",
+    JSON.stringify(geminiErrorMsg ? { error: geminiErrorMsg } : geminiResult),
+    "haiku=",
+    JSON.stringify(haikuErrorMsg ? { error: haikuErrorMsg } : haikuResult),
+    "match=",
+    overallMatch,
+    "fieldAgreement=",
+    JSON.stringify(fieldAgreement),
+    "geminiMs=",
+    geminiMs,
+    "haikuMs=",
+    haikuMs,
+    "haikuCostUsd=",
+    haikuUsage ? haikuUsage.estCostUsd : null
+  );
+}
+// =============================================================================
+// END TEMPORARY SHADOW TEST
+// =============================================================================
+
 // ---------------------------------------------------------------------------
 // Shared scoring — ONE function used by every lookup (raw-card and
 // graded-slab).
@@ -1711,9 +1967,27 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  const geminiPromise = identifyWithGemini(imageBase64, geminiKey);
+
+  // TEMPORARY SHADOW TEST (2026-09-03) — see the big comment block above
+  // identifyWithHaiku for the full story. Entirely gated on
+  // ANTHROPIC_API_KEY: a complete no-op for anyone without that key set
+  // (no extra call, no extra cost, no extra latency, no behavior change).
+  // Fired here (not awaited) so it can never delay the response below —
+  // waitUntil (when available) keeps it alive after the response is sent;
+  // the .catch() is a second safety net so a bug in the shadow test itself
+  // can never throw into the real request path either way.
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (anthropicKey) {
+    const shadowPromise = runHaikuShadowTest(imageBase64, anthropicKey, geminiPromise, tStart).catch((e) => {
+      console.error("[haiku-shadow-test] shadow test itself threw:", e && e.message);
+    });
+    if (waitUntil) waitUntil(shadowPromise);
+  }
+
   let read;
   try {
-    read = await identifyWithGemini(imageBase64, geminiKey);
+    read = await geminiPromise;
     console.log("[identify] Gemini read:", JSON.stringify(read));
   } catch (e) {
     console.error("[identify] Gemini call failed:", e && e.message, "after ms=", Date.now() - tStart);
