@@ -101,6 +101,31 @@ for the fix history.
       any recurrence of the #50/#63/#67 instability pattern now that
       `thinkingLevel` is
       back at `"minimal"`.
+      **New, same day (2026-09-02): a severe live timeout cluster (13
+      hard timeouts out of 21 scan attempts in a 7-minute window — see
+      test #68's update in `docs/test-cases.md`) prompted a research-only
+      pass on whether Gemini is even the right vision provider going
+      forward, given the thinkingLevel revert alone didn't fix this.**
+      Real current pricing/limits pulled from OpenAI's and Anthropic's
+      own docs (not memory): both cost more per scan than Gemini at
+      current pricing (roughly 1.4-3.3x across the realistic mid/high
+      tiers; GPT-5-mini is actually cheaper than Gemini, not parity — a
+      correction made 2026-09-03 after `GEMINI_INPUT_USD_PER_1M`/
+      `GEMINI_OUTPUT_USD_PER_1M` in `api/identify.js` were found to be
+      stale, undercounting Gemini's own real cost by ~2x; see
+      `docs/test-cases.md` for the full trace), unproven on accuracy
+      here either way, both support real JSON-schema structured output,
+      both have fully configurable client timeouts (confirming our 5s
+      ceiling is our own choice, not a Gemini-specific constraint), and
+      the code-level migration is genuinely contained (one self-contained
+      function + small cost helper + two call sites, verified by reading
+      `identifyWithGemini()` directly) — but prompt re-tuning for a new
+      model and real accuracy comparison are unknowns no docs research
+      can answer; that needs a live test with a provisioned second API
+      key, which doesn't exist in this project yet. No recommendation
+      made — full write-up in `docs/test-cases.md`, "Research: is Gemini
+      the right vision provider?" — explicitly the user's call, not
+      built speculatively.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed

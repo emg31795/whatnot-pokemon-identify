@@ -1512,6 +1512,283 @@ reverting removes an unproven mitigation, so a recurrence wouldn't be a
 regression from this change, just the original problem still being
 unsolved.
 
+## Test #68 — User saw "Couldn't identify the card" on a Japanese Absol scan; real logs show a Gemini timeout, not an unclear image (2026-09-02)
+
+User asked "did something break?" after a scan (foil Japanese Absol,
+held in hand, clearly visible on stream) returned the generic panel
+message "Couldn't identify the card. Try again when it's clearly
+visible." Per the standing convention, pulled real Vercel runtime logs
+for the exact scan before answering, rather than trusting the
+screenshot alone.
+
+**Root cause, confirmed via logs**: not a vague image at all — a hard
+Gemini timeout. `[identify] Gemini call failed: This operation was
+aborted after ms= 5002`, hitting the `GEMINI_TIMEOUT_MS = 5000` wall
+(`api/identify.js:107`). On that path the backend returns `{ found:
+false, error: "gemini-failed", detail }` with no `reason` field
+(`api/identify.js:1707`), so the extension falls back to its generic
+default text (`extension/content.js:427`) — this is *always* what that
+exact wording means; it does not mean the card itself was hard to read.
+A second scan seconds later succeeded cleanly (Gemini read Absol
+071/072 AR correctly; PPT just doesn't carry that exact printing —
+`[lookup] NO NUMBER MATCH IN POOL`, a separate, already-known
+catalog-coverage gap, same class as tests #35/#37/#49/#60).
+
+**Relevant to the open thinkingLevel-revert confirmation item above**:
+this happened on `dpl_5omfXcn98uMcZ4ZzUNpaTvVN38VP` — the deployment
+that already reverted `thinkingLevel` back to `"minimal"` specifically
+to reduce timeouts. Pulling a 24h window of `"Gemini call failed"`
+log lines found 5 total timeouts, but all 5 were bunched into a single
+~3-minute window (00:35:32-00:37:41 UTC), all at 5002-5009ms, right
+before/around this report. Not a clean confirmation either way: 5 in
+24h is far below the pre-revert 31-in-25h baseline, but a tight
+same-session cluster like this also looks more like a transient Gemini
+API slowdown at that moment than a steady baseline rate — one cluster
+isn't enough to say the revert fixed the rate. Still counts as a real,
+live data point for the "not yet confirmed via live rescan" item on the
+thinkingLevel revert above; keep watching for further clusters.
+
+No code change made — this was a report-only investigation, nothing to
+fix. The "Couldn't identify the card" wording itself is working as
+designed for this failure path (honest failure, no false answer), so no
+action item here beyond continuing to watch the timeout rate.
+
+**Update, same session, ~5 minutes later**: user reported "another
+instance" with a screenshot showing the identical generic message, plus
+`This scan: $0.0007 · Total: $0.35`. Investigated again via real logs
+rather than assuming it was the same story:
+
+- **Same root cause** — another Gemini timeout. Confirmed by wording:
+  the panel showed the exact generic default text, not a Gemini-supplied
+  `reason`; a different scan in the same window that Gemini *did*
+  respond to (found:true, but confidence Low, cardName/cardNumber all
+  null) carried its own distinct reason text ("The main held card is
+  severely motion-blurred and illegible") — proving the generic default
+  and a real Gemini-supplied reason render differently, so the generic
+  text reliably means "no `reason` field at all," i.e. the timeout path.
+- **New finding: the `$0.0007` figure was stale, not evidence of a paid
+  call for this attempt.** `recordScanCost()` (`extension/content.js:162`)
+  returns early — leaving `#wnpk-cost` untouched — whenever
+  `response.data.usage` is missing, which it always is on the
+  `gemini-failed` timeout response (`api/identify.js:1707` never
+  includes a `usage` key). So the dollar figure on screen after a
+  timeout is always left over from whatever scan last succeeded, not
+  the cost of the failed attempt. Cosmetic/informational only — doesn't
+  affect identification or actual billing — but worth knowing so a
+  nonzero "This scan" figure is never read as proof a failed-looking
+  scan was actually billed or completed.
+- **Escalation, not a blip.** Widening the log window to the last ~7
+  minutes (00:35-00:42 UTC) found **13 Gemini timeouts total**, not the
+  5-in-24h seen minutes earlier when this test was first written — the
+  rate was actively climbing in real time while this was being
+  investigated, clustered right in the middle of this live stream
+  session. This is a materially stronger, live-in-progress signal for
+  the open thinkingLevel-revert confirmation item above: whatever's
+  driving 5s timeouts is currently hitting this session hard, well above
+  the pre-revert 31-in-25h baseline's implied rate. Not yet clear
+  whether this is a genuine regression, a transient Gemini-side slowdown
+  unrelated to the revert, or the same unsolved problem the revert never
+  touched (media_resolution/prompt size, not thinkingLevel) — needs
+  more data across sessions/times of day before concluding anything,
+  but it's no longer a single isolated cluster.
+
+## Research: is Gemini the right vision provider? (2026-09-02, research only — no code/deploy)
+
+Prompted directly by the severe live cluster in test #68's update above
+(13 hard timeouts out of 21 scan attempts in the 00:35-00:42 UTC window)
+stacked on top of the already-open read-instability trend (tests #50,
+#63, #67) and the fact that the one lever already pulled on this
+(`thinkingLevel` revert, decided 2026-09-01) didn't meaningfully fix it.
+Per standing process, this is a written-up open design question for
+sign-off, not a build — no code changed, no live comparison test run
+(no second provider's API key exists in this project's environment to
+test against; if the user wants a real side-by-side accuracy test, that
+needs a new key provisioned first — a separate ask, not assumed here).
+All pricing/limits below pulled from each provider's own current docs
+(`platform.claude.com`, `developers.openai.com`), not from memory or
+aggregator blogs.
+
+### 1. Real options and real current pricing/latency
+
+**Our current profile** (from real production logs, e.g. the Absol scan
+in test #68 above): ~1551 input tokens per call (~1100 image + ~451 text
+instruction/schema), ~80-120 output tokens for the ~14-field JSON
+response.
+
+> **Correction (2026-09-03)**: the numbers below were originally computed
+> against `GEMINI_INPUT_USD_PER_1M = 0.30` / `GEMINI_OUTPUT_USD_PER_1M =
+> 2.50`, which turned out to be stale — found and fixed while
+> independently fact-checking this same table against Google's live
+> pricing page. Real current pricing for `gemini-3.6-flash` (confirmed
+> live at `ai.google.dev/gemini-api/docs/pricing`, and confirmed it's
+> priced separately from 3.7/3.8 Flash, not grouped with them) is
+> $0.75/$3.75 per MTok, not $0.30/$2.50 — see the `GEMINI_INPUT_USD_PER_1M`
+> fix in `api/identify.js`. Gemini's real cost/scan is **~$0.0016**, not
+> ~$0.0007, and every "Nx Gemini" multiple below is recomputed
+> accordingly (roughly half the multiple originally stated). This was a
+> *display*-accuracy bug only (the extension's own "This scan: $X" cost
+> shown to the user was undercounting real spend by ~2x) — it does not
+> change any of this research's other findings (structured-output
+> support, timeout behavior, migration cost, rate limits), only the
+> relative cost comparison here.
+
+At Gemini's corrected $0.75/$3.75 per-MTok rate, our profile comes out
+to **~$0.0016/scan**.
+
+| Provider / model | Input $/MTok | Output $/MTok | Est. cost at our token profile | Structured JSON output | Notes |
+|---|---|---|---|---|---|
+| **Gemini 3.6 Flash** (current) | $0.75 | $3.75 | ~$0.0016 | Yes (`responseSchema`, in production use) | Baseline. Corrected 2026-09-03 — was computed against stale $0.30/$2.50 constants, see note above |
+| **GPT-4o** | $2.50 | $10.00 | ~$0.005 (~3.1x Gemini) | Yes, confirmed vision-compatible | Image-token formula (85 base + 170/512px tile) gives ~1105 image tokens for a similarly-sized frame — coincidentally close to Gemini's own 1100 |
+| **GPT-5** | $1.25 | $10.00 | ~$0.003 (~1.9x Gemini) | Yes (strict JSON schema, `gpt-4o-2024-08-06`-and-later family) | Vision-input token formula for GPT-5 specifically not confirmed by docs fetched — flagged unknown, not assumed identical to GPT-4o's |
+| **GPT-5-mini** | $0.25 | $2.00 | ~$0.0006 (~0.4x Gemini — cheaper than Gemini at corrected pricing) | Presumed yes (same family) | Cheapest real alternative found, and now clearly cheaper than Gemini (not "roughly parity" as this doc said before the pricing correction) — but a smaller model, no accuracy data either way for a 14-field structured-extraction task; genuinely unknown without live test |
+| **Claude Haiku 4.5** | $1.00 | $5.00 | ~$0.0023-0.0026 (~1.4-1.6x Gemini) | Yes, GA (not beta) — `output_config.format`, confirmed supported on `claude-haiku-4-5-20251001` | Image tokenization is patch-based (28x28px = 1 visual token); a comparable frame likely runs ~1300-1600 image tokens (docs example: 1092x1092px = 1521 tokens), somewhat higher than Gemini's 1100 |
+| **Claude Sonnet 5** | $2.00 | $10.00 | ~$0.0047-0.0053 (~2.9-3.3x Gemini) | Yes, GA, confirmed supported on `claude-sonnet-5` | Same image-token profile as Haiku; this is the accuracy-favored tier if Haiku turns out too weak |
+| **xAI Grok 4.3/4.5** | $1.25 | $2.50 | ~$0.0022 (~1.4x Gemini) | Yes (`response_format` JSON schema) | Least-documented of the four for this specific use case — real pricing/structured-output support confirmed, but no vision-token formula or accuracy data found; would need its own deeper look before being a real contender |
+
+**Honest gap**: none of this tells us anything about *accuracy* on our
+specific task (transcribe a handheld trading-card photo into structured
+fields) — every number above is priced/latency data, not a quality
+comparison. That can only be settled by a live test, which per the
+task's own scope was explicitly not run here.
+
+### 2. Timeout / rate-limit behavior
+
+**Important finding, not assumed going in**: `GEMINI_TIMEOUT_MS = 5000`
+in `api/identify.js` is **our own client-side `AbortController` timeout**
+(`fetchWithTimeout`), not a limit Gemini itself imposes or documents.
+Checked both alternatives' own docs directly: OpenAI's SDKs default to a
+600000ms (10 min) client timeout, Anthropic's SDKs default to 10
+minutes — both fully configurable per-request down to any value,
+exactly like our own `fetchWithTimeout` wrapper. **This means the 5s
+ceiling is equally achievable (or not) on any of the three** — it's not
+a Gemini-specific constraint we'd be trading away. The real open
+question a migration wouldn't resolve on its own is whether the
+*alternative provider's actual response time* for this workload
+comfortably clears a 5s budget — genuinely unknown without a live
+timing test.
+
+Rate limits: OpenAI's tiers scale with account spend (Tier 1: 500 RPM /
+200k TPM for gpt-4o after $5 spent; Tier 5: 10,000 RPM / 30M TPM).
+Anthropic's Start tier is roughly 50 RPM with tens-of-thousands TPM,
+scaling up through Build/Scale tiers. Our real observed usage (worst
+case so far: 13 calls in 7 minutes, test #68 above) is well under even
+the lowest published tier on either platform — rate limits are very
+unlikely to be the binding constraint for either alternative, unlike the
+PPT per-minute/per-day credit exhaustion problem documented elsewhere in
+this file (that's a genuinely different, tighter-budget dependency; this
+question doesn't carry the same risk).
+
+One additional, Vercel-specific wrinkle found in the docs and worth
+flagging: both OpenAI's and Anthropic's structured-output features note
+that **the first request against a given JSON schema pays extra
+"compile" latency**, cached afterward (Anthropic: schema grammar cached
+24h; OpenAI: same idea, unspecified duration). Since our schema never
+changes between calls, this is a one-time cost in a long-lived server —
+but on **Vercel serverless**, a cold-started function instance may not
+share that cache with a prior instance, so this could recur more often
+than either provider's docs assume for a traditional always-on backend.
+Not something the current Gemini integration hits (Gemini's
+`responseSchema` mechanism isn't documented as having this same
+compile-and-cache behavior) — a real, provider-specific risk worth
+testing for, not just assuming away.
+
+### 3. Migration cost — genuinely contained, verified by reading the code
+
+Read `identifyWithGemini()` and its call sites directly
+(`api/identify.js:250-334`, called once at `api/identify.js:1703`) to
+assess this honestly rather than guess. The finding: **this is a real,
+contained swap, not a scoring/matching-logic ripple** —
+
+- `identifyWithGemini(imageBase64, apiKey)` is fully self-contained: it
+  builds one provider-specific HTTP request, parses one provider-specific
+  response shape, and returns a plain JS object with the fields
+  everything downstream actually consumes (`found`, `confidence`,
+  `cardName`, `cardNumber`, `hp`, `subtype`, `setName`, `attackName`,
+  `language`, `stampType`, `isSlab`, `grader`, `grade`, `certNumber`,
+  `reason`), plus a `_geminiUsage` field used only for cost display.
+- Every downstream consumer — `scoreCandidate`, `pickBestCandidate`,
+  `numbersMatch`, `lookupCardPPT`, `lookupGradedPrice`, the whole
+  scoring/matching system — reads only those generic fields. None of it
+  is Gemini-aware. **A new provider function that returns the identical
+  shape requires zero changes anywhere else in the file.**
+- `estimateGeminiCostUsd()` (`api/identify.js:199`) is the one other
+  provider-specific piece — Gemini's own per-token pricing constants and
+  its `usageMetadata` field names. A new provider needs its own parallel
+  cost function (small, ~10 lines, same pattern).
+- The two call sites that would change: `api/identify.js:1703`
+  (`read = await identifyWithGemini(...)`) and `:1714`
+  (`estimateGeminiCostUsd(read._geminiUsage)`), plus the env var name
+  (`GEMINI_API_KEY` → e.g. `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`) and the
+  `GEMINI_MODEL`/`GEMINI_TIMEOUT_MS` constants.
+- **Real, non-trivial part of the swap**: the prompt (`GEMINI_PROMPT`,
+  `api/identify.js:236`) and the JSON schema (`GEMINI_SCHEMA`,
+  `api/identify.js:211`) would need to be re-expressed in the new
+  provider's own schema syntax (OpenAI's `response_format.json_schema`;
+  Anthropic's `output_config.format`) and very likely re-tuned — a
+  prompt engineered against Gemini's specific behavior (e.g. the
+  Japanese-name-translation instruction, the "don't guess" framing, the
+  multi-card-in-frame warning added after the Brock's Onix bug) is not
+  guaranteed to produce equally good results verbatim on a different
+  model. This is the part of "migration cost" that's honestly hardest to
+  size without live testing — the code-level swap is small and
+  contained; the prompt-tuning-to-match-current-behavior work is real
+  but open-ended.
+
+**Bottom line on migration cost**: contained at the code level (one
+function + one small cost helper + two call sites + env var), NOT
+contained at the prompt-quality level — that part is genuinely unknown
+effort until tested live against real cards.
+
+### 4. Dual-provider option — feasibility only, not designed
+
+Two different ideas got conflated in the original framing; worth keeping
+separate:
+
+- **Race (call two providers, use whichever responds first)**: this
+  really is low-complexity given finding #3 above — since
+  `identifyWithGemini`-shaped functions already return an identical
+  object shape, wrapping two of them in `Promise.any()` (or a manual
+  race with a small preference tie-break) is a small, mechanical addition
+  once a second provider function exists at all. The real cost is
+  doubling per-scan spend (both providers get called and billed on every
+  scan, even though only one result is used) — at either OpenAI's or
+  Anthropic's per-scan cost above, that's a meaningfully bigger ongoing
+  cost than Gemini alone, not a free win.
+- **Cross-check (compare two providers' reads, reconcile or flag
+  disagreement)**: this is NOT low-complexity — it's a materially bigger
+  feature (new comparison/reconciliation logic, new confidence rules for
+  when providers disagree) and should not be assumed to come "for free"
+  alongside racing. Flagging its existence as an option, not designing
+  it — per the task's own scope.
+
+### Open question — no recommendation made, decision left to the user
+
+This write-up deliberately does not recommend "switch to X." Real,
+documented tradeoffs, clearly marked confirmed vs. unknown:
+
+- **Confirmed**: OpenAI and Anthropic both cost more per scan than
+  Gemini at current (corrected 2026-09-03) pricing — roughly 1.4-3.3x
+  across the realistic mid/high-tier models (GPT-5, Claude Haiku 4.5,
+  Claude Sonnet 5, Grok), with GPT-4o the priciest real option at ~3.1x.
+  The cheapest real alternative, GPT-5-mini, is actually **cheaper** than
+  Gemini at corrected pricing (~0.4x) — not "roughly parity" as this
+  entry said before the pricing correction — but still unproven on
+  accuracy for this exact task. Both OpenAI and Anthropic support real
+  JSON-schema-constrained structured output. Both have configurable
+  client timeouts,
+  so the 5s budget isn't a Gemini-specific constraint being traded away.
+  Rate limits are not expected to bind at our usage scale on either.
+  The code-level swap is small and contained; prompt re-tuning is real
+  extra work.
+- **Genuinely unknown, not answerable without a live test**: whether
+  either alternative is actually more accurate/consistent than Gemini on
+  this specific task (the entire reason this research got triggered),
+  and whether either alternative's real observed latency for this
+  workload comfortably clears our 2-5s target. No second provider API
+  key currently exists in this project's environment to test this — a
+  new key is a separate ask if the user wants to pursue a live
+  comparison.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

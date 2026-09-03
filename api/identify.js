@@ -108,8 +108,21 @@ const GEMINI_TIMEOUT_MS = 5000;
 const CARDDB_TIMEOUT_MS = 2500;
 const CARDDB_RETRY_TIMEOUT_MS = 1200;
 
-const GEMINI_INPUT_USD_PER_1M = 0.30;
-const GEMINI_OUTPUT_USD_PER_1M = 2.50;
+// FIX (2026-09-03): these were stale — confirmed live against Google's own
+// pricing page (ai.google.dev/gemini-api/docs/pricing) that gemini-3.6-flash
+// (the actual model GEMINI_MODEL resolves to; confirmed via repo-wide grep
+// that no GEMINI_MODEL override exists anywhere, local or documented) is
+// priced separately from 3.7/3.8 Flash at $0.75 input / $3.75 output per
+// MTok (standard tier, in effect through 2026-12-31), not $0.30/$2.50. The
+// old values undercounted every real Gemini call's displayed cost
+// (`estimateGeminiCostUsd`, the "This scan: $X" / session total shown in
+// the extension panel) by a bit over 2x versus actual spend — a display bug
+// only, not a billing bug; Google bills the real rate regardless of what
+// this constant says. Google's page also lists a further scheduled increase
+// to $1.50 input / $7.50 output effective 2027-01-01 — revisit this again
+// before then.
+const GEMINI_INPUT_USD_PER_1M = 0.75;
+const GEMINI_OUTPUT_USD_PER_1M = 3.75;
 
 // REMOVED (2026-08-30, user report — Ditto 18/62 Fossil, LP shown $13.45
 // vs. real TCGplayer LP $6.84): this flat 85/70/55/40% multiplier was

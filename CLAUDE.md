@@ -331,6 +331,28 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Fixed stale Gemini pricing constants — display-accuracy bug, COMMITTED
+  LOCALLY 2026-09-03, NOT YET DEPLOYED**. `GEMINI_INPUT_USD_PER_1M`/
+  `GEMINI_OUTPUT_USD_PER_1M` in `api/identify.js` (used by
+  `estimateGeminiCostUsd()` for the extension's own "This scan: $X" /
+  session-total cost display) were `0.30`/`2.50` — stale. Confirmed live
+  against Google's own pricing page (`ai.google.dev/gemini-api/docs/
+  pricing`) that `gemini-3.6-flash` (the actual model in use — confirmed
+  via repo-wide grep that no `GEMINI_MODEL` override exists anywhere,
+  local or documented) is priced separately from 3.7/3.8 Flash at
+  $0.75/$3.75 per MTok (standard tier, through 2026-12-31; rising to
+  $1.50/$7.50 on 2027-01-01 — noted in the code comment for a future
+  session to revisit). Found while independently fact-checking the
+  "Research: is Gemini the right vision provider?" pricing table below —
+  that table's Gemini baseline and every "Nx Gemini" multiple has been
+  corrected accordingly (Gemini's real cost/scan is ~$0.0016, not
+  ~$0.0007; see `docs/test-cases.md` for the full recomputation). This
+  was a **display bug only** — real Gemini billing was always correct,
+  since Google bills independently of what this constant says; only the
+  cost shown in the extension panel was wrong, undercounting real spend
+  by a bit over 2x. Deploy checklist not yet run — needs the user's
+  go-ahead before deploying to Vercel production and pushing to GitHub,
+  per standing rule.
 - **Reverted Gemini `thinkingLevel` from `"low"` back to `"minimal"` —
   DECIDED, DEPLOYED, AND PUSHED 2026-09-01** (commit `d25584b`,
   `dpl_5omfXcn98uMcZ4ZzUNpaTvVN38VP`, aliased to
