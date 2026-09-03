@@ -190,10 +190,20 @@ for the fix history.
       in-flight work" entry for this item. **Decided 2026-09-03: leave
       the comment-diverged deploy as-is** — no dedicated redeploy just to
       re-sync comments; fold that resync into the next real, scoped,
-      low-risk `api/identify.js` change instead. Still needs: a real live
-      Gemini failure (timeout/503) to confirm the fallback path itself
-      fires end-to-end in production — see CLAUDE.md's "Current priority"
-      for status.
+      low-risk `api/identify.js` change instead. **Fallback path now
+      OBSERVED firing end-to-end in production for the first time
+      (2026-09-03T21:14:15 UTC, `dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`,
+      Gemini timeout → Haiku fallback) — and on that first firing,
+      Haiku's read was wrong** (High-confidence "Wailord" for a card
+      that wasn't a Wailord; Haiku's own reasoning noticed カビゴン/
+      Snorlax text but still committed to "Wailord" — see test #70 in
+      `docs/test-cases.md`). The miss was contained (PPT lookup scored
+      below the match floor, so the response degraded to an honest
+      "couldn't confidently match" message, not a confidently-wrong
+      priced result). This changes the status from "not yet observed"
+      to **"observed once, and inconclusive/concerning"** — 1 data
+      point, not a trend; no revert or fix decided yet. Still needs more
+      real fallback firings before drawing a conclusion either way.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed

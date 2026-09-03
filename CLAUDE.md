@@ -71,16 +71,29 @@ Gemini fails, show the user Haiku's result (clearly labeled as a
 fallback, not the primary provider) instead of nothing. **Deployed
 2026-09-03, `dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`, aliased to
 `whatnot-pokemon-identify.vercel.app`, live-confirmed for the normal
-(Gemini-succeeds) path — the fallback path itself is NOT yet confirmed,
-since no real Gemini failure has occurred against this deployment yet.**
-This deploy also hit two real, honestly-logged mistakes — a ~5-minute
-production outage (zero real user impact, confirmed via runtime logs)
-and a known deviation from the committed source (comments trimmed,
-functionality verified intact) — see the "Haiku active fallback" entry
-in "Recent / in-flight work" below for the full incident account and
-what's still needed before this can be marked fully done, and
-`docs/test-cases.md`'s full shadow-test tally for the accuracy context
-behind the decision.
+(Gemini-succeeds) path.** This deploy also hit two real, honestly-logged
+mistakes — a ~5-minute production outage (zero real user impact,
+confirmed via runtime logs) and a known deviation from the committed
+source (comments trimmed, functionality verified intact) — see the
+"Haiku active fallback" entry in "Recent / in-flight work" below for the
+full incident account, and `docs/test-cases.md`'s full shadow-test tally
+for the accuracy context behind the decision.
+
+**Update, 2026-09-03, later same day**: the fallback path itself has now
+fired in production for the first time (21:14:15 UTC, a real Gemini
+timeout) — **and on that first firing, Haiku's read was wrong** (High-
+confidence "Wailord" for a card that wasn't a Wailord; Haiku's own
+reasoning noticed the actual Japanese species text — カビゴン/Snorlax —
+and still committed to "Wailord" anyway). The miss was contained: the
+wrong read scored below the matching code's floor, so the user saw an
+honest "couldn't confidently match" message, not a confidently-wrong
+priced result. This is 1 data point, not a trend — status changes from
+"not yet observed" to **"observed once, and inconclusive/concerning,"**
+not to "confirmed working" and not to "should be reverted." See test #70
+in `docs/test-cases.md` for the full log trace (including a hypothesis,
+not yet acted on, that the shared Gemini/Haiku prompt's "single card
+being held up or highlighted" instruction may be a contributing factor)
+and the "Haiku active fallback" entry below for the updated status.
 
 ## When to ask before acting
 
@@ -502,10 +515,32 @@ checklist before reporting something as finished:
   committed source; this is a known, accepted, non-functional gap, not an
   open bug.
 
-  **Still needed before this item is fully "done"**: per the "Definition
-  of done" checklist, a real live Gemini failure (a timeout or 503) to
-  confirm the fallback path itself fires end-to-end in production — not
-  yet observed against this deployment. See
+  **Fallback path OBSERVED firing in production, 2026-09-03T21:14:15
+  UTC — and it was wrong.** A real Gemini timeout triggered the Haiku
+  fallback (the first confirmed live firing of `visionProvider:
+  "haiku-fallback"` since deploy). Haiku returned High-confidence
+  `cardName="Wailord"` for a card the user confirms was not a Wailord;
+  Haiku's own logged reasoning noticed the actual Japanese species text
+  (カビゴン/Snorlax) and committed to "Wailord" anyway — a real internal
+  contradiction, not just a plausible misread. Traced the full path
+  (not just the top-level log line): the wrong read's PPT lookup scored
+  below `MATCH_FLOOR` (`api/identify.js:930`), so `best` was discarded
+  and the response degraded to the existing honest `{found:false,
+  reason:'Read the name "Wailord" but couldn't confidently match it to
+  a specific printing.'}` message (`api/identify.js:2177-2182`) — the
+  miss was contained, not shown to the user as a confident wrong price.
+  Full trace in test #70, `docs/test-cases.md`. **Status: 1 real data
+  point, and it's a miss, not a clean confirmation** — "not yet
+  observed" is no longer accurate, but neither is "confirmed working."
+  No revert decided; watching for more real firings before drawing a
+  trend conclusion. **Flagged, not built**: `identifyWithHaiku` reuses
+  `GEMINI_PROMPT` verbatim, whose multi-card-in-frame instruction talks
+  about identifying "the SAME single card being held up or highlighted"
+  — Haiku's own wording ("the main card being highlighted is Wailord")
+  echoes this closely, a plausible (not confirmed) hypothesis that this
+  phrasing pushes the model toward picking a card by visual prominence
+  over trusting its own OCR'd name text. One data point only; no prompt
+  change made or proposed without further evidence. See
   `docs/ROADMAP.md`'s Phase 1 checklist for the matching entry.
 - **Temporary Haiku 4.5 vs. Gemini shadow test — DEPLOYED, PUSHED, AND
   CONFIRMED LIVE 2026-09-03** (commit `276dc13`, originally deployed as

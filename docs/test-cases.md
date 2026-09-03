@@ -2041,6 +2041,139 @@ independent unique cards. Worth keeping in mind when eyeballing this
 batch for variety — the *language*/*failure-mode* coverage is real, but
 the *card* coverage is probably much narrower than 13 distinct cards.
 
+## Test #69 — User reported a Mega Dragalge ex scan "got the name wrong twice before getting it correct" (2026-09-03)
+
+User shared a screenshot of a Low-confidence Mega Dragalge ex result
+(`118/086`, ME04: Chaos Rising, "no printing in our database has the
+exact card number that was read") with the comment "This one got the
+name wrong twice before getting it correct." Per the standing
+convention, pulled real Vercel runtime logs for the exact scan and the
+two preceding ones before accepting that framing.
+
+**The successful scan itself, confirmed via logs**
+(`dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`, 21:12:55 UTC): Gemini read
+`cardName="Mega Dragalge EX"` (correct), `cardNumber="117/086"`
+(wrong — off by one digit; the real printing is `118/086`),
+`hp="330"`, High confidence. None of the 3 real PPT candidates
+(`118/086` Special Illustration Rare, `104/086` Ultra Rare, `065/086`
+Double Rare) match `117/086` exactly, so `lookup` correctly fell
+through page-1/2 and the combined name+number fallback, found nothing,
+and logged `NO NUMBER MATCH IN POOL` — the honest Low-confidence
+"closest match on other details" warning shown in the screenshot is
+this safety net working as designed (per the project's "Key design
+principle"), not a name bug. The Haiku shadow-test call on this same
+frame also misread the name (`"Mega Dracalge EX"`, HP `230`, no card
+number) — a real, useful shadow-test disagreement data point, but not
+what the user saw (Haiku's read never reaches the panel outside a
+fallback).
+
+**The "wrong twice" claim did not hold up against the logs**: the two
+prior `/api/identify` calls on this deployment (21:11:21 and 21:11:43,
+22s and 94s before the Dragalge scan) were not misreads of the same
+physical card at all — they were two entirely different, unrelated
+cards: a Japanese Galarian Zapdos V and a Japanese Maushold, both
+correctly identified as such (Zapdos: Low confidence/ambiguous 5-way
+tie, a real but separate issue; Maushold: High confidence, clean
+match). A 2-hour log search for any Gemini call mentioning "Dragalge"
+before 21:12:55 returned zero results. The most consistent explanation
+given the evidence: on this fast-moving live stream, the two earlier
+clicks captured different physical cards in frame (plausible if
+several cards were being flipped through quickly), not the AI
+hallucinating the same Dragalge card's name twice — no log evidence
+supports the latter.
+
+**No code change** — the number-read miss (117 vs. 118) is exactly the
+kind of single-digit Gemini misread this project already tracks as a
+known, unsolved read-instability class (see the `thinkingLevel`
+history above), and the safety-net response it triggered here is
+correct behavior, not a bug. Recorded because it's a real, log-verified
+data point on that open question, and because the "wrong twice" framing
+from the screenshot alone would have been misleading without pulling
+logs — consistent with the test #67/#68 pattern of screenshot-only
+readings getting the mechanism wrong.
+
+## Test #70 — First real production firing of the Haiku active fallback (`visionProvider: "haiku-fallback"`) — and it was wrong (2026-09-03)
+
+Separate, unrelated incident from test #69 above (different scan,
+different failure shape — do not conflate). User independently confirmed
+via real Vercel runtime logs (`dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`,
+2026-09-03T21:14:15 UTC) before relaying, and this write-up re-confirms
+the same log entry plus traces the downstream PPT lookup and the actual
+response sent to the client — none of which had been pulled yet.
+
+**What happened, confirmed via logs**:
+
+- Gemini timed out: `[identify] Gemini call failed: This operation was
+  aborted after ms= 5002` — a genuine call failure, the exact condition
+  the active-fallback feature (see CLAUDE.md "Recent / in-flight work")
+  exists for.
+- The Haiku fallback fired — **the first confirmed live-production
+  firing of `visionProvider: "haiku-fallback"` since that feature
+  deployed** (commit `633b008`, `dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`,
+  2026-09-03). Haiku returned: `found:true`, **High confidence**,
+  `cardName="Wailord"`, `language="Japanese"`, `cardNumber="181/165"`,
+  `hp="150"`, `attackName="Bathyspheres"`. User confirms the physical
+  card was not a Wailord — this read was wrong.
+- **Haiku's own reasoning text contains an internal contradiction**:
+  `"Japanese text with カビゴン visible, but the main card being
+  highlighted is Wailord (ワイルド) with 150 HP shown at top."` —
+  カビゴン is Snorlax's Japanese name. Haiku's own OCR surfaced
+  conflicting evidence (Snorlax's name legible in the frame) and it
+  still committed to "Wailord" as the answer. Cost: haikuMs=3108,
+  haikuCostUsd=$0.003269.
+
+**PPT lookup result, traced through the actual matching code (not just
+the raw log line)**: search `"Wailord"` + `language=Japanese` returned
+29 raw candidates. `pickBestCandidate` scored all of them — the top
+score was only **2**, which is *below* `MATCH_FLOOR = 3`
+(`api/identify.js:158,930-931`), so `best` was discarded and set to
+`null` even though the log's `[lookup] best=` line prints the
+would-be-best candidate *before* that floor check runs (`Magikarp &
+Wailord GX - 111/095`, tieCount=4 — a weak, junk-tier tie, not a real
+close call). The page-1+2 pagination fallback did **not** trigger
+(`rawList.length` was 29, not the full 30 that fallback requires). The
+combined name+number search (`"Wailord 181/165"`) did run and returned
+0 candidates. With `best` still null after every fallback,
+`lookupCardPPT` hit `if (!best) return { notFound: true };`
+(`api/identify.js:1639`).
+
+**What was actually shown to the user, confirmed via the response-
+construction code** (`api/identify.js:2170-2182`): `{ found: false,
+reason: 'Read the name "Wailord" but couldn't confidently match it to a
+specific printing.' }`. So this was **not** a confidently-wrong result
+displayed with a price — it degraded to the same honest "couldn't
+confidently match" failure message the app already shows for other
+no-match cases, just naming the wrong (Haiku-hallucinated) species in
+the message text. Confirms the user's own framing ("couldn't properly
+identify") over a literal "showed the user a wrong Wailord card."
+
+**Assessment — this is the "Definition of done" data point the active-
+fallback item has been waiting on, and it's a miss, not a success**:
+the fallback path fired end-to-end in production for the first time,
+and on that first real firing, Haiku's read was wrong (with a visible
+internal contradiction in its own reasoning). The failure was contained
+— no wrong price shown, an honest non-match message instead — but this
+is 1 data point, not a trend, and should not be logged as a clean
+confirmation. CLAUDE.md and ROADMAP.md updated to change "not yet
+observed" to "observed once, and it was wrong" for this item; no
+revert or code change made based on 1 data point alone.
+
+**Flagged, research-only, not built**: `identifyWithHaiku` reuses
+`GEMINI_PROMPT` verbatim (`api/identify.js:496`), which includes: *"If
+multiple cards are visible in the frame, make sure cardNumber, hp, and
+every other field describe the SAME single card being held up or
+highlighted — do not mix a number from one card with the HP or name of
+a different card in the background."* Haiku's own reasoning language
+("the main card being highlighted is Wailord") tracks this instruction
+almost verbatim — plausible hypothesis: when multiple cards are in
+frame, this wording may push the model to pick a card by visual
+prominence/highlighting first and then backfill a name, rather than
+anchoring the name to whatever text it actually OCR'd — which would
+explain why it surfaced カビゴン in its own reasoning and still didn't
+use it. This is a hypothesis from one data point, not a confirmed root
+cause, and no prompt change should be made from a single scan — noted
+here for whenever this comes up again.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
