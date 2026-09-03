@@ -490,13 +490,22 @@ checklist before reporting something as finished:
   worth raising with the user directly rather than continuing to patch
   around it deploy-by-deploy.
 
-  **Still needed before this item is fully "done"**: (a) your read on
-  whether the current deploy (functionally verified, comments diverged
-  from git) is acceptable to leave as-is, or whether a byte-exact
-  redeploy should be attempted again with a different method; (b) per
-  the "Definition of done" checklist, a real live Gemini failure (a
-  timeout or 503) to confirm the fallback path itself fires end-to-end
-  in production — not yet observed against this deployment. See
+  **Decided, 2026-09-03: leave the comment-diverged deploy as-is** — the
+  user does not want a special deploy just to re-sync comments (a fourth
+  risky retype of the same fragile regex for zero functional gain). No
+  urgent action needed. Instead: **the next time `api/identify.js` gets
+  a real, scoped, low-risk code change anyway, fold a redeploy in at that
+  point** — that naturally carries the live deployment's comments back
+  in sync with git as a side effect of work that was happening regardless,
+  without a dedicated high-risk transcription pass. Until then, the live
+  deployment intentionally continues to run with fewer comments than the
+  committed source; this is a known, accepted, non-functional gap, not an
+  open bug.
+
+  **Still needed before this item is fully "done"**: per the "Definition
+  of done" checklist, a real live Gemini failure (a timeout or 503) to
+  confirm the fallback path itself fires end-to-end in production — not
+  yet observed against this deployment. See
   `docs/ROADMAP.md`'s Phase 1 checklist for the matching entry.
 - **Temporary Haiku 4.5 vs. Gemini shadow test — DEPLOYED, PUSHED, AND
   CONFIRMED LIVE 2026-09-03** (commit `276dc13`, originally deployed as

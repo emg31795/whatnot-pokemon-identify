@@ -187,11 +187,13 @@ for the fix history.
       git-committed file (comments trimmed during transcription of this
       2208-line file; functional behavior verified intact via live
       testing)** — see the full incident account in CLAUDE.md's "Recent /
-      in-flight work" entry for this item. Needs: your read on whether the
-      comment-diverged-but-functionally-verified deploy is acceptable to
-      leave as-is or should be redone, and a real live Gemini failure
-      (timeout/503) to confirm the fallback path itself fires end-to-end
-      in production — see CLAUDE.md's "Current priority" for status.
+      in-flight work" entry for this item. **Decided 2026-09-03: leave
+      the comment-diverged deploy as-is** — no dedicated redeploy just to
+      re-sync comments; fold that resync into the next real, scoped,
+      low-risk `api/identify.js` change instead. Still needs: a real live
+      Gemini failure (timeout/503) to confirm the fallback path itself
+      fires end-to-end in production — see CLAUDE.md's "Current priority"
+      for status.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed
