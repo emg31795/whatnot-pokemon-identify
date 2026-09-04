@@ -110,6 +110,34 @@ this just closes out the one specific analytical question that could
 still be answered from logs, and flags that any "since X" question
 further back than an hour will hit the same wall going forward.
 
+**Decided, 2026-09-04: keep the Haiku active fallback as-is — no
+timeout tuning, no revert.** One more data point (test #75) came in
+first: every one of the 69 Haiku shadow-test failures across the
+129-sample window is the exact same genuine `HAIKU_TIMEOUT_MS=5000`
+timeout (`"This operation was aborted"`, clustered 5001-5007ms) — never
+a rate limit or API error — but with a hard bimodal gap against the 60
+successes (2024-4988ms, nothing near the 5s line from below). **User's
+decision and rationale**: a blind timeout bump is as likely to
+accomplish nothing (if the real latency on failing calls is far past
+any reasonable bump) as to help, and this tool's whole purpose is a
+fast answer for a live buy/bid decision — a fallback that takes
+8-10+ seconds isn't really serving that even when it technically
+succeeds. Reverting isn't warranted either: the fallback is strictly
+additive and safe (every failure degrades to exactly the pre-fallback
+honest message, never worse), so there's no forcing function to remove
+something that isn't broken, just underperforming its original hope.
+**This is a decision, not another "still watching" — don't revisit it
+without new evidence.** The two things that would justify reopening it:
+(1) a live, out-of-band, no-timeout test directly against Anthropic's
+API to measure Haiku's true completion-time tail for this exact
+workload (real API cost — only if the user decides it's worth it), or
+(2) a sustained *worsening* over a longer window (Haiku's own failure
+rate climbing well past ~50%, or the fallback rescuing 0 of many real
+Gemini failures over an extended period, not just one evening).
+Absent either, the fallback stays exactly as deployed. See test #75 in
+`docs/test-cases.md` for the full analysis and the "Haiku active
+fallback" entry below for the corresponding status note.
+
 **Update, 2026-09-04**: checked a 10-minute real production window (23
 scans) and found a second, related concern — **Haiku's own completion
 rate in that window was 52% (12 of 23 timed out), worse than Gemini's
@@ -604,6 +632,28 @@ checklist before reporting something as finished:
   now may be lower than the design assumed — not confirmed as a lasting
   trend (one window, could be transient), and no revert decided. See
   `docs/ROADMAP.md`'s Phase 1 checklist for the matching entry.
+
+  **Third data point (test #75) and DECISION, 2026-09-04: keep the
+  fallback as-is.** Broke down every failed `[haiku-shadow-test]` line
+  from the same 129-sample dataset: all 69 failures are the identical
+  genuine `HAIKU_TIMEOUT_MS=5000` timeout (never a rate limit or API
+  error), but with a hard bimodal gap against the 60 successes
+  (2024-4988ms) — nothing observed near the 5s line from below. User
+  decided: don't tune the timeout (a blind bump could easily rescue
+  nothing, if real latency on failing calls is far past any reasonable
+  bump, while directly working against this tool's core "fast answer
+  for a live buy/bid decision" purpose) and don't revert (the fallback
+  is strictly additive/safe — every failure degrades to exactly the
+  pre-fallback honest message, never worse — so there's no forcing
+  function to remove something that's merely underperforming its
+  original hope, not broken). **This is a closed decision, not an
+  open "still watching" item** — only two things would reopen it: a
+  live out-of-band no-timeout test against Anthropic to measure
+  Haiku's true latency tail (real API cost, user's call whether it's
+  worth it), or a sustained worsening over a longer window (failure
+  rate climbing well past ~50%, or the fallback rescuing 0 of many
+  real Gemini failures over an extended period). See test #75 in
+  `docs/test-cases.md` for the full analysis.
 - **TCGplayer price-history single retry-on-abort (test #72) — DEPLOYED
   AND PUSHED 2026-09-04** (commit `d8fd732`,
   `dpl_9HeecDEMGF4uHcW7wxsPh7ffZ1x7`, aliased to

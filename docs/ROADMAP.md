@@ -155,7 +155,7 @@ for the fix history.
       accurate*, not just more available right now. See
       `docs/test-cases.md` for the full per-scan log and running tally,
       updated as more scans come in.
-- [ ] **Build: promote Claude Haiku 4.5 from shadow-only to an active
+- [x] **Build: promote Claude Haiku 4.5 from shadow-only to an active
       fallback** — decided 2026-09-03, given the severe live Gemini
       cluster above (13 of 14 scans failed in one window). When Gemini
       fails (timeout or error), show the user Haiku's result instead of
@@ -212,9 +212,26 @@ for the fix history.
       produce a PPT match — **0 of 4 real failures rescued**. See test
       #71 in `docs/test-cases.md`. Two data points now point the same
       direction (fallback availability/value lower than the design
-      assumed), but one 10-minute window isn't a confirmed trend — no
-      revert decided. Still needs a longer observation window before
-      drawing a conclusion either way.
+      assumed).
+
+      **Third data point + DECISION, 2026-09-04 (test #75)**: broke
+      down every failed shadow-test call — all 69 failures across a
+      129-sample window are the identical genuine `HAIKU_TIMEOUT_MS`
+      timeout (never a rate limit/API error), but with a hard bimodal
+      gap against the 60 successes (nothing near the 5s line from
+      below). **User decided: keep the fallback exactly as-is — no
+      timeout tuning (a blind bump could rescue nothing if real latency
+      is far past any reasonable bump, and would work against this
+      tool's core "fast answer for a live buy/bid decision" purpose),
+      no revert (the fallback is strictly additive/safe — every failure
+      degrades to exactly the pre-fallback honest message, never
+      worse).** This is a closed decision, not an open item — only two
+      things reopen it: a live out-of-band no-timeout test against
+      Anthropic measuring Haiku's true latency tail (real API cost,
+      user's call), or a sustained *worsening* over a longer window
+      (failure rate well past ~50%, or 0-of-many real rescues over an
+      extended period, not just one evening). See test #75 in
+      `docs/test-cases.md`.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed
