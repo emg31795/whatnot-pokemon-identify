@@ -2310,6 +2310,55 @@ its retry instead of surfacing `pricingError`, visible as a new
 `[tcgplayer-price]` success line immediately following a
 `This operation was aborted` line for the same productId in the logs.
 
+## Test #73 — "This card couldn't be properly identified after 4 tries" (Slakoth, Japanese) — confirmed as the known PPT catalog-coverage gap, not a new bug (2026-09-04)
+
+User reported a Japanese Slakoth (screenshot showing "No printing in our
+database has the exact card number that was read (\"068/066\")") failed
+to properly identify across 4 rapid clicks. Pulled real logs for all 4
+scans (`dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`, 22:45:24–22:45:36 UTC) rather
+than accepting "couldn't identify" at face value.
+
+**All 4 Gemini reads succeeded (no timeouts) and were highly
+consistent** — every attempt read `cardName="Slakoth"`,
+`hp="60"`, `attackName="のんびりする"` ("Take It Easy") at High
+confidence; 2 of 4 also read `cardNumber="068/066"` (the other 2 read
+`null` for that field only — plausibly a hard angle on a small number,
+not a hallucination, since every other field agreed across all 4).
+This is NOT the read-instability pattern from tests #50/#63/#67 (no
+invented/contradictory values) and NOT a Gemini/Haiku-fallback issue
+(Gemini never failed, so the fallback never needed to fire — separate
+from today's tests #70/#71 concerns).
+
+**Root cause, confirmed via logs**: PPT's real "Slakoth" + `language=
+japanese` search returned 16 raw candidates, none numbered `068/066` —
+confirmed exhausted via the full fallback chain (page-1+2 pagination
+condition didn't even trigger, since raw count was 16 not a full 30;
+the combined name+number search `"Slakoth 068/066"` ran and returned 0
+candidates). On the 2 scans that read `cardNumber=null`, the tie
+degraded to `AMBIGUOUS MATCH` instead (`bestScore=6, tieCount=5`) —
+same underlying gap, different note text depending on which field
+Gemini managed to read that click. Both are the same, already-
+documented **PPT catalog-coverage gap** class as tests #35/#37/#49/
+#60/#66 — a real Japanese promo/starter-deck printing (denominator 66
+suggests a small theme-deck-style set) that simply isn't in PPT's
+catalog, not a matching-code bug or a Gemini misread.
+
+**Not a false-confidence miss**: every one of the 4 responses correctly
+showed Low confidence with the honest disclosure note and a genuine
+(if wrong-printing) $0.99 candidate/price — the "Key design principle"
+worked as intended each time. "Couldn't be properly identified" is a
+fair plain-language description of 4 consecutive Low-confidence misses,
+even though the API technically returned `found:true` each time rather
+than a hard failure — worth knowing the distinction, but not something
+to fix; no false certainty was ever shown.
+
+**No code change** — this is the known, already-accepted PPT-coverage
+limitation (a hand-maintained set-total-to-set-name map was
+considered and explicitly deferred in test #60, not to be built
+without sign-off). Recorded as a new data point in that same class,
+distinct from the Haiku-fallback questions raised in tests #70/#71
+earlier today.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
