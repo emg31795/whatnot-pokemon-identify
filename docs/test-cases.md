@@ -2231,6 +2231,60 @@ data point in the same direction as test #70, not a contradicting one.
 No action taken beyond recording this — CLAUDE.md/ROADMAP.md updated to
 reflect both data points together.
 
+## Test #72 — Ferrothorn scan showed "NO LIVE PRICE" for a card the user confirmed has real, visible pricing on TCGplayer (2026-09-04)
+
+User flagged a Ferrothorn - 145/086 (SV11W: White Flare) scan: correct
+card identified (High/High, clean match, `tieCount=1`), but pricing
+showed "🔴 NO LIVE PRICE: TCGplayer price-history request failed for
+productId=636698: This operation was aborted" — and linked the real
+TCGplayer product page (`tcgplayer.com/product/636698`) as proof
+pricing data genuinely exists there. Investigated via real logs before
+concluding anything, per the standing convention.
+
+**Confirmed via logs** (`dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`,
+2026-09-04T22:25:50 UTC): the card match was correct and clean
+(`bestScore=29`, `tieCount=1`) — this was purely a pricing-fetch
+failure, not a matching bug. `[lookup] LIVE TCGPLAYER PRICING FAILED:
+TCGplayer price-history request failed for productId=636698: This
+operation was aborted` — an `AbortController` timeout
+(`fetchWithTimeout`, `api/identify.js:202-210`) against
+`TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS = 2500` (`api/identify.js:1232`),
+with no retry on failure (`fetchTCGPlayerPriceHistory`,
+`api/identify.js:1234-1241` — a single `try` that immediately throws on
+any abort/error). `[timing] lookup ms= 2579` — the lookup step took
+just over the 2500ms wall, consistent with this exact request being the
+one that got cut off.
+
+**Confirmed the user's claim directly, independent of the logs**: live
+`curl` against the exact same endpoint
+(`infinite-api.tcgplayer.com/price/history/636698/detailed?range=quarter`)
+returned **200 OK in 173ms**, with real sales data — Near Mint Japanese,
+`marketPrice: "5.49"` — matching PPT's own cached `$5.51` for the same
+product almost exactly. The data is real and the endpoint is normally
+fast; this scan's specific request was a one-off slow response from
+TCGplayer that happened to exceed the timeout, not a genuine "TCGplayer
+has no data for this card" case. Also checked recent frequency: only
+**1 occurrence** of `LIVE TCGPLAYER PRICING FAILED` in the last 2 hours
+of runtime logs — not a systemic pattern, a rare transient blip.
+
+**Assessment**: the "Key design principle" (honest failure over a
+guessed number) worked exactly as designed here — no fabricated price
+was shown, a clear warning was — but the specific wording ("NO LIVE
+PRICE... request failed... aborted") can read as "TCGplayer has no
+data" when the real story is "our own 2.5s budget was too tight for one
+slow response." Given normal response time is ~170ms (2500ms is
+generous ~14x headroom) and this fired only once in 2h, this looks like
+genuine occasional network/latency noise rather than an undersized
+timeout constant — but a single retry-on-abort would plausibly catch
+most one-off cases like this for free, since a transient blip on one
+attempt is unlikely to repeat immediately on a second. **Not built —
+flagged for the user to decide**: whether to add one retry to
+`fetchTCGPlayerPriceHistory`, given this is a real, scoped, low-risk
+`api/identify.js` change (and per the existing "next real, scoped,
+low-risk change" plan noted elsewhere in this file, would also be a
+natural point to fold in the pending comment-resync redeploy). No code
+change made without go-ahead.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
