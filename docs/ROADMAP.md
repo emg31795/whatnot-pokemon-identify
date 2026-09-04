@@ -202,8 +202,19 @@ for the fix history.
       "couldn't confidently match" message, not a confidently-wrong
       priced result). This changes the status from "not yet observed"
       to **"observed once, and inconclusive/concerning"** — 1 data
-      point, not a trend; no revert or fix decided yet. Still needs more
-      real fallback firings before drawing a conclusion either way.
+      point, not a trend; no revert or fix decided yet. **Second data
+      point, 2026-09-04**: a 10-minute production window (23 scans)
+      found Haiku's own completion rate was 52% (12/23 timed out) vs.
+      Gemini's 17% in the same window, checked across all scans
+      regardless of whether Gemini had failed. Of 4 real Gemini
+      failures in that window, 3 also had Haiku time out simultaneously
+      (both dead together), and the 4th's Haiku response still didn't
+      produce a PPT match — **0 of 4 real failures rescued**. See test
+      #71 in `docs/test-cases.md`. Two data points now point the same
+      direction (fallback availability/value lower than the design
+      assumed), but one 10-minute window isn't a confirmed trend — no
+      revert decided. Still needs a longer observation window before
+      drawing a conclusion either way.
 - [ ] Sustained trend of declining live-test failures in
       `docs/test-cases.md` for at least 2 weeks of real stream use.
       Tests #54-66 (2026-08-30) add more real data points (2 confirmed

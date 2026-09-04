@@ -2174,6 +2174,63 @@ use it. This is a hypothesis from one data point, not a confirmed root
 cause, and no prompt change should be made from a single scan — noted
 here for whenever this comes up again.
 
+## Test #71 — 10-minute production window: Haiku itself is timing out at a higher rate than Gemini, undermining the active fallback (2026-09-04)
+
+User asked to check logs on how recent scans were doing. Pulled real
+Vercel runtime logs for the last 10 minutes (`dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`,
+2026-09-04T22:02:51–22:12:51 UTC) rather than answering from the panel
+or from memory of prior sessions' cluster data.
+
+**Volume**: 23 real `POST /api/identify` calls in ~10 minutes — an
+active stream session.
+
+**Gemini**: 4 of 23 timed out (~17%, aborted at the `GEMINI_TIMEOUT_MS
+= 5000` wall) — consistent with the ongoing failure rate documented
+elsewhere in this file, nothing new on its own.
+
+**The new finding — Haiku's own reliability, checked independently of
+whether it was needed as a fallback**: tallied every
+`[haiku-shadow-test]` line's `haiku=` result across all 23 calls (not
+just the 4 where Gemini failed), since Haiku fires in parallel on every
+scan regardless. **12 of 23 (52%) came back `{"error":"This operation
+was aborted"}`** — Haiku timing out at its own `HAIKU_TIMEOUT_MS =
+5000` wall more often than not, on scans where Gemini succeeded fine.
+This is a materially worse failure rate than Gemini's in this same
+window (52% vs. 17%) and had not been reported before — the shadow-test
+tally elsewhere in this file only tracked Haiku's *accuracy* when it
+succeeded, not its own raw completion rate.
+
+**Direct consequence for the active fallback (the exact feature test
+#70 flagged as "1 data point, inconclusive")**: of the 4 real Gemini
+failures in this window, **3 of 4 also had Haiku time out at the same
+moment** — both providers dead together, degrading to the generic
+`{found:false, error:"gemini-failed", haikuFallbackError:...}` response
+(no `reason` field, so the extension shows its generic default
+"Couldn't identify the card" text per the established test #68 rule —
+confirmed by reading `api/identify.js:2060-2066` directly, not
+assumed). Only **1 of 4** got a real Haiku fallback response
+(`cardName="Wattrel"`, Medium confidence, `cardNumber=null`) — and even
+that one still failed to produce a match: PPT returned 21 candidates,
+none scored above `MATCH_FLOOR` (`bestScore=0`, `tieCount=20`, no
+number to try the page-2/combined-search fallbacks with since Haiku
+read `cardNumber=null`), so it degraded to the same honest "couldn't
+confidently match" message as test #70's Wailord case — contained, but
+not a genuine rescue either. **Net effect this window: the active
+fallback recovered 0 of 4 real Gemini failures into an actual match.**
+
+**Assessment**: this reframes the open fallback-status question from
+test #70. It's no longer only "the one real fallback firing was wrong";
+it's that **Haiku's own uptime, at least in this window, is the
+bottleneck** — a fallback that is itself unavailable roughly half the
+time can only rescue a minority of the failures it exists for, before
+even getting to whether its read is accurate. One 10-minute window is
+not enough to call this a lasting trend (could be a transient Anthropic-
+side slowdown, same class as the Gemini `503 "high demand"` cluster
+documented elsewhere in this file) — but it's a second real, concerning
+data point in the same direction as test #70, not a contradicting one.
+No action taken beyond recording this — CLAUDE.md/ROADMAP.md updated to
+reflect both data points together.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

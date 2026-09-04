@@ -95,6 +95,22 @@ not yet acted on, that the shared Gemini/Haiku prompt's "single card
 being held up or highlighted" instruction may be a contributing factor)
 and the "Haiku active fallback" entry below for the updated status.
 
+**Update, 2026-09-04**: checked a 10-minute real production window (23
+scans) and found a second, related concern — **Haiku's own completion
+rate in that window was 52% (12 of 23 timed out), worse than Gemini's
+17% in the same window**, checked independently of whether Gemini had
+failed. Direct effect on the fallback: of 4 real Gemini failures in
+that window, 3 also had Haiku time out simultaneously (both providers
+down together → generic "couldn't identify" message), and the 1 that
+did get a Haiku response still failed to find a PPT match. **0 of 4
+real Gemini failures were rescued into an actual match this window.**
+See test #71 in `docs/test-cases.md`. Together with test #70, this is
+now two real, concerning data points in the same direction (not yet
+enough for a revert decision — could be a transient Anthropic-side
+slowdown, same class as Gemini's own `503` cluster) — but "1 data
+point, inconclusive" understates it now. Worth a longer observation
+window before deciding whether to keep, tune, or revert the fallback.
+
 ## When to ask before acting
 
 - **Free rein, no need to ask**: local file edits, local git commits,
@@ -540,7 +556,19 @@ checklist before reporting something as finished:
   echoes this closely, a plausible (not confirmed) hypothesis that this
   phrasing pushes the model toward picking a card by visual prominence
   over trusting its own OCR'd name text. One data point only; no prompt
-  change made or proposed without further evidence. See
+  change made or proposed without further evidence.
+
+  **Second data point, 2026-09-04 (test #71)**: a 10-minute production
+  window (23 scans) found Haiku's own completion rate was 52% (12/23
+  timed out) vs. Gemini's 17% in the same window — checked across ALL
+  scans, not just ones where Gemini failed. Of 4 real Gemini failures in
+  that window, 3 also had Haiku time out at the same moment (both dead
+  together → generic failure message), and the 4th's Haiku response
+  still didn't produce a PPT match. **0 of 4 real Gemini failures were
+  rescued this window.** Combined with the Wailord miss above, this is
+  two real data points suggesting the fallback's practical value right
+  now may be lower than the design assumed — not confirmed as a lasting
+  trend (one window, could be transient), and no revert decided. See
   `docs/ROADMAP.md`'s Phase 1 checklist for the matching entry.
 - **Temporary Haiku 4.5 vs. Gemini shadow test — DEPLOYED, PUSHED, AND
   CONFIRMED LIVE 2026-09-03** (commit `276dc13`, originally deployed as
