@@ -2277,13 +2277,38 @@ generous ~14x headroom) and this fired only once in 2h, this looks like
 genuine occasional network/latency noise rather than an undersized
 timeout constant — but a single retry-on-abort would plausibly catch
 most one-off cases like this for free, since a transient blip on one
-attempt is unlikely to repeat immediately on a second. **Not built —
-flagged for the user to decide**: whether to add one retry to
-`fetchTCGPlayerPriceHistory`, given this is a real, scoped, low-risk
-`api/identify.js` change (and per the existing "next real, scoped,
-low-risk change" plan noted elsewhere in this file, would also be a
-natural point to fold in the pending comment-resync redeploy). No code
-change made without go-ahead.
+attempt is unlikely to repeat immediately on a second. **Fix built, deployed, and pushed 2026-09-04** (commit `d8fd732`,
+`dpl_9HeecDEMGF4uHcW7wxsPh7ffZ1x7`, aliased to
+`whatnot-pokemon-identify.vercel.app`, pushed to GitHub `df0b2af..d8fd732`),
+per explicit user go-ahead — a single retry after a timeout/abort on
+`fetchTCGPlayerPriceHistory`'s fetch specifically (`api/identify.js`,
+around line 1234), deliberately not touching the HTTP-error/invalid-
+JSON/zero-SKU branches below it, which are real TCGplayer answers a
+retry can't fix. Deploy checklist followed in full given this file's
+history: read the full file in 3 chunks (each fitting the Read tool's
+25000-token cap), wrote each to a scratch file, and diff-verified
+byte-for-byte against the real source before deploying — this caught
+the SAME recurring diacritic-regex transcription corruption documented
+repeatedly elsewhere in this file on the very first attempt (chunk 2
+came out with literal Unicode combining characters instead of the
+source's `̀-ͯ` escape sequence), fixed non-generatively by
+splicing the exact byte-correct line from the source via a small Python
+script (not retyping), then re-diffed clean. Final assembled file
+matched the local source byte-for-byte (`sha1
+8a0707337dda0f53cd63055b06a809a42be7f936`, identical before and after
+assembly). Confirmed live post-deploy: build log shows exactly 3 files
+downloaded; `GET /api/identify` returns
+`normalizeDiacriticTest: "pokemon collector"` (the diacritic regex
+deployed intact); `POST {}` returns the real `400
+{"error":"Missing imageBase64"}`; runtime logs confirm both test
+requests plus real organic traffic (a clean Mimikyu V match) were
+served by the new deployment within a minute of going live. **Not yet
+confirmed via a live rescan that actually hits this exact abort path**
+— this fix has no accuracy claim to verify beyond the deploy itself;
+real confirmation would be a future TCGplayer-fetch abort recovering on
+its retry instead of surfacing `pricingError`, visible as a new
+`[tcgplayer-price]` success line immediately following a
+`This operation was aborted` line for the same productId in the logs.
 
 ## Related docs
 

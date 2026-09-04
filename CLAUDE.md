@@ -570,6 +570,39 @@ checklist before reporting something as finished:
   now may be lower than the design assumed — not confirmed as a lasting
   trend (one window, could be transient), and no revert decided. See
   `docs/ROADMAP.md`'s Phase 1 checklist for the matching entry.
+- **TCGplayer price-history single retry-on-abort (test #72) — DEPLOYED
+  AND PUSHED 2026-09-04** (commit `d8fd732`,
+  `dpl_9HeecDEMGF4uHcW7wxsPh7ffZ1x7`, aliased to
+  `whatnot-pokemon-identify.vercel.app`, pushed to GitHub
+  `df0b2af..d8fd732`), per explicit user go-ahead. A Ferrothorn scan
+  showed "NO LIVE PRICE" for a card whose TCGplayer product page clearly
+  had real listings — logs confirmed the card match was correct and
+  clean, and the failure was a 2500ms `AbortController` timeout on our
+  own `fetchTCGPlayerPriceHistory` fetch with no retry; a live curl of
+  the exact same endpoint immediately after returned real data in
+  173ms. Fix: exactly one retry, scoped only to the abort/network-error
+  branch of that fetch (`api/identify.js` ~line 1234) — an HTTP error
+  status, invalid JSON, or a genuine zero-SKU response are real
+  TCGplayer answers a retry can't fix, and are untouched. **Deploy
+  checklist followed in full given this file's size** (2220 lines,
+  over the Read tool's 25000-token single-call cap): read in 3 chunks,
+  wrote each to a scratch file, diff-verified byte-for-byte against the
+  real source before deploying — caught the SAME recurring diacritic-
+  regex transcription corruption documented repeatedly elsewhere in
+  this file on the very first attempt (literal Unicode combining
+  characters instead of the source's `̀-ͯ` escape sequence),
+  fixed non-generatively via a small Python script splicing the exact
+  correct line from source (not retyping), then re-diffed clean. Final
+  assembled file matched local source byte-for-byte (`sha1
+  8a0707337dda0f53cd63055b06a809a42be7f936`). Confirmed live: build log
+  shows 3 files downloaded; `GET` returns
+  `normalizeDiacriticTest: "pokemon collector"`; `POST {}` returns the
+  real `400 {"error":"Missing imageBase64"}`; runtime logs confirm both
+  checks plus real organic traffic (a clean Mimikyu V match) were
+  served by the new deployment within a minute of going live. **Not yet
+  confirmed via a live rescan that hits this exact abort path** — watch
+  for a future `[tcgplayer-price]` success line immediately following a
+  `This operation was aborted` line for the same productId.
 - **Temporary Haiku 4.5 vs. Gemini shadow test — DEPLOYED, PUSHED, AND
   CONFIRMED LIVE 2026-09-03** (commit `276dc13`, originally deployed as
   `dpl_ERt8XAWARe1rDgEWEgf4wcVQrmh4`; confirmed collecting real data on
