@@ -95,6 +95,21 @@ not yet acted on, that the shared Gemini/Haiku prompt's "single card
 being held up or highlighted" instruction may be a contributing factor)
 and the "Haiku active fallback" entry below for the updated status.
 
+**Update, 2026-09-04**: asked the obvious next question — has the
+elevated Haiku timeout rate (test #71: 52%) been sustained since
+deploy, or was it one bad window? Real answer: confirmed sustained for
+the ~44 minutes of log history that still exist (53.5%, 69/129 samples,
+extending well past test #71's original 10 minutes) — but the
+deploy-to-now comparison itself turned out to be structurally
+unanswerable, because Vercel's Hobby-plan runtime logs are only
+retained for 1 hour (see "Known gotchas" below, test #74). Status is
+unchanged from above (two real data points, not enough to decide) — the
+user's own framing was "give it another week of casual log-checks
+before a deliberate keep/tune/revert conversation," which still stands;
+this just closes out the one specific analytical question that could
+still be answered from logs, and flags that any "since X" question
+further back than an hour will hit the same wall going forward.
+
 **Update, 2026-09-04**: checked a 10-minute real production window (23
 scans) and found a second, related concern — **Haiku's own completion
 rate in that window was 52% (12 of 23 timed out), worse than Gemini's
@@ -362,6 +377,25 @@ checklist before reporting something as finished:
 
 ## Known gotchas
 
+- **Vercel runtime logs are only retained for 1 hour on this project's
+  plan (Hobby)** — confirmed live 2026-09-04 (test #74) via Vercel's own
+  explicit error message when querying past that window: "No logs
+  found. The requested window likely exceeds your plan's runtime-log
+  retention (Hobby 1h, Pro 1 day, Enterprise 3 days)." This means any
+  "check the logs" investigation — including this project's own
+  standing "verify via real logs" convention above — can only ever see
+  roughly the last hour of activity. A real, decisive consequence: a
+  question like "has X been happening consistently since deploy Y
+  (hours/days ago)?" is not just hard to answer, it's structurally
+  impossible via Vercel logs once more than ~1 hour has passed — this
+  bit a real attempt to answer exactly that question for the Haiku-
+  fallback timeout rate (tests #70/#71/#74). Every past test-cases.md
+  entry that quotes raw log lines remains valid (the quote itself is the
+  durable record), but none of those windows can be re-queried later.
+  If longer-horizon trend-watching ever matters enough to need this,
+  the real options are upgrading to Vercel Pro (1-day retention) or
+  persisting a lightweight log/summary outside Vercel — neither decided
+  or needed yet.
 - **Base64-encoding a file "for safety" before deploying is a trap, not
   a safety measure.** It has caused a truncated-file production outage
   once (Shadowless fix, 2026-08-28) and a 50+ minute stall with no actual

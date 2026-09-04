@@ -2359,6 +2359,58 @@ without sign-off). Recorded as a new data point in that same class,
 distinct from the Haiku-fallback questions raised in tests #70/#71
 earlier today.
 
+## Test #74 — Answering the open question from tests #70/#71: has Haiku's timeout rate been sustained since deploy, or was it one bad window? Real answer: unanswerable beyond ~1 hour back — Vercel Hobby-plan log retention (2026-09-04)
+
+User asked the one open analytical question nobody had answered yet:
+was test #71's 52% Haiku timeout rate a brief 10-minute blip, or has it
+been consistently bad since the active-fallback deploy
+(`dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`, 2026-09-03T11:25:28 UTC)? Pulled
+real logs to check, walking backward in time from now.
+
+**What the retained logs actually show**: extended the window well past
+test #71's original 10 minutes — 22:03:38 to 22:47:54 UTC today
+(~44 minutes, 129 total `[haiku-shadow-test]` samples spanning both the
+pre-deploy-fix and post-deploy-fix (test #72) traffic) — and the
+failure rate held essentially steady: **69 of 129 (53.5%)**, consistent
+with test #71's original 52% (12/23). Not a brief blip within anything
+actually checkable — it was sustained for at least this entire retained
+window.
+
+**But the real, decisive finding is a hard constraint, not a trend**:
+querying anything older than ~1 hour back (attempted `until=2026-09-
+04T22:03:38Z`, well short of the 2026-09-03 deploy) returned Vercel's
+own explicit message: *"No logs found. The requested window likely
+exceeds your plan's runtime-log retention (Hobby 1h, Pro 1 day,
+Enterprise 3 days)."* This project's Vercel team is confirmed on the
+Hobby plan (`list_teams` → `"plan": "hobby"`). **Vercel's runtime logs
+are only retained for 1 hour on this plan — full stop.** The
+deploy-to-now comparison the user actually asked for (is this sustained
+since 2026-09-03T11:25 UTC, ~35 hours ago?) is not just hard to answer
+from logs — it is now structurally impossible, permanently, for
+anything before roughly the last hour. Test #70's and #71's original
+incidents are safe (their raw log lines are already quoted verbatim in
+this file), but no future session can re-query them, and this same
+1-hour wall will apply to every future investigation in this project
+going forward, not just this one.
+
+**Honest answer to the user's question, given that constraint**:
+confirmed sustained (not a blip) for the ~44 minutes of history that
+still exist; genuinely unknown, and now unknowable via Vercel logs,
+whether it was also bad in the ~34 hours before that. Doesn't change
+the "two data points, not enough to decide" status from tests #70/#71
+— if anything it weakens confidence in ever assembling a longer trend
+this way, since roughly 34 of every 35 hours' worth of history
+evaporates within the hour.
+
+**Recorded as a new standing constraint** (see "Known gotchas" in
+CLAUDE.md) rather than something to fix reactively — if longer-horizon
+trend-watching on this Haiku-fallback question (or anything else) turns
+out to matter enough, the real options are: upgrade to Vercel Pro
+(1-day retention), or start persisting a lightweight log/summary
+outside Vercel (e.g. appending a running tally to this file after each
+live-checked session, which is close to what's already happening
+manually). Neither decided nor needed yet — flagging only.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
