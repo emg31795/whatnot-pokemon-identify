@@ -2476,6 +2476,52 @@ simplification if the complexity isn't judged worth a currently-partial,
 correlated-failure safety net — a values call the data doesn't resolve
 on its own. No code change made; awaiting the user's decision.
 
+## Test #76 — 10-minute production window during a heavy scanning session (2026-09-04, 23:29–23:39 UTC)
+
+User ran many scans back-to-back; checked real logs for the window
+(`23:29:19–23:39:19 UTC`) rather than relying on the panel alone.
+
+**Volume**: 49 real scans in 10 minutes — a genuinely busy session, ~2x
+test #71's 23-scan window.
+
+**Gemini/Haiku, consistent with the recent decision (tests #70/#71/
+#75)**: 7 of 49 Gemini timeouts (14%, in line with the established
+rate). Haiku's own completion rate: 23 succeeded / 26 timed out (53%
+failure) — a third window landing right at the same ~52-54% figure from
+tests #71/#75, not a new data point that would change anything, just
+further confirmation of the pattern the "keep as-is" decision already
+accounted for. Of the 7 Gemini timeouts, 3 got a real Haiku-fallback
+rescue and 4 had both providers fail together — a somewhat *better*
+rescue ratio (43%) than test #71's window (25%), consistent with this
+being noisy/variable rather than a stable number worth re-deciding
+over.
+
+**New observation this window — match-quality mix**: checked cardName
+variety behind every warning rather than assuming repeats, since past
+sessions (e.g. test #73's Slakoth) had a few cards inflating counts via
+repeat clicks. This time it's genuinely broad: **32 distinct card names
+across 49 scans**, and the 17 `AMBIGUOUS MATCH` instances +
+5 `NO NUMBER MATCH IN POOL` instances are spread across 16 and 5
+distinct cards respectively (only one card, Mega Gardevoir ex, hit
+`AMBIGUOUS MATCH` twice) — not a handful of cards driving the count via
+rescans. That's **22 of 49 scans (45%) landing in some Low-confidence
+warning state** this session — notably high, though every one of them
+is the existing honest-disclosure design working as intended (a real,
+if wrong-printing, price shown with an explicit warning — no false
+certainty anywhere in this sample; zero `pricingError`s, zero
+`notFound`s). Most of the affected names are modern ex/V-era cards
+(Mega Gardevoir ex, Zekrom ex, Cobalion ex/GX, Mega Lucario ex/EX,
+Zarude V, Hoopa V, Hisuian Decidueye V) — plausibly a real batch of
+naturally tie-prone same-HP/same-attack printings from whatever set(s)
+were on stream this session, consistent with the already-documented
+structural tie-break weakness (see the Trainer/Supporter tie-break
+discussion and the general V/VMAX/ex reprint-tie pattern elsewhere in
+this file) rather than a new bug — no code in the scoring/matching path
+changed since the last confirmed-clean session. Not deep-dived per
+card (would need 16+ individual log pulls); flagged as a real, higher-
+than-usual ambiguous-tie rate worth keeping in mind if it recurs, not
+as an action item today.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
