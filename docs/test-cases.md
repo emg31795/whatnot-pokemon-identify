@@ -2411,6 +2411,71 @@ outside Vercel (e.g. appending a running tally to this file after each
 live-checked session, which is close to what's already happening
 manually). Neither decided nor needed yet — flagging only.
 
+## Test #75 — Are Haiku's shadow-test failures real timeouts or something else? Answer: 100% genuine timeouts, bimodal latency, no rescue evidence either way (2026-09-04)
+
+User is weighing keep/tune/revert on the active fallback (tests #70/
+#71/#74 all pointing the same direction) and asked one specific,
+decision-relevant question before deciding: when Haiku fails in the
+shadow-test logs, is it consistently hitting the `HAIKU_TIMEOUT_MS =
+5000` wall (a pure latency problem) or something else (rate limit, API
+error, fast failure)? Pulled the exact `haikuMs` values and error text
+for every failed `[haiku-shadow-test]` line from the two saved log
+batches behind tests #71/#74 (129 total samples, 22:03:38–22:47:54 UTC
+today) — no new live query needed, this data was already captured.
+
+**Answer: unambiguous, no ambiguity at all.**
+
+- **Error message**: all 69 failures, zero exceptions, are the exact
+  same text: `"This operation was aborted"` — no rate-limit responses,
+  no HTTP error statuses, no auth/model-availability errors, no
+  unparseable-JSON errors. Every single Haiku failure in this sample is
+  a genuine client-side timeout, not a distinct error class.
+- **`haikuMs` distribution for the 69 failures**: tightly clustered at
+  `5001, 5002(×25), 5003(×32), 5004(×8), 5006, 5007` — i.e. every one
+  aborted within 7ms of the 5000ms wall, exactly as `fetchWithTimeout`'s
+  `AbortController` is coded to do (`api/identify.js:202-210`).
+- **`haikuMs` distribution for the 60 successes, for contrast**: min
+  2024ms, median 2749ms, mean 2880.5ms, **max 4988ms**. This is the more
+  interesting finding: there is a hard, clean gap between "successful
+  and comfortably under 5s" (nothing above 4988ms) and "aborted right
+  at 5000ms" (nothing below 5001ms) — no smooth continuum of near-misses
+  in the 4900-5000ms range. That bimodal shape is suggestive (not
+  proof, only 129 samples from one evening) that the failing calls
+  aren't merely "just a bit too slow" — something (queueing,
+  backend-side retry, throttling-adjacent delay) likely pushes them well
+  past 5s, which a modest timeout bump might not actually catch.
+
+**Real, honest limitation**: because every failure is a hard client
+abort, the TRUE completion time for those 69 calls is unknown and
+unknowable from these logs — the abort truncates measurement at
+exactly 5000ms regardless of whether the real answer would have arrived
+at 5100ms or 20000ms. The bimodal shape above is a hint, not proof,
+that raising `HAIKU_TIMEOUT_MS` wouldn't rescue most of them. The only
+way to know for certain is a live, out-of-band test hitting Anthropic's
+API directly with no artificial timeout to measure the real tail — not
+run here (real API cost, and per explicit instruction this was research
+only, no build/deploy).
+
+**Recommendation given to the user** (their call to make, not decided
+here): **(a) keep as-is** is the safest default on current evidence —
+it's additive, always disclosed (`visionProvider: "haiku-fallback"`),
+never regresses below the pre-fallback honest-failure behavior, and
+still rescues a real (if partial, and worse-than-average during
+simultaneous-failure moments per test #71) fraction of Gemini failures
+at zero cost when unused. **(b) tune `HAIKU_TIMEOUT_MS`** is the most
+evidence-motivated experiment given the 100%-timeout finding, but two
+things cut against just raising it blindly: the bimodal gap above
+suggests it may not help much, and the app's own explicit design goal
+(the "SPEED" comment at the top of `api/identify.js`: ~2-5s so a result
+is still useful for a live buy/bid decision) means a rescued read that
+now takes 8-10s+ may be technically "successful" but practically
+useless for the actual use case — recommend gating this behind the
+out-of-band latency probe above rather than picking a new timeout
+value blind. **(c) revert to Gemini-only** is a legitimate
+simplification if the complexity isn't judged worth a currently-partial,
+correlated-failure safety net — a values call the data doesn't resolve
+on its own. No code change made; awaiting the user's decision.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
