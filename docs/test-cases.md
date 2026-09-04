@@ -2522,6 +2522,42 @@ card (would need 16+ individual log pulls); flagged as a real, higher-
 than-usual ambiguous-tie rate worth keeping in mind if it recurs, not
 as an action item today.
 
+## Test #77 — Continued heavy-scanning window, 23:40–23:50 UTC (2026-09-04)
+
+Immediate continuation of test #76 (contiguous window, no overlap:
+23:40:23–23:50:23 UTC). 50 more real scans.
+
+**Gemini timeout rate ran a bit hot this window — 12/50 (24%)**, above
+the ~14-17% baseline from tests #71/#76. Checked whether this was a new
+failure mode (like the `503 "high demand"` type documented earlier in
+this file) — it wasn't: **all 12 are the identical genuine timeout**
+(`"This operation was aborted"`, 5001-5003ms, right at
+`GEMINI_TIMEOUT_MS=5000`). Same known failure class, just a somewhat
+elevated rate this window — plausibly normal variance (sample sizes
+this small swing a lot; 24% of 50 vs 14-17% of 23-49 isn't a huge
+absolute gap), not evidence of a new problem. Worth a mention in case a
+future window shows the same elevated rate again.
+
+**Haiku, consistent with the decided-and-closed status**: 23/50 failed
+(46%) — same pattern, no new information, no action taken (per the
+2026-09-04 decision in CLAUDE.md). Of the 12 Gemini timeouts, 7 got a
+real fallback rescue and 5 had both fail together (58% rescue ratio —
+the third different ratio seen across tests #71/#76/#77, underscoring
+that this specific number swings a lot session to session and isn't
+worth chasing further).
+
+**Match quality, same continuing pattern as test #76**: 31 distinct
+card names across 50 scans; the 9 `AMBIGUOUS MATCH` + 9 `NO NUMBER
+MATCH IN POOL` instances are spread across 8 and 7 distinct cards
+respectively (only `Zeraora VMAX` and `Mewtwo` repeated within their
+category) — genuinely broad, not a few rescanned cards inflating the
+count, same as test #76. 18/50 (36%) landed in a Low-confidence warning
+state — in the same range as test #76's 45%, not a new or worsening
+trend, still zero `pricingError`s and zero false-certainty results.
+
+No action items from this window; recorded to keep the running picture
+current per the user's own "casual log-checks" cadence.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
