@@ -1237,7 +1237,20 @@ async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
   try {
     resp = await fetchWithTimeout(url, {}, TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS);
   } catch (e) {
-    throw new Error(`TCGplayer price-history request failed for productId=${tcgPlayerId}: ${e && e.message}`);
+    // FIX (2026-09-04, test #72, live Ferrothorn scan): a single retry
+    // after a timeout/abort on this fetch specifically — live-confirmed via
+    // test #72 that this endpoint normally responds in ~170ms against a
+    // 2500ms budget, so a one-off abort here is far more often a transient
+    // blip than genuinely missing data (a live curl for the exact
+    // productId that failed returned real data in 173ms seconds later).
+    // Deliberately scoped to only this abort/network-error case — an HTTP
+    // error status, invalid JSON, or a genuine zero-SKU response below are
+    // real answers from TCGplayer, not something a retry can fix.
+    try {
+      resp = await fetchWithTimeout(url, {}, TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS);
+    } catch (e2) {
+      throw new Error(`TCGplayer price-history request failed for productId=${tcgPlayerId} (after 1 retry): ${e2 && e2.message}`);
+    }
   }
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
