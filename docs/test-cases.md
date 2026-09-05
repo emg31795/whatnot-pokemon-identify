@@ -3034,6 +3034,45 @@ lines. Recommended volume before drawing a real conclusion: at least
 same-frame comparisons (32) it took the Haiku shadow test to reveal a
 stark, decision-relevant pattern.
 
+**Env var added, redeploy confirmed needed and done, data collection
+now CONFIRMED LIVE — 2026-09-05** (`dpl_AdJmrGEjVW1MJtcw9hqmY4TNEjcL`,
+aliased to `whatnot-pokemon-identify.vercel.app`). User added
+`FLASH_LITE_SHADOW_MODEL=gemini-3.5-flash-lite` to Vercel's Production
+environment via the dashboard and asked whether a redeploy was needed —
+confirmed yes: Vercel env vars are snapshotted into a deployment at
+build time, not read live by an already-running Lambda, matching this
+project's own precedent (the Haiku shadow test was "originally deployed
+as `dpl_ERt8X...`" and only "confirmed collecting real data on
+`dpl_C8BLG...`" — a different deployment, after `ANTHROPIC_API_KEY` was
+added). Redeployed identical code (no changes, hash-verified against
+the prior deploy before redeploying) purely to pick up the env var.
+Deploy checklist passed (4 files, clean build, live `GET`/`POST` checks,
+`whatnot-pokemon-identify.vercel.app` confirmed directly in the new
+deployment's alias list).
+
+**Confirmed via a real scan, not assumed** — per explicit instruction
+not to repeat the `ANTHROPIC_API_KEY` gap where the env var silently
+collected zero data for a while before anyone checked: sent a real
+POST with a genuine (synthetic solid-color) JPEG straight to the live
+endpoint and pulled the real runtime log line for that exact
+`requestId`:
+
+```
+[flash-lite-shadow-test] requestId=06a9631e-f0f4-42a8-a517-ca34cc4f3c9c
+currentModel=gemini-3.6-flash flashLiteModel=gemini-3.5-flash-lite
+current={"error":"This operation was aborted"}
+flashLite={"found":false,...,"reason":"No Pokemon card is visible in the frame."}
+currentMs=5005 flashLiteMs=1596 flashLiteCostUsd=0.00077
+```
+
+Confirms the env var took effect (`flashLiteModel` correctly resolved),
+the shadow call is a real, separate API call (real `_geminiUsage`
+token counts, real cost), and — one data point only, not yet a
+pattern — Flash-Lite completed correctly in 1596ms on the same frame
+where the current model timed out at 5005ms. Data collection is now
+genuinely live. Recommended volume before drawing a conclusion
+unchanged: 50-100 real scans with both models succeeding.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
