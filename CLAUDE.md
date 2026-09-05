@@ -455,49 +455,77 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
-- **"Flag this scan" feature — BUILT AND LOCALLY COMMITTED, NOT YET
-  DEPLOYED OR PUSHED (2026-09-04)** (commit `264ac3c`). Built per explicit
-  user request to stop debugging bad scans from depending on screenshots
-  and timestamp/card-name guessing (the exact friction that led to
-  investigating the wrong scan in the Wailord/Dragalge mix-up, test #70).
-  Every `/api/identify` request now gets a `crypto.randomUUID()`
-  `requestId`, included in every JSON response — success and every
-  error/`found:false` path (missing-imageBase64, no-API-key,
-  gemini-failed with/without Haiku fallback, rate-limited, notFound, the
-  final success result) — and threaded through every `[identify]`/
-  `[timing]`/`[lookup]` log line for that request (`lookupCardPPT` in
-  `api/identify.js` now takes `requestId` as a second parameter; its
-  `pickBestCandidate` calls pass it via the existing `logPrefix` string).
-  A specific scan can now be traced end-to-end in Vercel runtime logs by
-  this one id alone — no matching timestamps or card names against a
-  screenshot needed. New, tiny `api/flag.js` (`POST /api/flag`) accepts
-  `{requestId, data}` and logs it verbatim as one greppable
-  `[user-flagged] requestId=<id> data=<json>` line — no database, no
-  persistent storage, per explicit scope; a flagged scan is found the same
-  way every other investigation in this project already works, by
-  grepping Vercel logs and joining on the shared requestId. The extension
-  (`extension/content.js`) keeps the last `/api/identify` response in
-  memory (already had to, to render the panel) and adds a small "🚩 Flag"
-  button next to the cost display (`#wnpk-footer-row` in
+- **"Flag this scan" feature — DEPLOYED AND PUSHED 2026-09-04** (commits
+  `264ac3c`/`2a928fa`, `dpl_AbrKkW5kAtzPpk3QRwMELtH2fCTq`, aliased to
+  `whatnot-pokemon-identify.vercel.app`; pushed to GitHub `6dd9467..2a928fa`).
+  Built per explicit user request to stop debugging bad scans from
+  depending on screenshots and timestamp/card-name guessing (the exact
+  friction that led to investigating the wrong scan in the Wailord/
+  Dragalge mix-up, test #70). Every `/api/identify` request now gets a
+  `crypto.randomUUID()` `requestId`, included in every JSON response —
+  success and every error/`found:false` path (missing-imageBase64,
+  no-API-key, gemini-failed with/without Haiku fallback, rate-limited,
+  notFound, the final success result) — and threaded through every
+  `[identify]`/`[timing]`/`[lookup]` log line for that request
+  (`lookupCardPPT` in `api/identify.js` now takes `requestId` as a second
+  parameter; its `pickBestCandidate` calls pass it via the existing
+  `logPrefix` string). A specific scan can now be traced end-to-end in
+  Vercel runtime logs by this one id alone — no matching timestamps or
+  card names against a screenshot needed. New, tiny `api/flag.js`
+  (`POST /api/flag`) accepts `{requestId, data}` and logs it verbatim as
+  one greppable `[user-flagged] requestId=<id> data=<json>` line — no
+  database, no persistent storage, per explicit scope; a flagged scan is
+  found the same way every other investigation in this project already
+  works, by grepping Vercel logs and joining on the shared requestId. The
+  extension (`extension/content.js`) keeps the last `/api/identify`
+  response in memory (already had to, to render the panel) and adds a
+  small "🚩 Flag" button next to the cost display (`#wnpk-footer-row` in
   `extension/content.css`) — disabled until a scan has a `requestId`,
   fires the flag request fire-and-forget (never awaited, can't affect or
   delay a future identify call), and shows a brief "✓ Flagged"
   confirmation for 1.5s before re-enabling. Clicking it twice on the same
   result just logs twice — no crash, no dedup needed, per explicit scope.
-  **Verified locally, not yet against the live deployment**: a scripted
-  local run of the real `handler()` (mocked Gemini/PPT/TCGplayer fetches)
-  confirmed the identical requestId appears in `[identify]`, `[timing]`,
-  and every `[lookup]` line for one request and in the final JSON
-  response; `api/flag.js` was run directly and confirmed to emit the
-  `[user-flagged]` line, accept a double-flag without erroring, and
-  reject a missing `requestId` with a 400. The panel markup/CSS was also
-  visually checked (enabled-next-to-a-result, disabled-before-any-scan,
-  and "✓ Flagged" states) in an isolated local preview, not inside a real
-  Whatnot page. **Not yet deployed to Vercel or pushed to GitHub — needs
-  the user's go-ahead for both**, per standing convention. Once deployed,
-  still needs one real live scan + flag click to confirm the end-to-end
-  trace against real Vercel runtime logs (not just the local mock), and
-  this entry should be updated with that confirmation.
+
+  **Deploy incident, caught immediately, zero production impact**: the
+  first `deploy_to_vercel` call omitted `api/identify.js` from the files
+  array entirely (the exact same copy-paste mistake documented elsewhere
+  in this file's history) — state went straight to `ERROR`
+  (`unused_function`: "the pattern api/identify.js defined in functions
+  doesn't match any Serverless Functions"), never reached `READY`, and
+  its alias never touched the real `whatnot-pokemon-identify.vercel.app`
+  domain (confirmed via a live curl against it immediately after, still
+  served by the prior deployment). Second attempt included all 3 files
+  and deployed clean.
+
+  **Deploy checklist followed in full**, given this file's history of
+  transcription corruption: read the real 2240-line source in 3 chunks,
+  wrote each to a scratch file, and diff-verified byte-for-byte against
+  the real source before deploying — this caught the SAME recurring
+  diacritic-regex transcription corruption documented repeatedly
+  elsewhere in this file on the very first attempt (literal Unicode
+  combining characters instead of the source's escaped
+  backslash-u-0300-to-backslash-u-036f form), fixed non-generatively via a small Python script splicing
+  the exact correct line from source (not retyping), then re-diffed
+  clean — final assembled file matched local source byte-for-byte
+  (`sha1 d2a35ffc89a93bd1dc3f535da78d84c461dc3b4b`).
+
+  **Confirmed live**: build log shows "Downloading 3 deployment files";
+  `GET /api/identify` returns `normalizeDiacriticTest: "pokemon
+  collector"` (diacritic regex deployed intact); `POST /api/identify {}`
+  returns the real `400 {"error":"Missing imageBase64","requestId":"..."}`
+  (confirms the new `requestId` field is live); `POST /api/flag` with a
+  synthetic test payload returned `{"ok":true}`, and the runtime logs
+  confirm the exact expected line —
+  `[user-flagged] requestId=deploy-verify-test-001
+  data={"found":true,"cardName":"Test Card"}` — served by
+  `dpl_AbrKkW5kAtzPpk3QRwMELtH2fCTq`. **Not yet confirmed**: the
+  requestId→`[identify]`/`[lookup]` end-to-end trace was verified against
+  the real handler code via a local mocked-fetch run (not a
+  reimplementation) before deploying, and the flag endpoint itself is
+  now live-confirmed, but no real Gemini-backed scan has been flagged on
+  this deployment yet — that needs an actual bad result on a live
+  Whatnot stream, per this project's own "confirm via rescan" convention
+  (see "Standing working conventions" above).
 - **Claude Haiku 4.5 active fallback — DEPLOYED AND PUSHED 2026-09-03**
   (commit `633b008`, `dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`, aliased to
   `whatnot-pokemon-identify.vercel.app`; pushed to GitHub `d779584..633b008`).
