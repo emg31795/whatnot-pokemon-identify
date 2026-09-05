@@ -126,6 +126,25 @@ const CARDDB_RETRY_TIMEOUT_MS = 1200;
 const GEMINI_INPUT_USD_PER_1M = 0.75;
 const GEMINI_OUTPUT_USD_PER_1M = 3.75;
 
+// TEMPORARY (added 2026-09-05, see the "FLASH-LITE VS CURRENT MODEL —
+// SHADOW-TEST LOGGING" block below for the full story and removal
+// instructions): gates a read-only shadow call to Gemini 3.5 Flash-Lite
+// on every scan, entirely opt-in via this env var (unset = complete
+// no-op, identical to today's behavior). When set, its value IS the
+// model id to shadow-test (e.g. "gemini-3.5-flash-lite") — same
+// env-var-driven model selection shape as GEMINI_MODEL above, just for
+// a second, non-authoritative slot. Never changes GEMINI_MODEL itself,
+// never affects the real response.
+const FLASH_LITE_SHADOW_MODEL = process.env.FLASH_LITE_SHADOW_MODEL || null;
+
+// Pricing confirmed live 2026-09-05 (openrouter.ai/google/gemini-3.5-flash-lite,
+// blog.google's "Introducing Gemini 3.6 Flash, 3.5 Flash-Lite..." post) —
+// same discipline as the GEMINI_INPUT/OUTPUT constants above: reconfirm
+// against Google's own pricing page if this constant is still here months
+// from now, since these have gone stale before.
+const FLASH_LITE_INPUT_USD_PER_1M = 0.3;
+const FLASH_LITE_OUTPUT_USD_PER_1M = 2.5;
+
 // REMOVED (2026-08-30, user report — Ditto 18/62 Fossil, LP shown $13.45
 // vs. real TCGplayer LP $6.84): this flat 85/70/55/40% multiplier was
 // never accurate across card eras — real per-condition ratios vary a lot
@@ -262,8 +281,13 @@ If the card appears to be inside a graded slab (a thick plastic holder with a pr
 
 If no card is visible in the frame at all, set found to false.`;
 
-async function identifyWithGemini(imageBase64, apiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+// `model` param added 2026-09-05 (Flash-Lite shadow test, see the
+// dedicated block below) — defaults to the module-level GEMINI_MODEL so
+// every existing call site (which never passes a third argument) is
+// completely unaffected; only the shadow-test call site passes a
+// different model id explicitly.
+async function identifyWithGemini(imageBase64, apiKey, model = GEMINI_MODEL) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const body = {
     contents: [
       {
@@ -623,6 +647,116 @@ async function runHaikuShadowTest(geminiPromise, haikuPromise, tStart, tHaikuSta
     haikuMs,
     "haikuCostUsd=",
     haikuUsage ? haikuUsage.estCostUsd : null
+  );
+}
+// =============================================================================
+// END TEMPORARY SHADOW TEST
+// =============================================================================
+
+// =============================================================================
+// TEMPORARY SHADOW TEST — GEMINI 3.5 FLASH-LITE VS CURRENT MODEL
+// (added 2026-09-05, directly answers the open question from "Research:
+// hitting a 1-3s latency target for sudden-death auctions",
+// docs/test-cases.md, 2026-09-05: does a lighter Gemini model
+// meaningfully narrow the gap toward a 1-3s target, using real data
+// instead of the noisy/inconsistent public benchmarks that research
+// found for this exact workload. UNRELATED to the Claude Haiku
+// shadow-test/fallback block above — this compares two Gemini-family
+// models against each other, not Gemini vs. a different provider.
+//
+// SAME non-disruptive shape as the Haiku shadow test: entirely gated on
+// FLASH_LITE_SHADOW_MODEL being set (see its definition above) — a
+// complete no-op otherwise, identical to today's behavior. The current
+// model (GEMINI_MODEL) remains the sole source of what the user sees and
+// what matching/pricing runs on; Flash-Lite's read is logged only, never
+// consumed elsewhere. Fired in parallel with the real call, not awaited
+// before responding, kept alive via waitUntil() the same way — see the
+// handler wiring below.
+//
+// CORRECTNESS NOTE (worth keeping if this pattern is ever copied again):
+// the Haiku shadow test's `geminiMs` field is mislabeled when Haiku is
+// the slower of the two promises, because that function awaits its two
+// promises sequentially and stamps each one's elapsed time only after
+// the wait completes — the second stamp ends up measuring "however long
+// we waited on the slower promise," not the first promise's own
+// completion time (see the "Research: hitting a 1-3s latency target"
+// entry in docs/test-cases.md for the full story, and CLAUDE.md/
+// test-cases.md test #79's methodology note). Fixed here via
+// `timePromise()`, which subscribes to each promise independently at
+// creation time via `.then()`, so each one's own elapsed-time stamp is
+// captured the instant IT settles, regardless of what order anything
+// else awaits them in or how long the other one takes.
+//
+// REMOVABLE: to fully remove this experiment, delete (1) this whole
+// block, (2) the `FLASH_LITE_SHADOW_MODEL`/`FLASH_LITE_INPUT_USD_PER_1M`/
+// `FLASH_LITE_OUTPUT_USD_PER_1M` constants above, (3) the handler call
+// site below (the `if (FLASH_LITE_SHADOW_MODEL) { ... }` block), and (4)
+// revert `identifyWithGemini`'s `model` parameter back to using
+// `GEMINI_MODEL` directly (harmless to leave, but the parameter becomes
+// dead once nothing passes a third argument).
+
+function timePromise(promise, tStart) {
+  return promise.then(
+    (result) => ({ result, error: null, ms: Date.now() - tStart }),
+    (err) => ({ result: null, error: (err && err.message) || String(err), ms: Date.now() - tStart })
+  );
+}
+
+function estimateFlashLiteCostUsd(usageMetadata) {
+  if (!usageMetadata) return null;
+  const inTok = usageMetadata.promptTokenCount || 0;
+  const outTok = usageMetadata.candidatesTokenCount || 0;
+  const cost = (inTok / 1_000_000) * FLASH_LITE_INPUT_USD_PER_1M + (outTok / 1_000_000) * FLASH_LITE_OUTPUT_USD_PER_1M;
+  return { estCostUsd: cost, promptTokens: inTok, outputTokens: outTok };
+}
+
+// Takes the two ALREADY-TIMED promises the handler created (via
+// timePromise(), so timing is correct regardless of await order — see
+// the correctness note above) and logs one greppable comparison line.
+// Reuses HAIKU_SHADOW_COMPARE_FIELDS/haikuShadowFieldsMatch (defined
+// above) as-is — both are generic field-set/string-compare helpers, not
+// actually Haiku-specific, and both models here share the exact same
+// GEMINI_SCHEMA/GEMINI_PROMPT, so the field list is identical. Never
+// throws past its own try/catch — the caller wraps this in one more
+// .catch() as a second safety net, same as the Haiku shadow test.
+async function runFlashLiteShadowTest(timedCurrentPromise, timedFlashLitePromise, requestId) {
+  const [current, flashLite] = await Promise.all([timedCurrentPromise, timedFlashLitePromise]);
+
+  const flashLiteUsage = flashLite.result ? estimateFlashLiteCostUsd(flashLite.result._geminiUsage) : null;
+
+  let fieldAgreement = null;
+  let overallMatch = "n/a";
+  if (current.result && flashLite.result) {
+    fieldAgreement = {};
+    let allAgree = true;
+    for (const field of HAIKU_SHADOW_COMPARE_FIELDS) {
+      const agree = haikuShadowFieldsMatch(current.result[field], flashLite.result[field]);
+      fieldAgreement[field] = agree;
+      if (!agree) allAgree = false;
+    }
+    overallMatch = allAgree;
+  }
+
+  console.log(
+    `[flash-lite-shadow-test] requestId=${requestId}`,
+    "currentModel=",
+    GEMINI_MODEL,
+    "flashLiteModel=",
+    FLASH_LITE_SHADOW_MODEL,
+    "current=",
+    JSON.stringify(current.error ? { error: current.error } : current.result),
+    "flashLite=",
+    JSON.stringify(flashLite.error ? { error: flashLite.error } : flashLite.result),
+    "match=",
+    overallMatch,
+    "fieldAgreement=",
+    JSON.stringify(fieldAgreement),
+    "currentMs=",
+    current.ms,
+    "flashLiteMs=",
+    flashLite.ms,
+    "flashLiteCostUsd=",
+    flashLiteUsage ? flashLiteUsage.estCostUsd : null
   );
 }
 // =============================================================================
@@ -2050,6 +2184,28 @@ module.exports = async function handler(req, res) {
       console.error("[haiku-shadow-test] shadow test itself threw:", e && e.message);
     });
     if (waitUntil) waitUntil(shadowPromise);
+  }
+
+  // See "TEMPORARY SHADOW TEST — GEMINI 3.5 FLASH-LITE VS CURRENT MODEL"
+  // above for the full story. Entirely gated on FLASH_LITE_SHADOW_MODEL —
+  // a complete no-op unless that env var is explicitly set. timePromise()
+  // subscribes to geminiPromise here (a promise can have any number of
+  // .then() subscribers without affecting what the main handler below
+  // sees or does — this never fires a second real Gemini call and never
+  // touches the response), so its own success/failure and elapsed time is
+  // captured independently of whether Flash-Lite's call is faster or
+  // slower. Not awaited here, so it can never delay the response;
+  // waitUntil (when available) keeps it alive after the response is
+  // sent, and the .catch() is a second safety net.
+  if (FLASH_LITE_SHADOW_MODEL) {
+    const timedCurrentPromise = timePromise(geminiPromise, tStart);
+    const tFlashLiteStart = Date.now();
+    const flashLitePromise = identifyWithGemini(imageBase64, geminiKey, FLASH_LITE_SHADOW_MODEL);
+    const timedFlashLitePromise = timePromise(flashLitePromise, tFlashLiteStart);
+    const flashLiteShadowPromise = runFlashLiteShadowTest(timedCurrentPromise, timedFlashLitePromise, requestId).catch((e) => {
+      console.error(`[flash-lite-shadow-test] requestId=${requestId} shadow test itself threw:`, e && e.message);
+    });
+    if (waitUntil) waitUntil(flashLiteShadowPromise);
   }
 
   let read;
