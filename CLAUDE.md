@@ -786,6 +786,23 @@ checklist before reporting something as finished:
   confirmed via live rescan** — needs a ~24h timeout-rate check and
   continued watching for any recurrence of the #50/#63/#67 instability
   pattern now that `thinkingLevel` is back at `"minimal"`.
+
+  **Update, 2026-09-04 (tests #77/#78)**: two consecutive ~10-minute
+  windows during a heavy same-session scanning burst both showed a
+  Gemini timeout rate around **24%** (12/50, then 24/100 — ~150 scans
+  over ~19 minutes), above the ~14-17% baseline seen in tests #70/#71/
+  #76. Confirmed it's still the identical known failure (`"This
+  operation was aborted"` at the `GEMINI_TIMEOUT_MS=5000` wall, no
+  `503`/other new error type) — not a new failure class, just a rate
+  that ran hotter. Two independent windows at the same figure is enough
+  to stop calling it noise, but it's still only one session's worth of
+  data, not a confirmed lasting trend, and no cause has been
+  identified (could be genuine Gemini-side load, could be something
+  specific to that session). **Not actioned** — this is exactly the
+  kind of recurrence the still-open item above is watching for; if a
+  future session reproduces a ~24%+ rate (or worse), that's the trigger
+  to revisit `thinkingLevel`/timeout tuning, not before. See tests
+  #77/#78 in `docs/test-cases.md` for the full numbers.
 - **Removed redundant `includeHistory=true` from every PokemonPriceTracker
   search call — FIXED AND DEPLOYED 2026-09-01** (commit pending push,
   `dpl_6z5qNTuhHbmWzuK5WD4ryA4kmTTm`, aliased to

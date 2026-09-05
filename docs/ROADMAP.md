@@ -101,6 +101,17 @@ for the fix history.
       any recurrence of the #50/#63/#67 instability pattern now that
       `thinkingLevel` is
       back at `"minimal"`.
+      **Update, 2026-09-04 (tests #77/#78): two consecutive ~10-minute
+      windows during a heavy scanning session both showed a Gemini
+      timeout rate around 24% (~150 scans over ~19 minutes), above the
+      ~14-17% baseline — still the identical known timeout failure, no
+      new error type, and much milder than the severe cluster below,
+      but two independent windows at the same elevated figure is enough
+      to stop calling it noise. Not actioned (one session, no confirmed
+      lasting trend, no identified cause) — flagged as exactly the kind
+      of recurrence this item is watching for; a future session
+      reproducing ~24%+ (or worse) is the trigger to revisit, not
+      before.**
       **New, same day (2026-09-02): a severe live timeout cluster (13
       hard timeouts out of 21 scan attempts in a 7-minute window — see
       test #68's update in `docs/test-cases.md`) prompted a research-only
