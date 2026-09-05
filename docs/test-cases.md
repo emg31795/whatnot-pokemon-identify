@@ -2558,6 +2558,49 @@ trend, still zero `pricingError`s and zero false-certainty results.
 No action items from this window; recorded to keep the running picture
 current per the user's own "casual log-checks" cadence.
 
+## Test #78 — Continued heavy scanning, ~9-minute window, and the Gemini timeout uptick is now a 2-window trend, not noise (2026-09-04, 23:49–23:58 UTC)
+
+Roughly contiguous continuation of tests #76/#77 (small ~1-minute
+overlap with #77's tail end, not deduplicated — negligible at this
+sample size). Volume nearly doubled again: **100 scans in ~9 minutes**
+(hit the query's 100-result cap).
+
+**Gemini timeout rate: 24/100 (24%) — same elevated rate as test #77
+(12/50, 24%), not test #76's baseline (14%).** Two consecutive
+independent windows landing at the identical 24% figure, covering
+~150 scans over ~19 minutes, is enough to stop calling this "small-
+sample noise" the way test #77 provisionally did — this looks like a
+real, moderate uptick from the earlier ~14-17% baseline (tests #70/
+#71/#76), not yet confirmed as a lasting trend (still just this one
+session), but no longer dismissible either. **Checked and it's still
+the same known failure type** — every failure message is the identical
+genuine `"This operation was aborted"` timeout at the
+`GEMINI_TIMEOUT_MS=5000` wall; no `503 "high demand"` or other new
+error class reappeared. If this rate holds up in a future session, it
+may be worth revisiting the `thinkingLevel`/timeout research history
+already tracked in CLAUDE.md's "Immediate next step" — not done here,
+just flagged.
+
+**Haiku and rescue ratio, consistent with the closed decision**: ~54%
+Haiku failure (in line with tests #71/#75/#76/#77); roughly 14 of the
+Gemini timeouts got a real fallback rescue, consistent with the ~55-58%
+rescue ratio seen the last two windows. No new information, no action
+per the 2026-09-04 "keep as-is" decision.
+
+**Match quality, same continuing pattern**: 30 distinct card names; the
+20 `AMBIGUOUS MATCH` + 14 `NO NUMBER MATCH IN POOL` instances span 10
+and 7 distinct cards respectively (most hit exactly twice each this
+round, consistent with the user scanning each card twice rather than
+one card being scanned 10+ times) — still broad, not concentrated.
+34/100 (34%) landed in a Low-confidence warning state, in the same
+range as tests #76/#77; zero `pricingError`s, zero false-certainty
+results.
+
+**Net for this check**: only the Gemini timeout-rate uptick is worth
+carrying forward as something to keep watching specifically (now a
+2-window pattern); everything else (Haiku behavior, match-quality mix,
+pricing) is steady-state, already-understood behavior.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
