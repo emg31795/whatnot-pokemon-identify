@@ -2601,6 +2601,168 @@ carrying forward as something to keep watching specifically (now a
 2-window pattern); everything else (Haiku behavior, match-quality mix,
 pricing) is steady-state, already-understood behavior.
 
+## Audit: scan accuracy and scan speed, full pipeline review (2026-09-05, research only — no code changed)
+
+User asked for a real, evidence-backed audit of accuracy and speed with
+prioritized recommendations, explicitly NOT a build — grounded in this
+file (tests #50-78), ROADMAP.md, and fresh log data pulled live during
+the audit rather than re-litigating settled decisions (Haiku
+keep-as-is, thinkingLevel=minimal, PPT coverage gaps were all treated
+as closed per explicit instruction).
+
+**Fresh data pulled this session**: real `[timing]`/`[haiku-shadow-test]`
+Vercel runtime logs, production, 100 requests,
+**2026-09-05T00:22:27–00:47:38 UTC** (a live scanning session happening
+during the audit itself, spanning deploys `dpl_9HeecDEMGF4uHcW7wxsPh7ffZ1x7`
+and `dpl_AbrKkW5kAtzPpk3QRwMELtH2fCTq`).
+
+### Speed findings
+
+**Real latency breakdown** (100 Gemini samples, 92 completed lookups):
+Gemini call ms — min 1720, median 3953, mean 3760, max 5007. Lookup ms
+(PPT search + TCGplayer price, combined, no sub-breakdown exists) — min
+77, median 142, mean 190, max 1050. Total ms (successful) — min 1855,
+median 3777, mean 3887, max 6051. Confirms and sharpens the 2026-09-01
+research: Gemini is ~95%+ of end-to-end latency; lookup is not a real
+lever (20-40x faster than Gemini already). Noted gap: the `lookup ms=`
+bucket bundles PPT pagination and the TCGplayer price fetch with no way
+to tell which sub-step to blame if it ever became slow — not worth
+splitting today given how small the whole bucket is.
+
+**New, escalating data point — Gemini timeout rate**: **40 of 100 Gemini
+calls timed out (40%) + 2 more `503 "high demand"` errors (42% total
+failure)** in this 25-minute window — a THIRD independent window, not
+test #78's already-flagged 24% two-window pattern (tests #77/#78,
+~50 minutes earlier the same evening), and nearly double it. The `503`
+error type reappearing is the same one last seen only in the severe
+2026-09-03 cluster. All 40 timeouts are still the identical genuine
+`"This operation was aborted"` at the `GEMINI_TIMEOUT_MS=5000` wall — no
+new failure shape, just a materially higher rate. This crosses the
+threshold CLAUDE.md's own "Immediate next step" already set for
+revisiting the `thinkingLevel`/timeout research — flagged as the
+single highest-priority open item from this audit, not acted on (research
+only, per explicit scope).
+
+**Haiku fallback, same window — good news, supports the 2026-09-04
+decision rather than reopening it**: Haiku's own failure rate was 32%
+(better than the ~52-54% in tests #71/#75/#76/#77), and **all 42 real
+Gemini failures this window got a completed Haiku fallback response —
+0 overlapped with a Haiku failure** (a reversal from test #71's "3 of 4
+died together"). One read worth flagging, same class as test #70's
+Wailord miss and not a new decision point: a fallback response read
+`cardName: "Pikakazam"` (not a real card) on a slab scan — plausibly a
+Haiku hallucination. The 2026-09-04 "keep as-is" decision already priced
+in exactly this risk class as acceptable given the fallback's strictly
+additive/safe design.
+
+**PPT page-1/page-2 parallelization**: confirmed via code read
+(`lookupCardPPT`, `api/identify.js:1452+`) the chain is sequential and
+deliberately so — pre-firing page-2 in parallel on every scan would
+double PPT credit cost on the majority of scans that never need it, to
+save at most a few hundred ms against a lookup step that's already only
+~150ms median. Idea, but the real timing + real rate-limit data (2026-09-01
+research) both argue against it.
+
+**Caching repeat scans**: real repeats do occur (42 distinct card names
+across ~100+ reads this window, consistent with the project's own
+established rescan pattern), but since lookup is already ~150ms median,
+caching is a rate-limit/credit lever, not a speed lever — nothing new
+beyond the existing 2026-09-01 research option 2.
+
+**Prompt/schema token reduction**: real usage data (a Marill scan)
+showed `promptTokenCount=1551`, of which **1100 are fixed image tokens**
+(from `media_resolution: HIGH`, independent of prompt length) — the
+prompt text + schema is only ~451 tokens. Halving it saves at most
+~150-200 tokens (~10-13% of input) with no evidence of any latency
+effect (thinkingLevel is already "minimal"). Not worth the risk of
+clipping wording that's currently doing real work.
+
+### Accuracy findings
+
+**Image resolution — a real blind spot, not yet a confirmed fix**:
+`extension/content.js`'s `captureFrame()` (line 345-376) captures at the
+video element's native `videoWidth`/`videoHeight`, only downscaling if
+the longer edge exceeds `MAX_CAPTURE_DIMENSION=1280`. Nothing has ever
+logged what that native resolution actually is on a live Whatnot stream
+— a cheap, real diagnostic (log `videoWidth`/`videoHeight` + post-scale
+dimensions once per scan) would settle whether raising the 1280 cap
+could possibly help before touching it, especially since
+`media_resolution: HIGH` already gives Gemini a fixed ~1120 image
+tokens regardless of input pixel count on `gemini-3.6-flash` per the
+code's own sourced comment — meaning more input pixels than the
+encoder's own canonical resolution may be a no-op. Also found:
+`captureFrame()` never sets `ctx.imageSmoothingQuality` before the
+downscale draw — a free, zero-cost `"high"` setting whenever downscaling
+actually happens.
+
+**Scan-area cropping — the most concrete new finding this pass**:
+confirmed crop happens on native pixel coordinates BEFORE any resize
+(so tighter crops should only ever help resolution), but `scanZone` is a
+**static, one-time-drawn rectangle** that does not track a moving card,
+and — confirmed by reading `startZoneSelection()` (content.js:267-326)
+— the selection box is only rendered during the drag gesture and
+removed immediately on mouseup. Once set, there is **zero persistent
+visual feedback** showing where the box currently sits relative to the
+live video. This is a much better explanation for "a card held at a
+distance in a cluttered frame failed constantly" than a resolution
+ceiling: if the card moves after the box was drawn, every subsequent
+Identify click silently crops the wrong region (possibly clipping the
+card out entirely) with no way for the user to notice before clicking —
+a stale tight crop can be worse than no crop. Low-risk fix: render a
+persistent, low-opacity outline of the active scan zone over the video
+at all times, not just while dragging. Auto-tracking a moving card would
+need real object detection — a genuine ceiling, not proposed.
+
+**Shared prompt wording**: the "same single card being held up or
+highlighted" phrasing (test #70's hypothesis) is unchanged, and no new
+evidence this session ties to it (the fresh Haiku-fallback reads pulled
+look like single-card low-legibility misses, not multi-card mix-ups) —
+correctly left alone per explicit instruction not to act on unproven
+ideas. New finding: across 106 real `read=` log blocks this session,
+**`setName` was populated only 10 times (~9%)** — including on a clean,
+unambiguous, High-confidence, `tieCount=1` match (Marill 204/193) where
+it was still `null`. `GEMINI_PROMPT` gives explicit "spend extra effort"
+instructions for `cardNumber`/`hp` but zero instruction at all for
+`setName`, even though it's already wired into scoring
+(`SCORE.set=3`, `api/identify.js:812-815`) and is precisely the signal
+that would help disambiguate the dominant real failure class right now
+— same-name/same-HP/same-attack reprint ties across different sets
+(V/VMAX/ex era), which tests #76-78 already documented at a 34-45%
+ambiguous-tie rate. Low-risk fix: one added sentence asking for the set
+symbol/name near the card number — additive only, no schema/scoring
+change, can't introduce false confidence since illegible still returns
+null.
+
+**Matching/scoring logic**: reviewed `numbersMatch`/`scoreCandidate`/
+`pickBestCandidate` in full. Checked whether `attackName`'s exact-string
+match (line 817) is at real risk from PPT-side formatting (e.g. damage
+numbers baked into the name) — confirmed `normalizePptCard` already
+strips these (real logged examples are clean: "Bubble Drain", "Curly
+Terrain") — no evidence of a real bug here, a theoretical risk that
+isn't manifesting. No other unused-but-fetched signal found beyond
+`rarity` (already shipped) — the setName-prompt gap above is the one
+concrete, evidence-backed matching improvement this pass surfaced.
+
+**Ceiling vs. fixable**: PPT catalog-coverage gaps and inherent OCR
+difficulty on small/angled/slabbed text remain real external ceilings,
+not revisited here per explicit instruction.
+
+### Prioritized recommendations (none built — awaiting individual go-ahead)
+
+1. Revisit the `thinkingLevel`/`GEMINI_TIMEOUT_MS` question given the
+   fresh 40-42% failure window (decision conversation, not a code change
+   by itself).
+2. Log `video.videoWidth`/`videoHeight` + post-scale dimensions once per
+   scan (cheap diagnostic).
+3. Render a persistent scan-area outline over the live video (low-risk
+   UI fix).
+4. Add set-symbol/set-name guidance to `GEMINI_PROMPT` (low-risk,
+   additive).
+5. `ctx.imageSmoothingQuality = "high"` on the capture canvas (trivial).
+6. Not recommended given current data: PPT page-1/2 parallelization,
+   caching as a speed lever, prompt/schema token trimming, attackName
+   fuzzy-matching.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
