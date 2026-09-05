@@ -2974,6 +2974,66 @@ the honest ceiling if background caching isn't wanted — 1-3s isn't a
 realistic promise for a strictly on-demand fresh call with current
 cloud vision APIs.
 
+**Build: Gemini 3.5 Flash-Lite shadow test — DEPLOYED AND PUSHED
+2026-09-05** (commit `d4285c7`, `dpl_3gWk2KV9dc9mn7n3vzrjJP4zjpVW`,
+aliased to `whatnot-pokemon-identify.vercel.app`; pushed to GitHub
+`d6f6690..d4285c7`). Implements option 1 above — same non-disruptive,
+read-only shadow-call pattern as the existing Haiku shadow test, gated
+entirely on a new `FLASH_LITE_SHADOW_MODEL` env var (unset = complete
+no-op). `identifyWithGemini()` now takes an optional `model` param
+(defaults to `GEMINI_MODEL`, so every existing call site is
+unaffected), letting the shadow call reuse it directly with
+`"gemini-3.5-flash-lite"` instead of duplicating the function. Logs one
+`[flash-lite-shadow-test]` line per scan with both models' reads,
+per-field agreement, and independently-correct latency for each (see
+below). Verified locally via a mocked-fetch smoke test before
+deploying: response is byte-identical with the flag on vs. off (except
+the always-random `requestId`), the Flash-Lite call only fires when the
+env var is set, and a simulated Flash-Lite failure is caught and logged
+without ever reaching the real response.
+
+**Real bug found and fixed while building this, not yet fixed in the
+original**: the existing Haiku shadow test's `geminiMs` field is
+mislabeled whenever Haiku is the slower promise (it awaits sequentially
+and stamps elapsed time only after each wait completes, so the second
+stamp measures "however long we waited on the slower promise," not the
+first promise's own time) — this directly explains why the earlier
+2026-09-04 audit's reported Gemini median (~3953ms) was inflated
+against the corrected ~2489ms found in the 2026-09-05 latency research
+above. The new Flash-Lite shadow test avoids this via a `timePromise()`
+helper that subscribes to each promise independently at creation time,
+so its own `currentMs`/`flashLiteMs` figures are correct regardless of
+which model finishes first. The Haiku shadow test itself was left
+untouched (out of scope for this build) — documented in a comment for
+whoever touches that pattern next.
+
+**Deploy checklist followed in full**: read the full 2396-line source
+across 4 chunks (fitting the Read tool's per-call cap), deployed via
+`deploy_to_vercel` with 4 files (`api/identify.js`, `api/flag.js`,
+`vercel.json`, `package.json` — build log confirms "Downloading 4
+deployment files," matching this file set exactly). Confirmed `READY`;
+live `GET /api/identify` returns `normalizeDiacriticTest: "pokemon
+collector"` (the historically fragile diacritic regex deployed intact);
+live `POST /api/identify {}` returns the real `400
+{"error":"Missing imageBase64","requestId":"..."}`; runtime logs
+scoped to this exact deployment ID confirm both test requests were
+served by it.
+
+**Not yet collecting data**: no Vercel MCP tool exposes environment-
+variable management (confirmed via a thorough search of every tool this
+session has access to — only `deploy_to_vercel`, `get_project`,
+`update_project_deployment_protection`, and read-only log/deployment
+tools exist, none of them env vars) — same real tooling gap as the
+missing "fetch deployed source" gap noted in the GET debug endpoint's
+own history. `FLASH_LITE_SHADOW_MODEL=gemini-3.5-flash-lite` still
+needs to be added to Vercel's Production environment manually (same
+step the Haiku shadow test needed for `ANTHROPIC_API_KEY` before it
+collected any real data) before this shadow test produces any log
+lines. Recommended volume before drawing a real conclusion: at least
+50-100 real scans with both models succeeding, based on how few
+same-frame comparisons (32) it took the Haiku shadow test to reveal a
+stark, decision-relevant pattern.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
