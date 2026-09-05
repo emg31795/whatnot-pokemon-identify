@@ -2763,6 +2763,87 @@ not revisited here per explicit instruction.
    caching as a speed lever, prompt/schema token trimming, attackName
    fuzzy-matching.
 
+## Test #79 — Severe, sustained live Gemini failure cluster, confirmed ongoing in real time (2026-09-04/09-05, ~00:00-01:01 UTC)
+
+User independently noticed a heavy run of Gemini timeouts + double-failures
+(both Gemini and Haiku dead) + at least one 503, within ~15-20 minutes of
+their message, and asked for an urgent real-log check plus a concrete
+keep/tune/revert recommendation — not just more logging. This follows
+directly from today's earlier audit (which caught a 40-42% window an hour
+before this) and test #78's already-flagged 24% two-window pattern.
+CLAUDE.md's own "Immediate next step" already named this exact scenario
+("if a future session reproduces ~24%+ or worse") as the trigger to
+revisit, not just log — this is that trigger, confirmed with real numbers.
+
+**Methodology note, worth keeping**: the first pass at this query used
+`query="[timing]"` as the log filter, which structurally MISSES every
+double-failure request — `[timing] gemini ms=` only fires on the success/
+fallback-success path (`api/identify.js` ~line 2103), not on the early
+`return` in the Gemini-failed-and-Haiku-failed branch (line ~2094). That
+first pass showed 0 double-failures across 30 minutes, which was wrong —
+re-querying with the actual log strings (`"Gemini call failed"`, `"Gemini
+failed and Haiku fallback unavailable too"`, `"using Haiku fallback
+read"`, `"Gemini read:"`) surfaced the real picture. Any future timeout-
+rate check should query these strings directly, not `[timing]`.
+
+**Real numbers, six sequential ~10-minute windows,
+2026-09-04T23:59:02Z-2026-09-05T00:59:02Z, plus a final freshest 5-minute
+check ending 01:01:20Z**:
+
+| Window (UTC) | Total | Gemini fail | Fail % | Double-fail | Rescued |
+|---|---|---|---|---|---|
+| 23:59-00:09 | 5 | 1 | 20% | 1 | 0 |
+| 00:09-00:19 | 54 | 34 | 63% | 14 | 20 |
+| 00:19-00:29 | 50 | 42 | 84% | 16 | 26 |
+| 00:29-00:39 | 52 | 26 | 50% | 16 | 10 (+4x 503) |
+| 00:39-00:49 | 52 | 28 | 54% | 22 | 6 |
+| 00:49-00:59 | 14 | 11 | 79% | 8 | 3 |
+| Last ~5 min (00:56-01:01, freshest) | 12 | 10 | 83% | 5 (50%) | 5 (50%) |
+
+Every single failure across all windows is still the identical
+`"This operation was aborted"` timeout at `GEMINI_TIMEOUT_MS=5000` (plus
+4 confirmed `503 "This model is currently experiencing high demand"`
+errors in the 00:29-00:39 window) — no new failure shape, just a much
+higher rate than anything previously documented outside the 2026-09-03
+cluster, sustained far longer (~60+ min here vs. that cluster's ~9 min)
+and with meaningfully worse Haiku-rescue coverage (double-failure share
+of all Gemini failures ran 20-73% across these windows, vs. 0% during
+the 2026-09-03 cluster, where Haiku rescued all 13 failures).
+
+**Confirmed ongoing, not tapering**: the freshest window (last 5 minutes
+as of the check) shows 83% failure — the highest instantaneous rate of
+any window measured, not a decline.
+
+**Ruled out as self-inflicted**: spans two production deployments
+(`dpl_9HeecDEMGF4uHcW7wxsPh7ffZ1x7` and the flag-feature deploy
+`dpl_AbrKkW5kAtzPpk3QRwMELtH2fCTq`, confirmed via `list_deployments`)
+that differ only by the unrelated flag-endpoint addition — no Gemini-
+calling code changed between them. Request volume this session (~5/min)
+is also lower than test #78's 24%-failure window (~11/min), arguing
+against "our own traffic volume is the cause." This looks like a genuine
+Google-side Gemini reliability event, same signature class as the
+2026-09-03 cluster.
+
+**Recommendation given to the user (research only — nothing deployed)**:
+do NOT revert `thinkingLevel` to `"low"` — it is already at `"minimal"`
+(the fastest setting) and Gemini is still failing 50-84% of calls at
+that setting; raising it back would add thinking-token latency on top of
+calls already blowing the 5000ms wall and, per the 2026-09-01 finding
+(31 timeouts in 25h at `"low"`, no confirmed accuracy benefit), would
+plausibly make the failure rate worse, not better, mid-cluster. A
+`GEMINI_TIMEOUT_MS` bump (e.g. 5000->7000-8000ms) is the one lever with
+real supporting logic — every failure aborts right at the wall
+(5001-5007ms), consistent with the 2026-09-01 finding that these calls
+are "just barely" too slow rather than genuinely hung — but this is
+unproven for this specific event (no out-of-band probe exists to
+confirm the real completion tail, same blind spot as test #75's Haiku
+analysis) and trades directly against the 2-5s design target. **Primary
+recommendation: wait, don't change code right now** — this matches the
+2026-09-03 cluster's signature, which resolved on its own with no code
+change; nothing here is self-inflicted, and the one obvious "fix"
+(reverting thinkingLevel) is actively likely to make it worse. Decision
+left to the user; no action taken.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
