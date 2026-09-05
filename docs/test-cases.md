@@ -2844,6 +2844,136 @@ change; nothing here is self-inflicted, and the one obvious "fix"
 (reverting thinkingLevel) is actively likely to make it worse. Decision
 left to the user; no action taken.
 
+## Research: hitting a 1-3s latency target for sudden-death auctions (2026-09-05, research only — no code changed)
+
+User set a real product requirement — scans need to resolve in 1-3s
+because they're often used in ~10s Whatnot sudden-death auctions — and
+asked for a proper research pass on options, not a build. Analyzed
+using real logs already pulled this session (2026-09-04 audit + test
+#79 incident data, 208 unique request blocks — the most recent data
+available given Vercel's 1h retention and no live traffic at research
+time) plus fresh web research, since the last vision-provider comparison
+in this file is ~7 months stale relative to today.
+
+**Methodology finding, worth fixing later, not urgent**: the
+`[haiku-shadow-test]` log line's `geminiMs` field
+(`runHaikuShadowTest`, `api/identify.js:576+`) is mislabeled/unreliable
+whenever Haiku is the slower of the two promises — the function awaits
+`haikuPromise` first, then `geminiPromise`, so `geminiMs` ends up
+measuring "however long we waited on the slower promise" in that case,
+not Gemini's true completion time. `haikuMs` is unaffected (always
+measured first). Any future session reusing this log line for Gemini
+timing should cross-check against the main handler's own
+`[timing] gemini ms=` line instead, or fix the label.
+
+**1. Real comparative latency, successful calls only** (corrected for
+the above): Gemini true success — n=76, min 1720ms, **median 2489ms**,
+p90 4319ms, max 4776ms. Haiku success (any context) — n=91, min 2013ms,
+**median 3470ms**, p90 4762ms, max 4964ms. This corrects the earlier
+2026-09-04 audit's reported Gemini median of ~3953ms, which was
+contaminated by blending true successes with mislabeled fallback-totals
+(~5000ms each) from the same log line bug above — the real number is
+meaningfully faster and closer to the 1-3s target than previously
+stated. Head-to-head on the same frame where both succeeded (n=32):
+Gemini was faster 72% of the time (avg 2605ms vs. Haiku's 3118ms);
+Haiku won 28% of the time by a median margin of only 240ms.
+
+**2. Racing evaluation — real, quantified accuracy risk, not just
+speed**: of the 32 same-frame both-succeeded cases, full 10-field
+agreement was only 6% (2/32) — but that's dominated by soft fields
+(setName/stampType agree 91-94%, mostly because both return null).
+`cardName` agreed 41%, `cardNumber` agreed only 22%. Breaking
+`cardNumber` down further: 7/32 both null (trivial agreement), 20/32
+had exactly one side null, and of the 5 cases where BOTH committed to a
+specific populated number, **all 5 disagreed** (0 agreed) — one pair
+was a flat-out different card identity (Gemini: "Timburr 109/101" vs.
+Haiku: "Dodocolo 192/250"). Of the 9 cases where Haiku was the faster
+provider, all 9 disagreed with Gemini on the full field set. Given
+`cardNumber` is the dominant scoring signal (`SCORE.number=20`), racing
+on raw completion time would frequently substitute a less-reliable read
+for Gemini's with no way to detect it — a real risk, consistent with
+the two already-documented Haiku-fallback misses (test #70's Wailord,
+this session's "Pikakazam"). **Recommendation: do not race on time —
+keep the current sequential-fallback design.**
+
+**3. Continuous/background scanning**: architecturally the most
+promising path to a "feels instant" click, but it hides latency rather
+than reducing it. Real cost multiplier: 5-10x more Gemini/Haiku calls
+for however long the loop runs during a stream. Real, more severe risk:
+PPT's 60-calls/minute cap (confirmed live, 2026-09-01 research) — a
+1-2s full-pipeline background loop alone would consume the entire
+per-minute PPT budget, leaving nothing for pagination fallbacks. Real
+mitigation, not built: scope background scanning to vision-only
+(cache the raw read; defer PPT search + pricing, already only
+~150-200ms, to the actual on-demand click). Real UX gap: no
+card-in-frame detection exists today; a client-side frame-differencing
+heuristic could reduce waste during genuinely idle stream time but is
+unbuilt and imperfect (a motionless held-up card would also look
+"unchanged").
+
+**4. Fresh vision-provider check** (prior comparison in this file is
+~7 months stale): **Gemini 3.5 Flash-Lite** (released July 2026) is
+marketed as the fastest in the 3.5 line and is cheaper than the
+`gemini-3.6-flash` in use today ($0.30/$2.50 per 1M vs. $0.75/$3.75) —
+the lowest-effort real candidate, since `GEMINI_MODEL` is already an
+env-var override in this codebase; no new integration needed, just a
+shadow-test-style comparison. Public TTFT benchmarks for it were wildly
+inconsistent between sources (10.9s vs. 2.7s) — almost certainly
+measuring default "thinking" behavior this project's own code already
+suppresses, so neither number should be trusted without a real live
+test, same lesson as the original Haiku shadow test. **GPT-5.4/5.5
+Mini** is now reported (fresh web research, not from this project's
+~7-month-old comparison) as faster than Claude Haiku 4.5 on both TTFT
+and sustained throughput and cheaper on output tokens — a real update,
+but requires a full new provider integration, same scope of work as
+the original Haiku build. Self-hosted specialized OCR models
+(GLM-OCR, PaddleOCR-VL) reportedly beat frontier LLMs on raw OCR speed
+but are a much bigger scope jump (self-hosted infra vs. this project's
+thin-client/hosted-API design) — not a comparable same-day swap.
+Sources: [Gemini 3.8 Flash — Artificial Analysis](https://artificialanalysis.ai/models/releases/gemini-3-8-flash),
+[Gemini 3.5 Flash-Lite — OpenRouter](https://openrouter.ai/google/gemini-3.5-flash-lite),
+[Gemini 3.5 Flash-Lite — Artificial Analysis](https://artificialanalysis.ai/models/gemini-3-5-flash-lite/providers),
+[Introducing Gemini 3.6 Flash / 3.5 Flash-Lite — Google](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-6-flash-3-5-flash-lite-3-5-flash-cyber/),
+[Fastest LLM API in 2026 — Kunal Ganglani](https://www.kunalganglani.com/blog/llm-api-latency-benchmarks-2026),
+[Claude Haiku 4.5 vs GPT-5 Mini — CallSphere](https://callsphere.ai/blog/td30-anth-haiku45-vs-gpt5-mini),
+[Best OCR Models 2026 — Reducto](https://reducto.ai/guides/best-ocr-models-accuracy-speed-cost).
+
+**5. Honest ceiling assessment**: real data from this exact pipeline is
+more trustworthy than public benchmarks here. Even at the fastest
+shipped Gemini setting (`thinkingLevel: minimal`), true success-only
+latency is ~1.7s best-case, ~2.5s median, ~4.3s at p90 — on a calm
+night; test #79 showed the same call regularly hitting its 5s wall
+during provider-side degradation. The PPT+TCGplayer lookup step is
+already a rounding error (~150-200ms) — essentially all latency budget
+is vision-model inference time, which prompt/schema trimming is
+unlikely to meaningfully beat further (already tried, reflected in the
+"minimal" thinking level). **Straight answer: 1-3s reliably, on every
+fresh on-demand call, is not realistically achievable with any current
+hosted cloud vision-LLM API** based on real measured data here. A
+lighter model (Flash-Lite) might pull the median down — worth testing —
+but the 1.7s best-case observed today is already close to what these
+models can do; consistently hitting that as the *typical* case, not
+just the lucky case, would be a first for this model class, not a
+config change. The one strategy that can plausibly deliver a "feels
+under 1s" experience is decoupling when the AI call happens from when
+the user sees a result (item 3, background scanning) — paying today's
+same ~2.5s latency continuously in the background so the click just
+reads a cache. A faster model is a nice-to-have on top of that, not a
+substitute for it.
+
+**Prioritized options for the user to choose from** (none built): (1)
+shadow-test Gemini 3.5 Flash-Lite — lowest effort, real data instead of
+noisy public benchmarks; (2) do NOT race Gemini/Haiku on response time —
+keep sequential fallback, given the accuracy risk above; (3) scoped
+background scanning (vision-only, defer PPT/pricing to the click) —
+the one path that can actually meet the requirement, needs an explicit
+$ budget decision and a card-in-frame detection plan first; (4) new
+GPT-5.4/5.5 Mini integration — real candidate, but full integration
+effort, worth trying only after Flash-Lite; (5) accept and communicate
+the honest ceiling if background caching isn't wanted — 1-3s isn't a
+realistic promise for a strictly on-demand fresh call with current
+cloud vision APIs.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

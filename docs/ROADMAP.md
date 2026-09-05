@@ -22,9 +22,20 @@ packs all identifiable, English and Japanese.
 A phase is "done" when live-test failures for its scope trend toward
 zero in `docs/test-cases.md` — not a fixed pass-rate number, since the
 underlying data (PPT's catalog coverage, Gemini's read reliability) isn't
-fully within this project's control. Latency target: 2-5 seconds
-end-to-end (already consistently met for raw-card lookups as of the
-2026-08-30 migration).
+fully within this project's control. **Latency target, updated
+2026-09-05: 1-3 seconds end-to-end** — raised from the original 2-5s
+figure per an explicit, real product requirement (scans are often used
+in ~10s Whatnot sudden-death auctions). The old 2-5s figure was
+consistently met for raw-card lookups as of the 2026-08-30 migration,
+but real measured data (see "Research: hitting a 1-3s latency target
+for sudden-death auctions," `docs/test-cases.md`, 2026-09-05) shows a
+strictly on-demand fresh vision-API call isn't realistically capable of
+reliably hitting 1-3s with any current provider — true Gemini
+success-only latency is ~1.7s best-case, ~2.5s median. Meeting this
+target as a *user-experienced* number likely requires decoupling the
+AI call from the click (background/continuous scanning, cached result)
+rather than further tuning a single fresh call — see that research
+entry for the full option set. Not yet decided which option to pursue.
 
 ---
 
