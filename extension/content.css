@@ -98,12 +98,57 @@
   line-height: 1.4;
 }
 
-#wnpk-cost {
+/* ADDED 2026-09-04 ("flag this scan" feature): #wnpk-cost used to own its
+   own padding/full-width row; it now shares a row with #wnpk-flag-btn, so
+   the padding moved up to the row and #wnpk-cost just grows to fill the
+   remaining space. */
+#wnpk-footer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 10px 6px;
+}
+
+#wnpk-cost {
+  flex: 1;
   color: #a3a4ab;
   font-size: 10px;
   text-align: right;
   min-height: 12px;
+}
+
+/* Deliberately small/muted — this must stay out of the way of the main
+   Identify flow (see CLAUDE.md's "flag this scan" spec: "unobtrusive,
+   doesn't interfere with the main identify flow"). Disabled (no scan yet)
+   is just a dimmer version of the same button, not a different style. */
+#wnpk-flag-btn {
+  flex-shrink: 0;
+  background: #26272e;
+  color: #a3a4ab;
+  border: none;
+  border-radius: 5px;
+  padding: 3px 7px;
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#wnpk-flag-btn:hover:not(:disabled) {
+  background: #33343c;
+  color: #f2f2f2;
+}
+
+#wnpk-flag-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Brief confirmation state after a click registers — see content.js's
+   flagBtn click handler. */
+#wnpk-flag-btn.wnpk-flagged {
+  background: #1a3a22;
+  color: #7ee3a0;
+  opacity: 1;
 }
 
 #wnpk-identify-btn {

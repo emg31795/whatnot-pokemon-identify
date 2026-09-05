@@ -103,6 +103,8 @@
 // -maintained copies, and (b) making the number comparison robust to
 // formatting noise (leading zeros, missing "/total", stray whitespace).
 
+const crypto = require("crypto");
+
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const GEMINI_TIMEOUT_MS = 5000;
 const CARDDB_TIMEOUT_MS = 2500;
@@ -1447,24 +1449,24 @@ function normalizeNameForMatch(name) {
     .trim();
 }
 
-async function lookupCardPPT(read) {
+async function lookupCardPPT(read, requestId) {
   let data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
   if (!data) return { error: "card-db-unavailable" };
   if (data.error === "rate-limited") return { error: "rate-limited", retryAfter: data.retryAfter, isDailyLimit: data.isDailyLimit };
 
   let rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
-  console.log("[lookup] search=", read.cardName, "language=", read.language, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
+  console.log(`[requestId=${requestId}]`, "[lookup] search=", read.cardName, "language=", read.language, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
 
   let matchName = read.cardName;
 
   if (rawList.length === 0) {
     const stripped = stripSubtypeSuffix(read.cardName);
     if (stripped && stripped.toLowerCase() !== String(read.cardName || "").toLowerCase()) {
-      console.log("[lookup] zero raw results for full name, retrying search with base species name=", stripped);
+      console.log(`[requestId=${requestId}]`, "[lookup] zero raw results for full name, retrying search with base species name=", stripped);
       const retryData = await fetchPokemonPriceTracker(stripped, { language: read.language });
       if (retryData) {
         rawList = Array.isArray(retryData.data) ? retryData.data : Array.isArray(retryData) ? retryData : [];
-        console.log("[lookup] retry search=", stripped, "raw candidate count=", rawList.length);
+        console.log(`[requestId=${requestId}]`, "[lookup] retry search=", stripped, "raw candidate count=", rawList.length);
         if (rawList.length > 0) matchName = stripped;
       }
     }
@@ -1503,11 +1505,11 @@ async function lookupCardPPT(read) {
   // `{ notFound: true }`.
   let nameFilterRescuedByNumber = false;
   if (filtered.length === 0) {
-    console.log("[lookup] zero candidates survived the name filter for name=", read.cardName);
+    console.log(`[requestId=${requestId}]`, "[lookup] zero candidates survived the name filter for name=", read.cardName);
 
     if (read.cardNumber) {
       const rescueQuery = `${read.cardName} ${read.cardNumber}`;
-      console.log(`[lookup] zero name-filter survivors but a legible cardNumber was read — trying number-scoped rescue search= "${rescueQuery}"`);
+      console.log(`[requestId=${requestId}]`, `[lookup] zero name-filter survivors but a legible cardNumber was read — trying number-scoped rescue search= "${rescueQuery}"`);
       const rescueResult = await fetchPokemonPriceTracker(rescueQuery, { language: read.language });
       if (rescueResult && rescueResult.error === "rate-limited") return { error: "rate-limited", retryAfter: rescueResult.retryAfter, isDailyLimit: rescueResult.isDailyLimit };
       const rescueList = rescueResult
@@ -1517,9 +1519,9 @@ async function lookupCardPPT(read) {
           ? rescueResult
           : []
         : [];
-      console.log("[lookup] rescue search raw candidate count=", rescueList.length);
+      console.log(`[requestId=${requestId}]`, "[lookup] rescue search raw candidate count=", rescueList.length);
       const rescueFiltered = rescueList.filter((c) => numbersMatch(read.cardNumber, c.cardNumber).match);
-      console.log("[lookup] rescue search candidates with exact number match=", rescueFiltered.length);
+      console.log(`[requestId=${requestId}]`, "[lookup] rescue search candidates with exact number match=", rescueFiltered.length);
       if (rescueFiltered.length > 0) {
         filtered = rescueFiltered;
         nameFilterRescuedByNumber = true;
@@ -1532,9 +1534,9 @@ async function lookupCardPPT(read) {
   }
 
   let candidates = filtered.map(normalizePptCard);
-  console.log("[lookup] scored candidates=", JSON.stringify(candidates.map((c) => ({ name: c.name, number: c.number, hp: c.hp, subtypes: c.subtypes, rarity: c.rarity, hasVariants: !!c._rawVariants }))).slice(0, 3000));
+  console.log(`[requestId=${requestId}]`, "[lookup] scored candidates=", JSON.stringify(candidates.map((c) => ({ name: c.name, number: c.number, hp: c.hp, subtypes: c.subtypes, rarity: c.rarity, hasVariants: !!c._rawVariants }))).slice(0, 3000));
 
-  let { best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, "[lookup]");
+  let { best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, `[lookup][requestId=${requestId}]`);
 
   // FIX (2026-08-27, live test — the SAME Squirtle rescanned again right
   // after the earlier "cardNumber" fix, which turned out to be a no-op —
@@ -1575,6 +1577,7 @@ async function lookupCardPPT(read) {
     !!read.cardNumber && !candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
   if ((!best || numberMissingFromPool) && rawList.length === 30) {
     console.log(
+      `[requestId=${requestId}]`,
       !best
         ? "[lookup] no match above the floor and page 1 came back full — fetching page 2 via offset=30"
         : `[lookup] best=${best.name} cleared the floor on other signals but read number=${read.cardNumber} matches nothing on page 1, which came back full — fetching page 2 via offset=30`
@@ -1582,14 +1585,14 @@ async function lookupCardPPT(read) {
     const page2 = await fetchPokemonPriceTracker(read.cardName, { language: read.language, offset: 30 });
     if (page2 && page2.error === "rate-limited") return { error: "rate-limited", retryAfter: page2.retryAfter, isDailyLimit: page2.isDailyLimit };
     const page2List = page2 ? (Array.isArray(page2.data) ? page2.data : Array.isArray(page2) ? page2 : []) : [];
-    console.log("[lookup] page 2 raw candidate count=", page2List.length);
+    console.log(`[requestId=${requestId}]`, "[lookup] page 2 raw candidate count=", page2List.length);
     if (page2List.length > 0) {
       const page2Filtered = page2List.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
       if (page2Filtered.length > 0) {
         filtered = filtered.concat(page2Filtered);
         candidates = filtered.map(normalizePptCard);
-        console.log("[lookup] re-scoring with page 1 + page 2 merged, total candidates=", candidates.length);
-        ({ best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, "[lookup:page1+2]"));
+        console.log(`[requestId=${requestId}]`, "[lookup] re-scoring with page 1 + page 2 merged, total candidates=", candidates.length);
+        ({ best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, `[lookup:page1+2][requestId=${requestId}]`));
       }
     }
   }
@@ -1621,7 +1624,7 @@ async function lookupCardPPT(read) {
     !!read.cardNumber && !candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
   if (stillMissingAfterPage2) {
     const combinedQuery = `${read.cardName} ${read.cardNumber}`;
-    console.log(`[lookup] number still missing after page1+2 — trying combined name+number search= "${combinedQuery}"`);
+    console.log(`[requestId=${requestId}]`, `[lookup] number still missing after page1+2 — trying combined name+number search= "${combinedQuery}"`);
     const combinedResult = await fetchPokemonPriceTracker(combinedQuery, { language: read.language });
     if (combinedResult && combinedResult.error === "rate-limited") return { error: "rate-limited", retryAfter: combinedResult.retryAfter, isDailyLimit: combinedResult.isDailyLimit };
     const combinedList = combinedResult
@@ -1631,7 +1634,7 @@ async function lookupCardPPT(read) {
         ? combinedResult
         : []
       : [];
-    console.log("[lookup] combined name+number search raw candidate count=", combinedList.length);
+    console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search raw candidate count=", combinedList.length);
     if (combinedList.length > 0) {
       const combinedFiltered = combinedList.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
       if (combinedFiltered.length > 0) {
@@ -1640,10 +1643,10 @@ async function lookupCardPPT(read) {
         if (foundExactNumber) {
           filtered = filtered.concat(combinedFiltered);
           candidates = filtered.map(normalizePptCard);
-          console.log("[lookup] combined name+number search surfaced the missing number — re-scoring, total candidates=", candidates.length);
-          ({ best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, "[lookup:combined]"));
+          console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search surfaced the missing number — re-scoring, total candidates=", candidates.length);
+          ({ best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, `[lookup:combined][requestId=${requestId}]`));
         } else {
-          console.log("[lookup] combined name+number search returned results but still no exact number match — keeping prior best");
+          console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search returned results but still no exact number match — keeping prior best");
         }
       }
     }
@@ -1687,7 +1690,7 @@ async function lookupCardPPT(read) {
         // languages equally.
         ambiguousNote =
           `No printing in our database has the exact card number that was read ("${read.cardNumber}") — this may be a set or promo PokemonPriceTracker doesn't track yet. Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact printing before trusting this price.`;
-        console.log(`[lookup] NO NUMBER MATCH IN POOL: read number=${read.cardNumber}, language=${read.language}, best=${best.name} ${best.number} (matched on other signals only)`);
+        console.log(`[requestId=${requestId}]`, `[lookup] NO NUMBER MATCH IN POOL: read number=${read.cardNumber}, language=${read.language}, best=${best.name} ${best.number} (matched on other signals only)`);
       }
     }
   }
@@ -1704,13 +1707,13 @@ async function lookupCardPPT(read) {
     matchConfidence = matchConfidence === "High" ? "Medium" : matchConfidence;
     ambiguousNote =
       `The card name we read ("${read.cardName}") didn't match anything in our database — this match was found using only the card number ("${read.cardNumber}"), which matched exactly. This may mean the name was misread or mistranslated; verify the card name/printing before trusting this match or price.`;
-    console.log(`[lookup] NAME FILTER RESCUED BY NUMBER: read name="${read.cardName}" matched nothing, but number=${read.cardNumber} matched best=${best.name} ${best.number} exactly`);
+    console.log(`[requestId=${requestId}]`, `[lookup] NAME FILTER RESCUED BY NUMBER: read name="${read.cardName}" matched nothing, but number=${read.cardNumber} matched best=${best.name} ${best.number} exactly`);
   }
 
   if (!ambiguousNote && tieCount >= 2) {
     matchConfidence = "Low";
     ambiguousNote = ambiguousNoteText();
-    console.log(`[lookup] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}`);
+    console.log(`[requestId=${requestId}]`, `[lookup] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}`);
   }
 
   // FIX (2026-08-27, live test — Mewtwo/SVP 052): a "weak" number match
@@ -1723,7 +1726,7 @@ async function lookupCardPPT(read) {
     matchConfidence = matchConfidence === "High" ? "Medium" : matchConfidence;
     ambiguousNote =
       "The card number that matched uses a different numbering format than this printing normally would (e.g. a promo-style number vs. a numbered-set card) — the shared digits may be coincidental rather than confirming this is the same printing. Verify the exact set/number on the physical card before trusting this match or price.";
-    console.log(`[lookup] WEAK NUMBER MATCH: read=${read.cardNumber}, best=${best.name} ${best.number} (numbering schemes differ, digits may coincide by chance)`);
+    console.log(`[requestId=${requestId}]`, `[lookup] WEAK NUMBER MATCH: read=${read.cardNumber}, best=${best.name} ${best.number} (numbering schemes differ, digits may coincide by chance)`);
   }
 
   // FIX (2026-08-27, live test — Brock's Onix): a real scan read
@@ -1752,7 +1755,7 @@ async function lookupCardPPT(read) {
         matchConfidence = "Low";
         ambiguousNote =
           "The matched printing's HP doesn't match what was read off the card, but a different printing's HP does — the card number may have been misread (especially if multiple cards were visible in frame). Verify the exact printing before trusting this match or price.";
-        console.log(`[lookup] NUMBER/HP CONFLICT: best=${best.name} ${best.number} hp=${best.hp}, read hp=${read.hp}, matches elsewhere`);
+        console.log(`[requestId=${requestId}]`, `[lookup] NUMBER/HP CONFLICT: best=${best.name} ${best.number} hp=${best.hp}, read hp=${read.hp}, matches elsewhere`);
       }
     }
   }
@@ -1777,7 +1780,7 @@ async function lookupCardPPT(read) {
   // that used to fire on every Japanese scan regardless of match quality
   // would now just be noise on what should be normal, accurate matches.
 
-  console.log("[lookup] raw variants object for best match:", JSON.stringify(best._rawVariants).slice(0, 1500));
+  console.log(`[requestId=${requestId}]`, "[lookup] raw variants object for best match:", JSON.stringify(best._rawVariants).slice(0, 1500));
 
   // FIX (2026-08-28, feature request — Shadowless dropdown option): see
   // stripShadowlessSuffix/isShadowlessSetName above for the real-log
@@ -1823,6 +1826,7 @@ async function lookupCardPPT(read) {
         const siblingVariants = await buildLiveVariantsForCandidate(shadowlessSibling, siblingIsShadowless ? "Shadowless" : null);
         priceVariants = { ...priceVariants, ...siblingVariants };
         console.log(
+          `[requestId=${requestId}]`,
           `[lookup] merged Shadowless-sibling LIVE prices into dropdown: best=${best.setName}, sibling=${shadowlessSibling.setName}, sibling keys=`,
           Object.keys(siblingVariants)
         );
@@ -1830,11 +1834,11 @@ async function lookupCardPPT(read) {
         // Non-fatal: the sibling is a bonus dropdown option, not the
         // primary match's own price. Log and move on rather than failing
         // the whole scan over a secondary printing's data.
-        console.error("[lookup] Shadowless sibling LIVE price fetch failed (non-fatal):", e && e.message);
+        console.error(`[requestId=${requestId}]`, "[lookup] Shadowless sibling LIVE price fetch failed (non-fatal):", e && e.message);
       }
     }
   } catch (e) {
-    console.error("[lookup] LIVE TCGPLAYER PRICING FAILED:", e && e.message, "tcgPlayerId=", best.tcgPlayerId);
+    console.error(`[requestId=${requestId}]`, "[lookup] LIVE TCGPLAYER PRICING FAILED:", e && e.message, "tcgPlayerId=", best.tcgPlayerId);
     pricingError = (e && e.message) || "Could not fetch live TCGplayer pricing for this card.";
     priceVariants = null;
   }
@@ -1937,6 +1941,16 @@ async function lookupGradedPrice(read) {
 module.exports = async function handler(req, res) {
   withCors(res);
 
+  // FLAG FEATURE (2026-09-04, see CLAUDE.md): every request gets a short
+  // unique id, included in the JSON response (`requestId`) and in every
+  // [identify]/[lookup] log line below, so a specific scan can be traced
+  // end-to-end by this id alone — no more finding the right Vercel log
+  // window by matching timestamps or card names against a screenshot (see
+  // the Wailord/Dragalge mix-up, test #70, that this replaces). The
+  // extension keeps this id alongside the response it renders and sends it
+  // back unchanged to POST /api/flag if the user flags the result.
+  const requestId = crypto.randomUUID();
+
   if (req.method === "OPTIONS") {
     res.status(204).end();
     return;
@@ -1982,7 +1996,7 @@ module.exports = async function handler(req, res) {
   }
 
   if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
+    res.status(405).json({ error: "Method not allowed", requestId });
     return;
   }
 
@@ -1995,13 +2009,13 @@ module.exports = async function handler(req, res) {
 
   const { imageBase64 } = req.body || {};
   if (!imageBase64) {
-    res.status(400).json({ error: "Missing imageBase64" });
+    res.status(400).json({ error: "Missing imageBase64", requestId });
     return;
   }
 
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!geminiKey) {
-    res.status(500).json({ error: "GEMINI_API_KEY not configured" });
+    res.status(500).json({ error: "GEMINI_API_KEY not configured", requestId });
     return;
   }
 
@@ -2042,10 +2056,10 @@ module.exports = async function handler(req, res) {
   let visionProvider = "gemini";
   try {
     read = await geminiPromise;
-    console.log("[identify] Gemini read:", JSON.stringify(read));
+    console.log(`[identify] requestId=${requestId} Gemini read:`, JSON.stringify(read));
   } catch (e) {
     const geminiErrorMsg = (e && e.message) || String(e);
-    console.error("[identify] Gemini call failed:", geminiErrorMsg, "after ms=", Date.now() - tStart);
+    console.error(`[identify] requestId=${requestId} Gemini call failed:`, geminiErrorMsg, "after ms=", Date.now() - tStart);
 
     // FALLBACK (2026-09-03): Gemini's call itself failed (timeout, 5xx,
     // unparseable response, etc.) — if we have a Haiku key, haikuPromise is
@@ -2062,12 +2076,12 @@ module.exports = async function handler(req, res) {
       }
 
       if (haikuResult && haikuResult.found && haikuResult.cardName) {
-        console.log("[identify] Gemini failed — using Haiku fallback read:", JSON.stringify(haikuResult));
+        console.log(`[identify] requestId=${requestId} Gemini failed — using Haiku fallback read:`, JSON.stringify(haikuResult));
         read = haikuResult;
         visionProvider = "haiku-fallback";
       } else {
         console.error(
-          "[identify] Gemini failed and Haiku fallback unavailable too:",
+          `[identify] requestId=${requestId} Gemini failed and Haiku fallback unavailable too:`,
           haikuErrorMsg || "Haiku returned found:false or no cardName"
         );
         res.status(200).json({
@@ -2075,18 +2089,19 @@ module.exports = async function handler(req, res) {
           error: "gemini-failed",
           detail: geminiErrorMsg,
           haikuFallbackError: haikuErrorMsg || "Haiku fallback also did not identify a card",
+          requestId,
         });
         return;
       }
     } else {
       // No ANTHROPIC_API_KEY — degrade to the exact pre-fallback behavior.
-      res.status(200).json({ found: false, error: "gemini-failed", detail: geminiErrorMsg });
+      res.status(200).json({ found: false, error: "gemini-failed", detail: geminiErrorMsg, requestId });
       return;
     }
   }
 
   const tGemini = Date.now();
-  console.log("[timing] gemini ms=", tGemini - tStart);
+  console.log(`[timing] requestId=${requestId} gemini ms=`, tGemini - tStart);
 
   // Cost estimate must key off whichever provider actually produced `read`
   // — a Haiku-fallback read carries `_haikuUsage`, not `_geminiUsage`, and
@@ -2095,7 +2110,7 @@ module.exports = async function handler(req, res) {
   const usage = visionProvider === "haiku-fallback" ? estimateHaikuCostUsd(read._haikuUsage) : estimateGeminiCostUsd(read._geminiUsage);
 
   if (!read.found || !read.cardName) {
-    res.status(200).json({ found: false, reason: read.reason || "Couldn't identify the card. Try again when it's clearly visible.", usage });
+    res.status(200).json({ found: false, reason: read.reason || "Couldn't identify the card. Try again when it's clearly visible.", usage, requestId });
     return;
   }
 
@@ -2105,10 +2120,10 @@ module.exports = async function handler(req, res) {
     try {
       gradedResult = await lookupGradedPrice(read);
     } catch (e) {
-      console.error("[identify] graded lookup threw:", e && e.message);
+      console.error(`[identify] requestId=${requestId} graded lookup threw:`, e && e.message);
     }
 
-    const baseLookup = await lookupCardPPT(read);
+    const baseLookup = await lookupCardPPT(read, requestId);
 
     if (gradedResult && gradedResult.gradedPrice != null) {
       result = {
@@ -2141,9 +2156,9 @@ module.exports = async function handler(req, res) {
     }
   } else {
     try {
-      result = await lookupCardPPT(read);
+      result = await lookupCardPPT(read, requestId);
     } catch (e) {
-      console.error("[identify] lookup threw:", e && e.message);
+      console.error(`[identify] requestId=${requestId} lookup threw:`, e && e.message);
       result = { error: "lookup-failed" };
     }
 
@@ -2176,7 +2191,7 @@ module.exports = async function handler(req, res) {
             ? `PokemonPriceTracker's daily credit allowance is used up for today (resets in ~${Math.ceil((result.retryAfter || 3600) / 60)} min) — wait for the reset, or buy more credits at pokemonpricetracker.com/api-keys to keep scanning today.`
             : `Our card database's per-minute limit was hit from scanning quickly — wait about ${result.retryAfter || 15}s and try again.`
           : "Couldn't reach our card database right now (it's been intermittently flaky) — try again in a moment.";
-      res.status(200).json({ found: false, reason, usage });
+      res.status(200).json({ found: false, reason, usage, requestId });
       return;
     }
 
@@ -2191,6 +2206,7 @@ module.exports = async function handler(req, res) {
         found: false,
         reason: `Read the name "${read.cardName}" but couldn't confidently match it to a specific printing.`,
         usage,
+        requestId,
       });
       return;
     }
@@ -2208,7 +2224,7 @@ module.exports = async function handler(req, res) {
   }
 
   const tEnd = Date.now();
-  console.log("[timing] lookup ms=", tEnd - tGemini, "total ms=", tEnd - tStart);
+  console.log(`[timing] requestId=${requestId} lookup ms=`, tEnd - tGemini, "total ms=", tEnd - tStart);
 
   result.usage = usage;
   result.timingMs = { gemini: tGemini - tStart, lookup: tEnd - tGemini, total: tEnd - tStart };
@@ -2216,5 +2232,9 @@ module.exports = async function handler(req, res) {
   // extension can reliably tell which provider actually identified the
   // card — see the "CLAUDE HAIKU 4.5" comment block above.
   result.visionProvider = visionProvider;
+  // FLAG FEATURE (2026-09-04): lets the extension send this exact id back
+  // to POST /api/flag if the user flags this result — see the comment on
+  // `requestId`'s declaration above.
+  result.requestId = requestId;
   res.status(200).json(result);
 };

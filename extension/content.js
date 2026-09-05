@@ -20,6 +20,16 @@
     }
   }
 
+  // ADDED 2026-09-04 ("flag this scan" feature, see CLAUDE.md): the flag
+  // endpoint lives alongside /api/identify on the same backend, so derive
+  // its URL from whatever identify URL is actually configured (including a
+  // custom `backendUrl` override) rather than hardcoding a second constant
+  // that could silently drift out of sync with it.
+  async function getFlagUrl() {
+    const identifyUrl = await getBackendUrl();
+    return identifyUrl.replace(/\/api\/identify\/?$/i, "/api/flag");
+  }
+
   let scanZone = null; // {x, y, w, h} as fractions of the video element, or null = full frame
   let selectingZone = false;
 
@@ -38,7 +48,10 @@
     <div id="wnpk-body">
       <div id="wnpk-empty">Point the camera at a card, then hit Identify.</div>
     </div>
-    <div id="wnpk-cost" title="Estimated Gemini API cost. Free APIs (pokemontcg.io) aren't metered so they're always $0 — PokemonPriceTracker is a flat $9.99/mo subscription, not billed per scan, so it isn't included here."></div>
+    <div id="wnpk-footer-row">
+      <div id="wnpk-cost" title="Estimated Gemini API cost. Free APIs (pokemontcg.io) aren't metered so they're always $0 — PokemonPriceTracker is a flat $9.99/mo subscription, not billed per scan, so it isn't included here."></div>
+      <button id="wnpk-flag-btn" title="Flag this scan for later debugging (logged server-side, not shown anywhere)" disabled>🚩 Flag</button>
+    </div>
     <button id="wnpk-identify-btn">Identify Card</button>
   `;
   document.documentElement.appendChild(root);
@@ -53,6 +66,53 @@
     setStatus("Scan area cleared — using full frame.");
   });
   $("#wnpk-identify-btn").addEventListener("click", identifyCard);
+
+  // ADDED 2026-09-04 ("flag this scan" feature, see CLAUDE.md): the full
+  // last /api/identify response is already kept in memory to render the
+  // panel — `lastResultData` just keeps a reference to it (and its
+  // `requestId`) so a single click can send the whole thing to POST
+  // /api/flag without a rescan or the user needing to describe anything.
+  // Fire-and-forget and independent of the identify path on purpose: the
+  // fetch below is never awaited before giving visual feedback, and a
+  // failure here can't affect (or even delay) a future identify call.
+  let lastResultData = null;
+  const flagBtn = $("#wnpk-flag-btn");
+
+  function updateFlagButton() {
+    flagBtn.disabled = !(lastResultData && lastResultData.requestId);
+    flagBtn.textContent = "🚩 Flag";
+    flagBtn.classList.remove("wnpk-flagged");
+  }
+
+  flagBtn.addEventListener("click", () => {
+    if (!lastResultData || !lastResultData.requestId) return; // no scan yet — button should be disabled anyway
+    const payload = { requestId: lastResultData.requestId, data: lastResultData };
+
+    getFlagUrl()
+      .then((url) =>
+        fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+      )
+      .catch((e) => console.warn("[wnpk] flag request failed (non-fatal — nothing else depends on it):", e));
+
+    // Immediate feedback, not gated on the fetch above actually resolving —
+    // this must never make flagging feel like it's blocking on the network.
+    flagBtn.textContent = "✓ Flagged";
+    flagBtn.classList.add("wnpk-flagged");
+    flagBtn.disabled = true;
+    setTimeout(() => {
+      // Re-enable rather than leaving it permanently spent — clicking the
+      // same result's flag button again is harmless (the backend just logs
+      // twice, see api/flag.js), and the user may want to flag it again
+      // after noticing something else about the same scan.
+      flagBtn.disabled = !(lastResultData && lastResultData.requestId);
+      flagBtn.textContent = "🚩 Flag";
+      flagBtn.classList.remove("wnpk-flagged");
+    }, 1500);
+  });
 
   // Added 2026-08-23 (user asked: "Can we make our tool movable? I don't
   // like where it sits on the page"). The panel was hardcoded to
@@ -419,6 +479,12 @@
       return;
     }
     recordScanCost(response.data.usage);
+    // Keep this response (and its requestId) around for the flag button
+    // regardless of found/not-found — a "couldn't confidently match" result
+    // is just as worth flagging as a wrong match. See the flag-button setup
+    // above for how this gets used.
+    lastResultData = response.data;
+    updateFlagButton();
     renderResult(response.data);
   }
 
