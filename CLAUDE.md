@@ -455,6 +455,49 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **"Flag this scan" feature — BUILT AND LOCALLY COMMITTED, NOT YET
+  DEPLOYED OR PUSHED (2026-09-04)** (commit `264ac3c`). Built per explicit
+  user request to stop debugging bad scans from depending on screenshots
+  and timestamp/card-name guessing (the exact friction that led to
+  investigating the wrong scan in the Wailord/Dragalge mix-up, test #70).
+  Every `/api/identify` request now gets a `crypto.randomUUID()`
+  `requestId`, included in every JSON response — success and every
+  error/`found:false` path (missing-imageBase64, no-API-key,
+  gemini-failed with/without Haiku fallback, rate-limited, notFound, the
+  final success result) — and threaded through every `[identify]`/
+  `[timing]`/`[lookup]` log line for that request (`lookupCardPPT` in
+  `api/identify.js` now takes `requestId` as a second parameter; its
+  `pickBestCandidate` calls pass it via the existing `logPrefix` string).
+  A specific scan can now be traced end-to-end in Vercel runtime logs by
+  this one id alone — no matching timestamps or card names against a
+  screenshot needed. New, tiny `api/flag.js` (`POST /api/flag`) accepts
+  `{requestId, data}` and logs it verbatim as one greppable
+  `[user-flagged] requestId=<id> data=<json>` line — no database, no
+  persistent storage, per explicit scope; a flagged scan is found the same
+  way every other investigation in this project already works, by
+  grepping Vercel logs and joining on the shared requestId. The extension
+  (`extension/content.js`) keeps the last `/api/identify` response in
+  memory (already had to, to render the panel) and adds a small "🚩 Flag"
+  button next to the cost display (`#wnpk-footer-row` in
+  `extension/content.css`) — disabled until a scan has a `requestId`,
+  fires the flag request fire-and-forget (never awaited, can't affect or
+  delay a future identify call), and shows a brief "✓ Flagged"
+  confirmation for 1.5s before re-enabling. Clicking it twice on the same
+  result just logs twice — no crash, no dedup needed, per explicit scope.
+  **Verified locally, not yet against the live deployment**: a scripted
+  local run of the real `handler()` (mocked Gemini/PPT/TCGplayer fetches)
+  confirmed the identical requestId appears in `[identify]`, `[timing]`,
+  and every `[lookup]` line for one request and in the final JSON
+  response; `api/flag.js` was run directly and confirmed to emit the
+  `[user-flagged]` line, accept a double-flag without erroring, and
+  reject a missing `requestId` with a 400. The panel markup/CSS was also
+  visually checked (enabled-next-to-a-result, disabled-before-any-scan,
+  and "✓ Flagged" states) in an isolated local preview, not inside a real
+  Whatnot page. **Not yet deployed to Vercel or pushed to GitHub — needs
+  the user's go-ahead for both**, per standing convention. Once deployed,
+  still needs one real live scan + flag click to confirm the end-to-end
+  trace against real Vercel runtime logs (not just the local mock), and
+  this entry should be updated with that confirmation.
 - **Claude Haiku 4.5 active fallback — DEPLOYED AND PUSHED 2026-09-03**
   (commit `633b008`, `dpl_AwfeEUnSthwazAFHvvpLPsn9Ayjy`, aliased to
   `whatnot-pokemon-identify.vercel.app`; pushed to GitHub `d779584..633b008`).
