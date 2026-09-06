@@ -242,8 +242,9 @@ auctions, the user chose to proceed on completion-rate + ground-truth-
 accuracy evidence as sufficient, explicitly accepting the residual
 uncertainty rather than waiting for a live-stream healthy-window test.
 
-**Built** (not yet deployed — awaiting explicit go-ahead per "When to
-ask before acting" below): `GEMINI_MODEL` now defaults to
+**Built, DEPLOYED, AND LIVE-CONFIRMED 2026-09-06**
+(`dpl_85riwwo36JvLUuBkTcHKfeiAv25T`, aliased to
+`whatnot-pokemon-identify.vercel.app`): `GEMINI_MODEL` now defaults to
 `gemini-3.5-flash-lite`; the Haiku active-fallback logic is untouched;
 the Flash-Lite shadow-test harness is reversed in place into a
 regression watch on the old primary (`LEGACY_GEMINI_SHADOW_MODEL` env
@@ -266,7 +267,63 @@ env var and swapping the two pricing-constant pairs back — both spelled
 out in code comments at each definition) if the legacy-model shadow
 test surfaces a real problem with Flash-Lite at volume or under real
 stream conditions. See test #84 in `docs/test-cases.md` for the full
-promotion write-up, and "Recent / in-flight work" below once deployed.
+promotion write-up.
+
+**Deploy checklist followed in full, given this file's documented
+history of transcription corruption on exactly this file**: the 2428-
+line source was read in 3 chunks (over the Read tool's single-call
+token cap), reassembled in a scratch file, and diff-verified byte-for-
+byte against the real source before deploying. This caught the SAME
+recurring diacritic-regex transcription corruption documented
+repeatedly elsewhere in this file on the very first attempt (literal
+Unicode combining characters instead of the source's escaped
+`̀-ͯ` form, in the `normalizeNameForMatch` line) plus two
+smaller indentation/truncation slips in an unrelated comment block —
+all fixed non-generatively by splicing the exact correct lines from
+source via a Python script (never by retyping), then re-verified a
+clean 0-diff and matching sha1 (`f644ab63b64f94955d9b23bdabd881bb6b5066f8`)
+before deploying. **First deploy attempt omitted `api/identify.js`
+from the files array** (the same copy-paste mistake documented
+elsewhere in this file's history) — caught immediately, state went
+straight to `ERROR` (`unused_function`), never reached `READY`, never
+touched the production alias (confirmed via a live curl immediately
+after). Second attempt included all 4 files (`api/identify.js`,
+`api/flag.js`, `vercel.json`, `package.json`) and deployed clean.
+**Confirmed live, not just happy-path**: build log shows "Downloading
+4 deployment files"; `GET /api/identify` returns
+`normalizeDiacriticTest: "pokemon collector"` (diacritic regex deployed
+intact) and a fresh `sourceHash`; `POST {}` returns the real `400
+{"error":"Missing imageBase64","requestId":"..."}`; a real end-to-end
+scan (one of the 18 ground-truth photos from test #83, POSTed the same
+way) returned a correct, High-confidence match
+(`cardName: "Iono's Wattrel - 231/217"`, matching ground truth) with
+`visionProvider: "gemini"`, `timingMs.gemini: 1929`ms (inside the 1-3s
+target) and `usage.estCostUsd: 0.000787` — hand-verified against the
+new Flash-Lite pricing constants
+((1515/1e6)×0.3 + (133/1e6)×2.5 = 0.000787, confirming the pricing
+swap is live and correct); `get_runtime_logs` confirms that exact
+`requestId` was served by `dep=dpl_85riwwo36JvLUuBkTcHKfeiAv25T`; and
+`get_runtime_errors` over the surrounding 10-minute window shows zero
+errors.
+
+**Flagged, not yet resolved**: the real-scan logs show a
+`[haiku-shadow-test]` line fired normally (untouched, as intended) but
+**no `[legacy-model-shadow-test]` line** — confirming
+`LEGACY_GEMINI_SHADOW_MODEL` is not yet set in Vercel's Production
+environment (it's a brand-new variable name; only the now-dead
+`FLASH_LITE_SHADOW_MODEL` was ever added there). Per this project's own
+established precedent (the Haiku shadow test and the original
+Flash-Lite shadow test both needed a **redeploy**, not just adding the
+env var via the dashboard, since Vercel snapshots env vars at build
+time), the regression-watch shadow test will silently collect zero
+data until (1) the user adds `LEGACY_GEMINI_SHADOW_MODEL=gemini-3.6-flash`
+to Vercel's Production environment via the dashboard, AND (2) this
+deployment is redeployed (even with no code change) to pick it up —
+explicitly not done automatically here, matching the "ask before
+deploying" convention. **Until that redeploy happens, there is no
+regression-watch safety net on the new primary model** — worth
+prioritizing soon given the whole point of this rollback plan depends
+on it.
 
 ## When to ask before acting
 
