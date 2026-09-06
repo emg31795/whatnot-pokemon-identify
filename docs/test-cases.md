@@ -3190,6 +3190,88 @@ and specifically capture flash-lite-shadow-test data from that window
 before it rolls off the 1h retention window. No code changed, nothing
 promoted, per explicit instruction.
 
+### Test #82 (2026-09-06) — head-to-head accuracy cut: the metric that
+actually decides promotion, not just the success-rate gap
+
+Tests #80/#81 tracked *completion* rate (did the call succeed at all).
+That's not the same as *accuracy* — a record where one side times out
+has nothing to compare against. This pass isolates only the records
+where **both** the current model and Flash-Lite returned a real read
+on the same frame (no `error` on either side) and looks at whether
+they actually agree, specifically on `cardName`/`cardNumber` — the two
+fields the matching/pricing pipeline depends on — since `setName`/
+`subtype` mismatches are frequently just Gemini leaving a field null
+that Flash-Lite fills in, not a real disagreement, and aren't
+comparable without independent ground truth.
+
+**Fresh pull**, `get_runtime_logs`, `query=flash-lite-shadow-test`,
+window 2026-09-06T15:01-16:01 UTC. Raw pull returned 100 lines but
+only **50 unique records** — Vercel is delivering each log line
+duplicated exactly once (a real log-delivery quirk worth knowing for
+any future raw-count read on this project; every prior count in
+tests #80/#81 was already de-duplicated by the underlying record
+count, so those aren't affected, but a naive `grep -c` on raw lines
+going forward should divide by 2 or dedupe first).
+
+**1. Both-succeeded (head-to-head comparable) records: 19 of 50.**
+The other 31 are cases where one or both sides timed out/errored —
+not usable for an accuracy comparison, only for the completion-rate
+tracking tests #80/#81 already cover.
+
+**2. Full-field `match` (the app's own computed field, not a
+re-derivation): 3/19 (16%) `match:true`, 16/19 (84%) `match:false`.**
+This number alone is misleading, though — most of those 16 "mismatches"
+are driven by `setName`/`subtype` divergence exactly as described
+above (`setName` agreed only 10/19, `subtype` only 8/19 — both fields
+Gemini frequently leaves null), not by the two fields that actually
+matter for matching.
+
+**3. `cardName`/`cardNumber`-specific breakdown** (the fields that
+matter): `cardName` agreed 18/19 (95%); `cardNumber` agreed 16/19
+(84%). Narrowing to records where **both** core fields agree (a
+cleaner "would this have produced the same match" proxy): **15/19
+(79%) core-agree, 4/19 core-disagree.**
+
+**4. The 4 core disagreements, quoted directly from the raw log
+records** (3 real two-sided conflicts + 1 one-side-missing case):
+
+- `requestId=26215661-6d11-40d3-8d6b-d4eb23236911` — **cardName
+  conflict**: current = `"Dusknoir"`, Flash-Lite = `"Dusknorr"` (same
+  `cardNumber` "TG06/TG30" both sides — matches the user's
+  independently-found example exactly).
+- `requestId=c55d5aa3-9628-4bb8-9e6b-3b6a56616fe3` — **cardNumber
+  conflict**, Mega Charizard X ex: current = `"023"`, Flash-Lite =
+  `"MEP 04"` (same `cardName` both sides — matches the user's second
+  independently-found example exactly).
+- `requestId=a33ddc00-3646-459c-b1be-8838fb8b666f` — **cardNumber
+  conflict**, Mega Dragonite ex: current = `"271/217"`, Flash-Lite =
+  `"231/217"` (a new example, not previously flagged by the user —
+  same `cardName` both sides, single-digit numerator disagreement).
+- `requestId=fc3c2297-7333-4b02-8c84-cdf08e90dab8` — **cardNumber
+  one-side-missing**, Riolu: current read no number at all (`null`,
+  with `reason: "The set card number at the bottom is small and
+  blurry."`), Flash-Lite read `"GG26/GG70"`. Not a two-sided conflict
+  (current didn't commit to a wrong answer, it just didn't read one) —
+  flagged for completeness since `fieldAgreement.cardNumber` is
+  `false`, but a structurally different case from the 3 above.
+
+**Status**: this head-to-head accuracy metric — not the raw
+success-rate gap from tests #80/#81 — is now the one that actually
+decides whether Flash-Lite is a real promotion candidate, and needs
+tracking as its own number going forward. Current reading: 79% core
+(cardName+cardNumber) agreement on 19 comparable samples is a real
+but small sample, with 3 genuine conflicting misreads already found
+(same order of magnitude as this project's own prior same-frame
+Gemini/Haiku comparison, which found 22% `cardNumber` agreement and
+was explicitly rejected as a basis for racing the two models — see
+the 2026-09-05 latency research). Not enough samples yet to draw a
+real conclusion, and this subset is still entirely from the same
+degraded-Gemini window flagged in test #81 as a confound. **No
+promotion action taken** — data/logging pass only, per explicit
+instruction. Next step: keep accumulating both-succeeded samples
+(ideally from a healthy-Gemini window too, per test #81) toward a
+real sample size before this ratio means anything decisive.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
