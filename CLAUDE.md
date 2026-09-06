@@ -154,6 +154,65 @@ slowdown, same class as Gemini's own `503` cluster) — but "1 data
 point, inconclusive" understates it now. Worth a longer observation
 window before deciding whether to keep, tune, or revert the fallback.
 
+**Update, 2026-09-05: a severe live Gemini failure cluster (test #79),
+a new real product requirement (1-3s identification, not 2-5s), and a
+Gemini 3.5 Flash-Lite shadow test now deployed to answer it.** During a
+routine audit, real logs caught Gemini failing 50-84% across a
+sustained ~60-minute window — worse than test #78's already-flagged
+24% uptick, confirmed ongoing (not tapering) via the freshest slice
+checked (83% failure), and ruled out as self-inflicted (spans two
+unrelated deployments, lower traffic than test #78's milder window).
+**Recommendation given and followed: do NOT revert `thinkingLevel` to
+`"low"`** — it's already at `"minimal"` (the fastest setting) and still
+failing this badly, so raising it back would plausibly make things
+*worse*, not better. No code changed for this cluster; it read as a
+transient provider-side event (same signature as the 2026-09-03
+cluster, which self-resolved) and the user chose to wait rather than
+act. See test #79 in `docs/test-cases.md` for the full per-window
+breakdown.
+
+Separately, the user set a real, explicit product requirement: scans
+need to resolve in **1-3 seconds**, not the original 2-5s target,
+because they're used in ~10s Whatnot sudden-death auctions. A full
+research pass (`docs/test-cases.md`, "Research: hitting a 1-3s latency
+target for sudden-death auctions") found the honest ceiling: even at
+the fastest shipped Gemini config, true success-only latency is ~1.7s
+best-case, ~2.5s median — 1-3s is **not reliably achievable** on a
+strictly fresh, on-demand vision-API call with any current provider.
+Racing Gemini/Haiku on raw response time was evaluated and rejected —
+real same-frame data showed only 22% `cardNumber` agreement between the
+two, so racing would frequently substitute a less-reliable read for a
+modest, inconsistent speed gain. Background/continuous scanning is the
+one path that could actually meet the requirement (by hiding latency
+rather than reducing it), but collides with PPT's 60-calls/minute rate
+limit unless scoped to vision-only — not built, needs an explicit
+go-ahead. `docs/ROADMAP.md`'s Definition of Done latency target was
+updated from 2-5s to 1-3s to reflect this as the real, current
+requirement.
+
+That research also surfaced a real, cheap thing worth trying: **Gemini
+3.5 Flash-Lite**, a lighter/cheaper Gemini model marketed as faster,
+requiring no new provider integration since `GEMINI_MODEL` is already
+an env-var-driven swap in this codebase. Built as a temporary, read-only
+shadow test — same non-disruptive pattern as the Haiku shadow test,
+gated entirely on a new `FLASH_LITE_SHADOW_MODEL` env var — logging a
+`[flash-lite-shadow-test]` line per scan with both models' reads and
+independently-correct latency for each. **Deployed 2026-09-05**
+(`dpl_3gWk2KV9dc9mn7n3vzrjJP4zjpVW`, commit `d4285c7`), then
+**redeployed 2026-09-05/06** (`dpl_AdJmrGEjVW1MJtcw9hqmY4TNEjcL`, no
+code change) after the user added `FLASH_LITE_SHADOW_MODEL=gemini-3.5-flash-lite`
+to Vercel's Production environment via the dashboard — a redeploy was
+confirmed necessary (env vars are snapshotted at build time, matching
+this project's own Haiku-shadow-test precedent) and confirmed
+sufficient via a real test scan against the live endpoint, not
+assumed: real runtime logs show a genuine Flash-Lite API call firing
+with real token usage, and on that one frame Flash-Lite completed in
+1596ms vs. the current model's 5005ms timeout. **Data collection is now
+confirmed live** — one data point only, not a conclusion; recommended
+volume before drawing one is 50-100 real scans with both models
+succeeding. See the "Gemini 3.5 Flash-Lite shadow test" entry below and
+the latency-research entry in `docs/test-cases.md` for full detail.
+
 ## When to ask before acting
 
 - **Free rein, no need to ask**: local file edits, local git commits,
@@ -454,6 +513,116 @@ checklist before reporting something as finished:
   they do not auto-reload (caused real confusion in test #43).
 
 ## Recent / in-flight work
+
+- **Test #79 — severe live Gemini failure cluster (2026-09-05)**: caught
+  during a routine audit via real Vercel logs, not the user's own
+  report — six sequential ~10-minute windows spanning
+  2026-09-04T23:59Z-2026-09-05T01:01Z showed a **50-84% Gemini failure
+  rate**, sustained roughly an hour, with the freshest slice checked
+  (last ~5 minutes) at 83% — not tapering. Every failure was still the
+  identical `"This operation was aborted"` timeout (plus 4 confirmed
+  `503 "high demand"` errors), no new failure shape — worse than test
+  #78's already-flagged 24% uptick but the same signature class as the
+  severe 2026-09-03 cluster, which self-resolved with no code change.
+  Ruled out as self-inflicted: spans two unrelated production
+  deployments (differing only by the unrelated flag-endpoint addition),
+  and traffic volume was lower than test #78's milder window.
+  **Recommendation given and followed: do NOT revert `thinkingLevel` to
+  `"low"`** — already at `"minimal"` (the fastest setting) and still
+  failing this badly, so reverting would plausibly worsen it, not fix
+  it; the 2026-09-01 evidence that `"low"` caused 31 timeouts in 25h
+  with no confirmed accuracy benefit still stands. **No code changed** —
+  the user chose to wait rather than act, consistent with the
+  2026-09-03 cluster's own resolution. Full per-window breakdown in
+  test #79, `docs/test-cases.md`.
+
+- **Research: 1-3s latency target for sudden-death auctions
+  (2026-09-05)** — a real, explicit product requirement change: scans
+  are used in ~10s Whatnot sudden-death auctions, so the original 2-5s
+  target isn't fast enough. Full research pass in `docs/test-cases.md`
+  covered five angles the user asked for: (1) real comparative
+  Gemini-vs-Haiku latency on successful calls only (Gemini true success
+  median ~2489ms, Haiku ~3470ms — corrected from an earlier audit's
+  inflated ~3953ms figure after finding the Haiku shadow test's own
+  `geminiMs` field is mislabeled when Haiku is the slower promise); (2)
+  racing Gemini/Haiku instead of sequential fallback — **rejected**:
+  real same-frame data showed only 22% `cardNumber` agreement between
+  providers, and 0 of 5 cases where both committed to a specific number
+  actually agreed, so racing on raw speed would frequently substitute a
+  less-reliable read; (3) continuous/background scanning — the one
+  strategy that could plausibly meet the target (hides latency rather
+  than reducing it), but collides with PPT's 60-calls/minute rate limit
+  unless scoped to vision-only (defer PPT/pricing to the on-demand
+  click) — not built, needs an explicit go-ahead and a $ budget
+  decision; (4) a fresh vision-provider check (prior comparison was ~7
+  months stale) — surfaced Gemini 3.5 Flash-Lite (cheaper, same-codebase
+  env-var swap) and GPT-5.4/5.5 Mini (a newly-faster candidate per fresh
+  web research, but a full new integration) as real, untested
+  candidates; (5) honest ceiling — **1-3s reliably, on every fresh
+  on-demand call, is not realistically achievable with any current
+  hosted vision-LLM API** based on real measured data in this pipeline
+  (~1.7s best-case, ~2.5s median even at the fastest shipped config).
+  `docs/ROADMAP.md`'s Definition of Done latency target updated from
+  2-5s to 1-3s to reflect the real requirement; which option (if any)
+  to pursue further is still the user's call.
+
+- **Gemini 3.5 Flash-Lite shadow test — DEPLOYED, REDEPLOYED, AND
+  CONFIRMED COLLECTING REAL DATA 2026-09-05/06** (commit `d4285c7`;
+  first deploy `dpl_3gWk2KV9dc9mn7n3vzrjJP4zjpVW`, redeploy after adding
+  the env var `dpl_AdJmrGEjVW1MJtcw9hqmY4TNEjcL`, both aliased to
+  `whatnot-pokemon-identify.vercel.app`; pushed to GitHub through
+  `e8756e5`). Directly answers option 1 from the latency research
+  above — does a lighter Gemini model meaningfully narrow the gap to
+  1-3s, using real data instead of noisy public benchmarks. Same
+  non-disruptive, read-only shadow-call pattern as the existing Haiku
+  shadow test: entirely gated on a new `FLASH_LITE_SHADOW_MODEL` env
+  var (unset = complete no-op), fired in parallel via `waitUntil`,
+  never awaited before responding, never affects what the user sees or
+  what matching/pricing runs on. `identifyWithGemini()` now takes an
+  optional `model` param (defaults to `GEMINI_MODEL`, so every existing
+  call site is unaffected) so the shadow call can reuse it directly
+  with `"gemini-3.5-flash-lite"` instead of duplicating the function.
+  Logs one `[flash-lite-shadow-test]` line per scan with both models'
+  reads, per-field agreement, and independently-correct latency for
+  each — a real bug in the existing Haiku shadow test's timing (its
+  `geminiMs` field is mislabeled whenever Haiku is the slower promise,
+  since it awaits sequentially and stamps elapsed time only after each
+  wait completes) was found and avoided here via a `timePromise()`
+  helper that subscribes to each promise independently at creation
+  time; the Haiku shadow test itself was left untouched (out of scope).
+  Verified locally via a mocked-fetch smoke test before deploying:
+  response is byte-identical with the flag on vs. off (except the
+  always-random `requestId`), and a simulated Flash-Lite failure never
+  reaches the real response. Deploy checklist followed in full (4
+  files — `api/identify.js`, `api/flag.js`, `vercel.json`,
+  `package.json` — clean build, live `GET`/`POST` checks, runtime logs
+  confirming both deployments served real requests).
+
+  **Env var required a redeploy, confirmed rather than assumed**: after
+  the user added `FLASH_LITE_SHADOW_MODEL=gemini-3.5-flash-lite` to
+  Vercel's Production environment via the dashboard, confirmed a
+  redeploy was actually necessary (Vercel env vars are snapshotted into
+  a deployment at build time, not read live by an already-running
+  Lambda — matching this project's own precedent: the Haiku shadow test
+  was "originally deployed as `dpl_ERt8X...`" and only "confirmed
+  collecting real data on `dpl_C8BLG...`", a different deployment, after
+  `ANTHROPIC_API_KEY` was added). Redeployed identical code (hash-
+  verified against the prior deploy, no changes) purely to pick up the
+  env var. **Confirmed collecting real data via an actual test scan
+  against the live endpoint, not assumed** — per explicit instruction
+  not to repeat the exact gap that let `ANTHROPIC_API_KEY` silently
+  collect zero data for a while before anyone checked. Real runtime log
+  line for that scan: `flashLiteModel=gemini-3.5-flash-lite` resolved
+  correctly, a genuine separate Flash-Lite API call fired with real
+  token usage and cost, and — one data point only — Flash-Lite
+  completed correctly in 1596ms on a frame where the current model
+  timed out at 5005ms. Data collection is now genuinely live;
+  recommended volume before drawing a real conclusion is 50-100 real
+  scans with both models succeeding (roughly what it took the Haiku
+  shadow test to reveal its own stark, decision-relevant pattern). Fully
+  removable — see the "TEMPORARY SHADOW TEST — GEMINI 3.5 FLASH-LITE VS
+  CURRENT MODEL" comment block in `api/identify.js` for the exact
+  removal list.
 
 - **"Flag this scan" feature — DEPLOYED AND PUSHED 2026-09-04** (commits
   `264ac3c`/`2a928fa`, `dpl_AbrKkW5kAtzPpk3QRwMELtH2fCTq`, aliased to
