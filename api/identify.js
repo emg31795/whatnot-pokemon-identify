@@ -105,45 +105,63 @@
 
 const crypto = require("crypto");
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+// PROMOTED 2026-09-06 (see CLAUDE.md "Current priority" and test #83/#84
+// in docs/test-cases.md for the full decision trace): GEMINI_MODEL now
+// defaults to gemini-3.5-flash-lite, promoted from a shadow-only
+// experiment (tests #80-83) to the real, user-facing primary model —
+// dramatically better completion rate (far fewer timeouts/503s) and
+// statistically equal ground-truth accuracy on completed calls versus
+// the prior primary, gemini-3.6-flash. ROLLBACK: if the legacy-model
+// shadow test below (LEGACY_GEMINI_SHADOW_MODEL) surfaces a real problem
+// with gemini-3.5-flash-lite at volume or under real stream conditions,
+// revert is a one-line change of this default back to "gemini-3.6-flash"
+// — see the LEGACY_GEMINI_SHADOW_MODEL comment below for un-flipping the
+// shadow test back to its original direction, and the GEMINI_INPUT/
+// OUTPUT_USD_PER_1M comment below for the matching pricing-constant swap.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const GEMINI_TIMEOUT_MS = 5000;
 const CARDDB_TIMEOUT_MS = 2500;
 const CARDDB_RETRY_TIMEOUT_MS = 1200;
 
-// FIX (2026-09-03): these were stale — confirmed live against Google's own
-// pricing page (ai.google.dev/gemini-api/docs/pricing) that gemini-3.6-flash
-// (the actual model GEMINI_MODEL resolves to; confirmed via repo-wide grep
-// that no GEMINI_MODEL override exists anywhere, local or documented) is
-// priced separately from 3.7/3.8 Flash at $0.75 input / $3.75 output per
-// MTok (standard tier, in effect through 2026-12-31), not $0.30/$2.50. The
-// old values undercounted every real Gemini call's displayed cost
-// (`estimateGeminiCostUsd`, the "This scan: $X" / session total shown in
-// the extension panel) by a bit over 2x versus actual spend — a display bug
-// only, not a billing bug; Google bills the real rate regardless of what
-// this constant says. Google's page also lists a further scheduled increase
-// to $1.50 input / $7.50 output effective 2027-01-01 — revisit this again
-// before then.
-const GEMINI_INPUT_USD_PER_1M = 0.75;
-const GEMINI_OUTPUT_USD_PER_1M = 3.75;
+// FIX (2026-09-03): these were stale for the model active at the time
+// (gemini-3.6-flash, $0.75 input / $3.75 output per MTok — confirmed live
+// against Google's own pricing page) — see CLAUDE.md/test-cases.md for
+// that original stale-pricing-constant bug writeup.
+// UPDATED 2026-09-06 for the gemini-3.5-flash-lite promotion above: these
+// now hold Flash-Lite's own pricing ($0.30 input / $2.50 output per MTok,
+// confirmed live 2026-09-05) so `estimateGeminiCostUsd()` (the "This
+// scan: $X" / session-total cost shown in the extension panel) keeps
+// tracking whatever model GEMINI_MODEL actually resolves to, instead of
+// repeating the exact stale-constant bug this project already found and
+// fixed once. If GEMINI_MODEL is ever reverted to gemini-3.6-flash,
+// these must be swapped back to 0.75/3.75 too — see
+// LEGACY_GEMINI_INPUT/OUTPUT_USD_PER_1M just below, which hold those old
+// values for exactly this rollback case.
+const GEMINI_INPUT_USD_PER_1M = 0.3;
+const GEMINI_OUTPUT_USD_PER_1M = 2.5;
 
-// TEMPORARY (added 2026-09-05, see the "FLASH-LITE VS CURRENT MODEL —
-// SHADOW-TEST LOGGING" block below for the full story and removal
-// instructions): gates a read-only shadow call to Gemini 3.5 Flash-Lite
-// on every scan, entirely opt-in via this env var (unset = complete
-// no-op, identical to today's behavior). When set, its value IS the
-// model id to shadow-test (e.g. "gemini-3.5-flash-lite") — same
-// env-var-driven model selection shape as GEMINI_MODEL above, just for
-// a second, non-authoritative slot. Never changes GEMINI_MODEL itself,
-// never affects the real response.
-const FLASH_LITE_SHADOW_MODEL = process.env.FLASH_LITE_SHADOW_MODEL || null;
+// REVERSED 2026-09-06 (was FLASH_LITE_SHADOW_MODEL — forward-looking
+// research into whether Flash-Lite was worth promoting, see tests #80-83
+// in docs/test-cases.md). Now that Flash-Lite IS the primary model
+// (GEMINI_MODEL above), this shadow test is flipped into a regression
+// watch on the model just moved away from: gates a read-only shadow call
+// to the OLD primary, gemini-3.6-flash, on every scan, entirely opt-in
+// via this env var (unset = complete no-op). When set, its value IS the
+// legacy model id to shadow-test (e.g. "gemini-3.6-flash"). Never
+// changes GEMINI_MODEL itself, never affects the real response — purely
+// visibility into whether the new primary has some weakness that only
+// shows up at volume or under real stream conditions the pre-promotion
+// testing didn't catch. TO UN-FLIP: see the GEMINI_MODEL comment above.
+const LEGACY_GEMINI_SHADOW_MODEL = process.env.LEGACY_GEMINI_SHADOW_MODEL || null;
 
-// Pricing confirmed live 2026-09-05 (openrouter.ai/google/gemini-3.5-flash-lite,
-// blog.google's "Introducing Gemini 3.6 Flash, 3.5 Flash-Lite..." post) —
-// same discipline as the GEMINI_INPUT/OUTPUT constants above: reconfirm
-// against Google's own pricing page if this constant is still here months
-// from now, since these have gone stale before.
-const FLASH_LITE_INPUT_USD_PER_1M = 0.3;
-const FLASH_LITE_OUTPUT_USD_PER_1M = 2.5;
+// Old gemini-3.6-flash pricing (confirmed live 2026-09-03 — see the FIX
+// comment on GEMINI_INPUT/OUTPUT_USD_PER_1M above), kept here under the
+// legacy model's name purely so the shadow test's own cost logging stays
+// accurate for whichever model LEGACY_GEMINI_SHADOW_MODEL points at.
+// Also doubles as the values to restore GEMINI_INPUT/OUTPUT_USD_PER_1M
+// to if GEMINI_MODEL is ever rolled back.
+const LEGACY_GEMINI_INPUT_USD_PER_1M = 0.75;
+const LEGACY_GEMINI_OUTPUT_USD_PER_1M = 3.75;
 
 // REMOVED (2026-08-30, user report — Ditto 18/62 Fossil, LP shown $13.45
 // vs. real TCGplayer LP $6.84): this flat 85/70/55/40% multiplier was
@@ -654,24 +672,29 @@ async function runHaikuShadowTest(geminiPromise, haikuPromise, tStart, tHaikuSta
 // =============================================================================
 
 // =============================================================================
-// TEMPORARY SHADOW TEST — GEMINI 3.5 FLASH-LITE VS CURRENT MODEL
-// (added 2026-09-05, directly answers the open question from "Research:
-// hitting a 1-3s latency target for sudden-death auctions",
-// docs/test-cases.md, 2026-09-05: does a lighter Gemini model
-// meaningfully narrow the gap toward a 1-3s target, using real data
-// instead of the noisy/inconsistent public benchmarks that research
-// found for this exact workload. UNRELATED to the Claude Haiku
-// shadow-test/fallback block above — this compares two Gemini-family
-// models against each other, not Gemini vs. a different provider.
+// LEGACY-MODEL REGRESSION SHADOW TEST — GEMINI 3.6 FLASH VS CURRENT MODEL
+// (originally added 2026-09-05 as "TEMPORARY SHADOW TEST — GEMINI 3.5
+// FLASH-LITE VS CURRENT MODEL", forward-looking research into whether
+// Flash-Lite was worth promoting — see "Research: hitting a 1-3s latency
+// target for sudden-death auctions", docs/test-cases.md, 2026-09-05.
+// REVERSED 2026-09-06 when that research (tests #80-83) led to actually
+// promoting gemini-3.5-flash-lite to GEMINI_MODEL (see the comment on
+// GEMINI_MODEL's definition above for the decision trace). Same harness,
+// flipped direction: now watches the OLD primary (gemini-3.6-flash) in
+// the background as a regression check on the model just moved away
+// from, not forward-looking research on a candidate. UNRELATED to the
+// Claude Haiku shadow-test/fallback block above — this compares two
+// Gemini-family models against each other, not Gemini vs. a different
+// provider.
 //
-// SAME non-disruptive shape as the Haiku shadow test: entirely gated on
-// FLASH_LITE_SHADOW_MODEL being set (see its definition above) — a
-// complete no-op otherwise, identical to today's behavior. The current
-// model (GEMINI_MODEL) remains the sole source of what the user sees and
-// what matching/pricing runs on; Flash-Lite's read is logged only, never
-// consumed elsewhere. Fired in parallel with the real call, not awaited
-// before responding, kept alive via waitUntil() the same way — see the
-// handler wiring below.
+// SAME non-disruptive shape as before: entirely gated on
+// LEGACY_GEMINI_SHADOW_MODEL being set (see its definition above) — a
+// complete no-op otherwise. The current model (GEMINI_MODEL, now
+// gemini-3.5-flash-lite) remains the sole source of what the user sees
+// and what matching/pricing runs on; the legacy model's read is logged
+// only, never consumed elsewhere. Fired in parallel with the real call,
+// not awaited before responding, kept alive via waitUntil() the same
+// way — see the handler wiring below.
 //
 // CORRECTNESS NOTE (worth keeping if this pattern is ever copied again):
 // the Haiku shadow test's `geminiMs` field is mislabeled when Haiku is
@@ -687,13 +710,21 @@ async function runHaikuShadowTest(geminiPromise, haikuPromise, tStart, tHaikuSta
 // captured the instant IT settles, regardless of what order anything
 // else awaits them in or how long the other one takes.
 //
-// REMOVABLE: to fully remove this experiment, delete (1) this whole
-// block, (2) the `FLASH_LITE_SHADOW_MODEL`/`FLASH_LITE_INPUT_USD_PER_1M`/
-// `FLASH_LITE_OUTPUT_USD_PER_1M` constants above, (3) the handler call
-// site below (the `if (FLASH_LITE_SHADOW_MODEL) { ... }` block), and (4)
-// revert `identifyWithGemini`'s `model` parameter back to using
-// `GEMINI_MODEL` directly (harmless to leave, but the parameter becomes
-// dead once nothing passes a third argument).
+// TO UN-FLIP BACK (if GEMINI_MODEL is ever reverted to gemini-3.6-flash):
+// change GEMINI_MODEL's default back, set LEGACY_GEMINI_SHADOW_MODEL to
+// "gemini-3.5-flash-lite" instead, and swap GEMINI_INPUT/OUTPUT_USD_PER_1M
+// back to the 0.75/3.75 values currently on LEGACY_GEMINI_INPUT/
+// OUTPUT_USD_PER_1M (and vice versa) — see the comments on those
+// constants above.
+//
+// REMOVABLE ENTIRELY: to fully remove this regression watch, delete (1)
+// this whole block, (2) the `LEGACY_GEMINI_SHADOW_MODEL`/
+// `LEGACY_GEMINI_INPUT_USD_PER_1M`/`LEGACY_GEMINI_OUTPUT_USD_PER_1M`
+// constants above, (3) the handler call site below (the `if
+// (LEGACY_GEMINI_SHADOW_MODEL) { ... }` block), and (4) revert
+// `identifyWithGemini`'s `model` parameter back to using `GEMINI_MODEL`
+// directly (harmless to leave, but the parameter becomes dead once
+// nothing passes a third argument).
 
 function timePromise(promise, tStart) {
   return promise.then(
@@ -702,11 +733,11 @@ function timePromise(promise, tStart) {
   );
 }
 
-function estimateFlashLiteCostUsd(usageMetadata) {
+function estimateLegacyGeminiCostUsd(usageMetadata) {
   if (!usageMetadata) return null;
   const inTok = usageMetadata.promptTokenCount || 0;
   const outTok = usageMetadata.candidatesTokenCount || 0;
-  const cost = (inTok / 1_000_000) * FLASH_LITE_INPUT_USD_PER_1M + (outTok / 1_000_000) * FLASH_LITE_OUTPUT_USD_PER_1M;
+  const cost = (inTok / 1_000_000) * LEGACY_GEMINI_INPUT_USD_PER_1M + (outTok / 1_000_000) * LEGACY_GEMINI_OUTPUT_USD_PER_1M;
   return { estCostUsd: cost, promptTokens: inTok, outputTokens: outTok };
 }
 
@@ -719,18 +750,18 @@ function estimateFlashLiteCostUsd(usageMetadata) {
 // GEMINI_SCHEMA/GEMINI_PROMPT, so the field list is identical. Never
 // throws past its own try/catch — the caller wraps this in one more
 // .catch() as a second safety net, same as the Haiku shadow test.
-async function runFlashLiteShadowTest(timedCurrentPromise, timedFlashLitePromise, requestId) {
-  const [current, flashLite] = await Promise.all([timedCurrentPromise, timedFlashLitePromise]);
+async function runLegacyModelShadowTest(timedCurrentPromise, timedLegacyPromise, requestId) {
+  const [current, legacy] = await Promise.all([timedCurrentPromise, timedLegacyPromise]);
 
-  const flashLiteUsage = flashLite.result ? estimateFlashLiteCostUsd(flashLite.result._geminiUsage) : null;
+  const legacyUsage = legacy.result ? estimateLegacyGeminiCostUsd(legacy.result._geminiUsage) : null;
 
   let fieldAgreement = null;
   let overallMatch = "n/a";
-  if (current.result && flashLite.result) {
+  if (current.result && legacy.result) {
     fieldAgreement = {};
     let allAgree = true;
     for (const field of HAIKU_SHADOW_COMPARE_FIELDS) {
-      const agree = haikuShadowFieldsMatch(current.result[field], flashLite.result[field]);
+      const agree = haikuShadowFieldsMatch(current.result[field], legacy.result[field]);
       fieldAgreement[field] = agree;
       if (!agree) allAgree = false;
     }
@@ -738,29 +769,29 @@ async function runFlashLiteShadowTest(timedCurrentPromise, timedFlashLitePromise
   }
 
   console.log(
-    `[flash-lite-shadow-test] requestId=${requestId}`,
+    `[legacy-model-shadow-test] requestId=${requestId}`,
     "currentModel=",
     GEMINI_MODEL,
-    "flashLiteModel=",
-    FLASH_LITE_SHADOW_MODEL,
+    "legacyModel=",
+    LEGACY_GEMINI_SHADOW_MODEL,
     "current=",
     JSON.stringify(current.error ? { error: current.error } : current.result),
-    "flashLite=",
-    JSON.stringify(flashLite.error ? { error: flashLite.error } : flashLite.result),
+    "legacy=",
+    JSON.stringify(legacy.error ? { error: legacy.error } : legacy.result),
     "match=",
     overallMatch,
     "fieldAgreement=",
     JSON.stringify(fieldAgreement),
     "currentMs=",
     current.ms,
-    "flashLiteMs=",
-    flashLite.ms,
-    "flashLiteCostUsd=",
-    flashLiteUsage ? flashLiteUsage.estCostUsd : null
+    "legacyMs=",
+    legacy.ms,
+    "legacyCostUsd=",
+    legacyUsage ? legacyUsage.estCostUsd : null
   );
 }
 // =============================================================================
-// END TEMPORARY SHADOW TEST
+// END LEGACY-MODEL REGRESSION SHADOW TEST
 // =============================================================================
 
 // ---------------------------------------------------------------------------
@@ -2186,26 +2217,27 @@ module.exports = async function handler(req, res) {
     if (waitUntil) waitUntil(shadowPromise);
   }
 
-  // See "TEMPORARY SHADOW TEST — GEMINI 3.5 FLASH-LITE VS CURRENT MODEL"
-  // above for the full story. Entirely gated on FLASH_LITE_SHADOW_MODEL —
-  // a complete no-op unless that env var is explicitly set. timePromise()
-  // subscribes to geminiPromise here (a promise can have any number of
-  // .then() subscribers without affecting what the main handler below
-  // sees or does — this never fires a second real Gemini call and never
-  // touches the response), so its own success/failure and elapsed time is
-  // captured independently of whether Flash-Lite's call is faster or
-  // slower. Not awaited here, so it can never delay the response;
-  // waitUntil (when available) keeps it alive after the response is
-  // sent, and the .catch() is a second safety net.
-  if (FLASH_LITE_SHADOW_MODEL) {
+  // See "LEGACY-MODEL REGRESSION SHADOW TEST — GEMINI 3.6 FLASH VS
+  // CURRENT MODEL" above for the full story. Entirely gated on
+  // LEGACY_GEMINI_SHADOW_MODEL — a complete no-op unless that env var is
+  // explicitly set. timePromise() subscribes to geminiPromise here (a
+  // promise can have any number of .then() subscribers without affecting
+  // what the main handler below sees or does — this never fires a second
+  // real Gemini call and never touches the response), so its own
+  // success/failure and elapsed time is captured independently of
+  // whether the legacy model's call is faster or slower. Not awaited
+  // here, so it can never delay the response; waitUntil (when available)
+  // keeps it alive after the response is sent, and the .catch() is a
+  // second safety net.
+  if (LEGACY_GEMINI_SHADOW_MODEL) {
     const timedCurrentPromise = timePromise(geminiPromise, tStart);
-    const tFlashLiteStart = Date.now();
-    const flashLitePromise = identifyWithGemini(imageBase64, geminiKey, FLASH_LITE_SHADOW_MODEL);
-    const timedFlashLitePromise = timePromise(flashLitePromise, tFlashLiteStart);
-    const flashLiteShadowPromise = runFlashLiteShadowTest(timedCurrentPromise, timedFlashLitePromise, requestId).catch((e) => {
-      console.error(`[flash-lite-shadow-test] requestId=${requestId} shadow test itself threw:`, e && e.message);
+    const tLegacyStart = Date.now();
+    const legacyPromise = identifyWithGemini(imageBase64, geminiKey, LEGACY_GEMINI_SHADOW_MODEL);
+    const timedLegacyPromise = timePromise(legacyPromise, tLegacyStart);
+    const legacyShadowPromise = runLegacyModelShadowTest(timedCurrentPromise, timedLegacyPromise, requestId).catch((e) => {
+      console.error(`[legacy-model-shadow-test] requestId=${requestId} shadow test itself threw:`, e && e.message);
     });
-    if (waitUntil) waitUntil(flashLiteShadowPromise);
+    if (waitUntil) waitUntil(legacyShadowPromise);
   }
 
   let read;

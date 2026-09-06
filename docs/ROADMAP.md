@@ -37,6 +37,17 @@ AI call from the click (background/continuous scanning, cached result)
 rather than further tuning a single fresh call — see that research
 entry for the full option set. Not yet decided which option to pursue.
 
+**Update, 2026-09-06**: the primary model was promoted from
+`gemini-3.6-flash` to `gemini-3.5-flash-lite` (tests #80-84,
+`docs/test-cases.md`) — a real step toward this target on both axes
+that matter (fewer outright call failures, and per-scan latency
+clustering closer to 1-3s than the old primary's ~2.5s median), but
+this does NOT resolve the target the way the architecture options above
+would — it's a faster/more-reliable single fresh call, not the
+background/continuous-scanning latency-hiding approach still described
+as the real path to a *reliably* met 1-3s target. That decision is
+still not made.
+
 ---
 
 ## Phase 1 — Raw ungraded cards, English + Japanese (IN PROGRESS — current priority)

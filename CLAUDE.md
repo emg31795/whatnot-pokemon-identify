@@ -213,6 +213,61 @@ volume before drawing one is 50-100 real scans with both models
 succeeding. See the "Gemini 3.5 Flash-Lite shadow test" entry below and
 the latency-research entry in `docs/test-cases.md` for full detail.
 
+**Decided and built, 2026-09-06: promoted Gemini 3.5 Flash-Lite from
+shadow test to primary model.** Tests #80-83 (`docs/test-cases.md`)
+built up the evidence: #80/#81 found a dramatically better completion
+rate for Flash-Lite (88-90% vs. 35-58% for `gemini-3.6-flash` across two
+same-window pulls) but flagged a real confound — all of that data came
+from a period where the old primary was in an elevated-failure state
+(tests #77-79), so it was unclear whether Flash-Lite was genuinely
+better or just "any model that isn't currently degraded looks good by
+comparison." Test #81 explicitly set a precondition before promotion: a
+comparison from a *healthy*-Gemini window, which the available 1h-
+retention logs never produced. Test #83 then ran a true ground-truth
+test (18 real cards with known answers, scored independently) and found
+near-identical per-completed-call accuracy (93% vs. 94%) — the real gap
+was entirely completion rate (4/18 outright failures for the old
+primary vs. 0/18 for Flash-Lite), not accuracy.
+
+**The user explicitly waived the unmet healthy-window precondition**
+rather than waiting further, with this reasoning for the record: test
+#83's batch had the old primary's failure rate (22%) close to its
+documented healthy baseline (14-17%), not the degraded 35-74% range
+from tests #80-82, and Flash-Lite still won cleanly on completion (0/18
+vs. 4/18) with matched accuracy even there — not the exact live-stream
+healthy-window experiment originally specified, but real evidence
+against the specific worry (that Flash-Lite only looks good during a
+bad Gemini stretch). Given the priority on scan speed for sudden-death
+auctions, the user chose to proceed on completion-rate + ground-truth-
+accuracy evidence as sufficient, explicitly accepting the residual
+uncertainty rather than waiting for a live-stream healthy-window test.
+
+**Built** (not yet deployed — awaiting explicit go-ahead per "When to
+ask before acting" below): `GEMINI_MODEL` now defaults to
+`gemini-3.5-flash-lite`; the Haiku active-fallback logic is untouched;
+the Flash-Lite shadow-test harness is reversed in place into a
+regression watch on the old primary (`LEGACY_GEMINI_SHADOW_MODEL` env
+var, `[legacy-model-shadow-test]` log prefix) — same `timePromise`/
+field-agreement/cost-logging scaffolding, just pointed at
+`gemini-3.6-flash` now instead of Flash-Lite. The `GEMINI_INPUT/
+OUTPUT_USD_PER_1M` cost-display constants were swapped to Flash-Lite's
+real pricing (was $0.75/$3.75, now $0.30/$2.50) so the extension's "This
+scan: $X" display doesn't repeat the exact stale-pricing-constant bug
+this project already found and fixed once (2026-09-03) — the old
+pricing is preserved under `LEGACY_GEMINI_INPUT/OUTPUT_USD_PER_1M` for
+the shadow test's own cost logging and as the rollback values. Verified
+locally: `node --check` passes, the module loads without reference
+errors, and a mocked-fetch smoke test confirms the reversed shadow test
+fires correctly (`currentModel=gemini-3.5-flash-lite`,
+`legacyModel=gemini-3.6-flash`) with correct cost math on both sides and
+no exceptions. **Rollback is a one-line change** of `GEMINI_MODEL`'s
+default back to `"gemini-3.6-flash"` (plus un-flipping the shadow-test
+env var and swapping the two pricing-constant pairs back — both spelled
+out in code comments at each definition) if the legacy-model shadow
+test surfaces a real problem with Flash-Lite at volume or under real
+stream conditions. See test #84 in `docs/test-cases.md` for the full
+promotion write-up, and "Recent / in-flight work" below once deployed.
+
 ## When to ask before acting
 
 - **Free rein, no need to ask**: local file edits, local git commits,

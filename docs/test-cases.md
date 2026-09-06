@@ -3272,6 +3272,157 @@ instruction. Next step: keep accumulating both-succeeded samples
 (ideally from a healthy-Gemini window too, per test #81) toward a
 real sample size before this ratio means anything decisive.
 
+### Test #83 (2026-09-06) — real ground-truth accuracy test: 18 known
+cards, scored independently, not agreement-based
+
+Tests #80-82 all measured *agreement* (does Flash-Lite match the
+current model, or does the current model complete at all) — neither
+can answer "which one is actually right when they disagree," since
+neither shadow-test path has independent ground truth. This test
+does: the user supplied 18 physical cards from their own inventory
+(off-stream, no time pressure) with pre-known correct `cardName` +
+`cardNumber` for each, in a fixed scan order.
+
+**Method, run in the foreground with visible per-step output** (a
+prior attempt at this same test silently hung for 3 hours in the
+background on a shell-quoting bug in a nested `python3 -c` call inside
+a bash loop — killed, and redone as a standalone script instead of
+inline bash to avoid the same failure mode): the 18 source `.HEIC`
+photos were converted to JPEG via macOS `sips` (the backend hardcodes
+`mime_type: "image/jpeg"` for both the Gemini and Haiku calls —
+`api/identify.js:296`/`532` — so HEIC bytes labeled as JPEG would have
+silently fed the vision models garbage), then a small Python script
+(`urllib`, no extra dependencies) POSTed each JPEG's base64 straight to
+the live `POST https://whatnot-pokemon-identify.vercel.app/api/identify`
+endpoint in order, printing status/latency/`requestId` per image as it
+went, and saving all 18 responses. All 18 calls returned real `200`s
+(5.4-8.2s each, this endpoint's actual latency including the parallel
+Haiku-fallback/Flash-Lite-shadow calls it fires internally — not
+comparable to the client-side video-frame-capture latency numbers
+elsewhere in this doc). Real Vercel logs
+(`get_runtime_logs`, `query=flash-lite-shadow-test`, window
+2026-09-06T18:35-19:05 UTC) were then pulled and matched 1:1 by
+`requestId` — all 18 requestIds had exactly one matching
+`[flash-lite-shadow-test]` record, no gaps.
+
+**Caveat, stated plainly**: these are well-lit, in-hand static photos,
+not live-stream video-frame captures — likely higher visual quality
+than a typical on-stream scan. This test answers "who's more accurate
+when given a clear image of a known card," not "who's more accurate
+under real stream conditions" — that's still only answerable from the
+ongoing shadow-test data (tests #80-82).
+
+**1. Current model (`gemini-3.6-flash`) vs. ground truth: cardName
+correct 14/18 (78%), cardNumber correct 13/18 (72%).** All 5 misses:
+
+| Image | Ground truth | Current model result |
+|---|---|---|
+| IMG_4935 (Riolu, GG26/GG70) | — | `503` "high demand" — call failed |
+| IMG_4923 (Charizard ex, 006/165) | — | `"This operation was aborted"` — timed out |
+| IMG_4926 (Melony, 195/198) | — | `"This operation was aborted"` — timed out |
+| IMG_4922 (Dolliv, 200/198) | — | `503` "high demand" — call failed |
+| IMG_4931 (Tyranitar, DPBP#298) | name correct | read `cardNumber: "17/123"` — wrong |
+
+**2. Flash-Lite (`gemini-3.5-flash-lite`) vs. ground truth: cardName
+correct 18/18 (100%), cardNumber correct 17/18 (94%).** The one miss:
+
+| Image | Ground truth | Flash-Lite result |
+|---|---|---|
+| IMG_4931 (Tyranitar, DPBP#298) | name correct | read `cardNumber: "17/123"` — wrong |
+
+**3. Flash-Lite's errors are a strict subset of the current model's —
+not different failure cases.** Flash-Lite's only miss (Tyranitar) is
+also one of the current model's 5 misses, and both models produced the
+*exact same* wrong number (`"17/123"`) for it — not two different
+wrong guesses, the same fabricated one. `DPBP#298` is a Diamond &
+Pearl-era Black Star Promo code (`#`-prefixed, not the usual `N/M`
+fraction format), and this looks like a shared systematic blind spot
+across both models for that specific numbering scheme, not a
+Flash-Lite-specific weakness. Every one of the current model's other 4
+misses were outright call failures (2x `503` "high demand", 2x
+timeout) that Flash-Lite did not share — 0/18 Flash-Lite calls failed
+outright in this batch.
+
+**Reframed as accuracy on completed calls only** (removing the
+confound of call failures, which tests #80-82 already track
+separately): current model got 13/14 completed calls fully right
+(93%); Flash-Lite got 17/18 fully right (94%) — **essentially
+identical accuracy per completed call.** The practical gap in this
+batch is almost entirely a *completion-rate* story (current model
+4/18 = 22% outright failures here vs. Flash-Lite's 0/18), not an
+accuracy story — consistent with, and now backed by real ground
+truth rather than inference, what tests #80-82's agreement data
+already suggested.
+
+**Status**: first true ground-truth (not agreement-based) accuracy
+data point for this comparison, and it's a clean, encouraging result
+for Flash-Lite — but still a single 18-card batch, still under
+favorable (well-lit, static) image conditions, and the current
+model's 22% failure rate in this batch happened to land close to its
+documented ~14-17% healthy baseline rather than the elevated 35-74%
+seen in tests #80-82, so this batch does NOT resolve the "healthy vs.
+degraded Gemini" confound from test #81 either way — it's a separate,
+useful axis (ground truth vs. agreement), not a replacement for that
+open question. **No promotion action taken** — data/logging pass
+only, per explicit instruction. Raw script and results saved to the
+session scratchpad, not the repo (throwaway test tooling, not part of
+the shipped codebase).
+
+### Test #84 (2026-09-06) — DECISION: promote Gemini 3.5 Flash-Lite to
+primary model, healthy-window precondition explicitly waived
+
+Following test #83, the user directed promoting Flash-Lite from shadow
+test to the real, user-facing primary model, citing tests #80-83 as
+the combined basis. This entry documents the decision and the explicit
+precondition waiver, separately from the code build itself (see
+CLAUDE.md "Current priority," 2026-09-06 entry, for the build details —
+`GEMINI_MODEL` default, the reversed `LEGACY_GEMINI_SHADOW_MODEL`
+shadow test, and the pricing-constant swap).
+
+**The gap being waived**: test #81 set an explicit precondition before
+any promotion — a comparison from a period where the old primary
+(`gemini-3.6-flash`) was in its normal, healthy state (~14-17% failure
+rate), not the elevated 35-74% failure state tests #80-82's data came
+from. That comparison was never obtained; Vercel's Hobby-plan 1h log
+retention (see "Known gotchas," CLAUDE.md) made it impossible to look
+back far enough to find one, and no live-stream session happened to
+land on a healthy window during data collection.
+
+**The user's own reasoning for waiving it, recorded verbatim for future
+reference**: *"test #83's batch had the current model's failure rate
+(22%) close to its documented healthy baseline (14-17%), not the
+degraded 35-74% range from tests #80-82, and Flash-Lite still won
+cleanly on completion (0/18 vs 4/18) with matched accuracy even there.
+That's not the exact live-stream healthy-window experiment originally
+asked for, but it's real evidence against the specific worry (that
+Flash-Lite only looks good because Gemini's having a bad week). Given
+the priority on speed, I'm proceeding on the completion-rate +
+ground-truth-accuracy evidence as sufficient, explicitly accepting
+that residual uncertainty rather than waiting further."*
+
+**Why this is a real, if partial, answer to the original worry**: test
+#83's 18-scan batch is a genuinely different sample than tests #80-82
+(different cards, different time, and critically a failure rate for
+the old primary — 22% — that's much closer to documented baseline than
+the degraded windows the completion-rate numbers came from) — and
+Flash-Lite still showed the same pattern (perfect completion, matched
+accuracy) in that closer-to-healthy sample. It is not literally the
+live-stream healthy-window experiment test #81 specified, and the
+sample is small (18 cards, 1 batch), so this is a reasoned business
+decision to act on the available evidence and accept residual risk,
+not a claim that the original open question has been fully closed.
+
+**Decision**: promote `gemini-3.5-flash-lite` to `GEMINI_MODEL`,
+reverse the shadow-test harness into a regression watch on
+`gemini-3.6-flash` (the old primary) so any real-world weakness in the
+new primary that only shows up at volume or under real stream
+conditions gets caught quickly, and keep the rollback a one-line
+change per the code comments. **Not yet deployed** as of this entry —
+built and locally verified (see CLAUDE.md), awaiting explicit
+deploy/push go-ahead per standing convention. Once deployed, watch the
+`[legacy-model-shadow-test]` logs the same way tests #80-83 watched
+`[flash-lite-shadow-test]` — same harness, opposite direction now.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
