@@ -3444,17 +3444,63 @@ pricing constants; `get_runtime_logs` confirms that exact `requestId`
 was served by this deployment; `get_runtime_errors` shows zero errors
 in the surrounding window.
 
-**Gap flagged, not yet resolved**: the real-scan logs show the
-existing `[haiku-shadow-test]` line firing normally, but no
-`[legacy-model-shadow-test]` line — `LEGACY_GEMINI_SHADOW_MODEL` is not
-yet set in Vercel's Production environment (it's a brand-new variable
-name). Per this project's own precedent (the Haiku and original
-Flash-Lite shadow tests both needed a redeploy after the env var was
-added via the dashboard, since Vercel snapshots env vars at build
-time), the regression-watch shadow test will collect zero data until
-the user adds `LEGACY_GEMINI_SHADOW_MODEL=gemini-3.6-flash` in the
-dashboard AND this deployment is redeployed to pick it up. Until then,
-there is no regression-watch safety net on the new primary model.
+**Gap flagged 2026-09-06, then RESOLVED same day**: the real-scan logs
+first showed the existing `[haiku-shadow-test]` line firing normally
+but no `[legacy-model-shadow-test]` line —
+`LEGACY_GEMINI_SHADOW_MODEL` was not yet set in Vercel's Production
+environment (it's a brand-new variable name). Per this project's own
+precedent (the Haiku and original Flash-Lite shadow tests both needed
+a redeploy after the env var was added via the dashboard, since Vercel
+snapshots env vars at build time), the regression-watch shadow test
+would collect zero data until the user added
+`LEGACY_GEMINI_SHADOW_MODEL=gemini-3.6-flash` in the dashboard AND the
+deployment was redeployed to pick it up.
+
+**CONFIRMED COLLECTING REAL DATA 2026-09-06**, after the user added the
+env var and triggered a redeploy (`dpl_22F3PPBwEjkB5UPAPt9oo23m1QXD`,
+confirmed `READY`, aliased to `whatnot-pokemon-identify.vercel.app`,
+`meta.action: "redeploy"` of the prior deployment). Not assumed —
+verified the same way every prior env-var addition on this project has
+been: sent a real scan to the live endpoint (an M Sceptile EX ground-
+truth photo from test #83) and pulled the exact runtime log line for
+that `requestId`:
+
+```
+[legacy-model-shadow-test] requestId=47cb4f3f-223e-448e-b471-c5d2e74b1efc
+currentModel= gemini-3.5-flash-lite legacyModel= gemini-3.6-flash
+current={"cardName":"M Sceptile EX","cardNumber":"8/98",...}
+legacy={"cardName":"M Sceptile-EX","cardNumber":"8/98","setName":"Ancient Origins",...}
+match= false fieldAgreement= {"cardName":false,"cardNumber":true,"hp":true,
+"subtype":true,"setName":false,"attackName":true,"language":true,
+"stampType":true,"isSlab":true,"confidence":true}
+currentMs= 1966 legacyMs= 2988 legacyCostUsd= 0.00152625
+```
+
+Confirms: `legacyModel` resolved to the real value (`gemini-3.6-flash`,
+not null/unset); a genuine separate legacy Gemini API call fired (real
+token usage, 2988ms real latency); and `legacyCostUsd` math checks out
+against the `LEGACY_GEMINI_INPUT/OUTPUT_USD_PER_1M` constants —
+(1515/1e6)×0.75 + (104/1e6)×3.75 = 0.00152625, exact match, confirming
+the old pricing is correctly preserved for this shadow path. One real
+data point only, but a genuinely interesting one right out of the
+gate: the legacy model disagreed with the new primary on `cardName`
+("M Sceptile EX" vs "M Sceptile-EX" — a hyphenation difference, not a
+different card) and `setName` (null vs "Ancient Origins" — the new
+primary simply didn't read a set name, not a conflict), while agreeing
+on `cardNumber`/`hp`/`subtype`/`attackName`. Not itself concerning
+(the disagreements are formatting/completeness, not a wrong card), but
+exactly the kind of granular signal this regression watch exists to
+surface over time.
+
+**Status: promotion now fully verified end-to-end.** New primary
+(`gemini-3.5-flash-lite`) is live and confirmed serving real, correct
+scans (test #84's first deploy-verification scan and this one both
+matched ground truth); the old-model regression watch is confirmed
+collecting real comparison data, closing the gap flagged immediately
+after the initial deploy. No further action needed on this item — next
+step is simply watching `[legacy-model-shadow-test]` logs accumulate
+over time, the same way tests #80-83 watched `[flash-lite-shadow-test]`
+before this promotion decision.
 
 ## Related docs
 
