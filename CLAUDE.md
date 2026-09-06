@@ -622,6 +622,25 @@ checklist before reporting something as finished:
   shadow test to reveal its own stark, decision-relevant pattern). Fully
   removable — see the "TEMPORARY SHADOW TEST — GEMINI 3.5 FLASH-LITE VS
   CURRENT MODEL" comment block in `api/identify.js` for the exact
+
+  **Update, 2026-09-06 (test #80)**: a real ~1h scanning session (26
+  scans, pulled via real Vercel logs after the user flagged 3
+  no-result scans) added a strong batch of new same-window data.
+  Current model timeout rate was 58% (15/26) this window — still the
+  identical known failure, consistent with the ongoing tests #77-#79
+  elevated-rate pattern, not a new problem. Of those 15 failures, 13
+  also had the Haiku fallback time out simultaneously (0 rescues this
+  window — a third data point in the same direction as test #71's 0/4,
+  and exactly what the 3 user-flagged scans were). **Flash-Lite
+  succeeded 23/26 (88%)**, with most successful reads landing
+  **1.3s-2.7s** — inside the 1-3s latency target — vs. the current
+  model's frequent 5s timeouts; on the 3 exact frames the user flagged
+  (both primary and fallback dead), Flash-Lite alone returned a
+  plausible High-confidence read. This is real, promising evidence on
+  both completion-rate and latency, but still short of the
+  recommended 50-100-scan volume and only one session's traffic — no
+  action taken, nothing promoted. See test #80 in
+  `docs/test-cases.md` for the full breakdown.
   removal list.
 
 - **"Flag this scan" feature — DEPLOYED AND PUSHED 2026-09-04** (commits

@@ -3073,6 +3073,62 @@ where the current model timed out at 5005ms. Data collection is now
 genuinely live. Recommended volume before drawing a conclusion
 unchanged: 50-100 real scans with both models succeeding.
 
+### Test #80 (2026-09-06) — real batch: 3 user-flagged failures, plus a
+strong same-window Flash-Lite signal
+
+User ran a real scanning session on a live stream and used the "Flag"
+feature (test #76/build above) on 3 scans that came back with no
+result. Pulled via real Vercel runtime logs (`get_runtime_logs`,
+window 2026-09-06T14:51-15:51 UTC), not assumed from the panel alone,
+per this project's own "verify via logs" convention.
+
+**The 3 flagged scans** (`requestId`s `854cd634…`, `6be4907a…`,
+`4b36a451…`) are all the identical failure shape: the current model
+(`gemini-3.6-flash`) timed out at the `GEMINI_TIMEOUT_MS=5000` wall
+(`"This operation was aborted"`, 5002-5004ms), AND the Haiku fallback
+timed out too (`"Gemini failed and Haiku fallback unavailable too"`) —
+both primary and fallback down together, degrading to the generic
+"couldn't identify" message per the existing, working contain-the-miss
+design (same failure class as test #71's "0 of 4 rescued" finding, now
+a third data point in that direction). **On all 3 of these exact
+frames, the Flash-Lite shadow call succeeded** — High confidence,
+plausible real card reads (Lapras/Crown Zenith, Walking Wake ex x2) —
+in 1871-4051ms, comfortably under the 5s wall the other two providers
+hit.
+
+**Broader same-window data** (26 total scans logged in this ~1h
+window, not just the 3 flagged ones):
+- Current model (`gemini-3.6-flash`) timeout rate: **15/26 = 58%** —
+  consistent with, and worse than, the elevated-failure pattern
+  already flagged in tests #77/#78/#79 (24-84%); still reads as the
+  same ongoing provider-side condition, not a new failure shape (no
+  new error text observed).
+- Haiku shadow/fallback: of those 15 Gemini failures, 13 also had
+  Haiku time out at the same moment — **0 Haiku rescues in this
+  window**, same direction as test #71 (0/4) and consistent with the
+  2026-09-04 "keep fallback as-is" decision's own acknowledgment that
+  it's "additive and safe" but not reliably a rescue.
+- **Flash-Lite: 23/26 = 88% succeeded**, with most successful timings
+  clustering **1.3s-2.7s** (several sub-2s) — meaningfully faster than
+  the current model's frequent 5s timeouts, and squarely inside the
+  1-3s latency target from the 2026-09-05 research. Only 3/26 Flash-
+  Lite calls failed (all aborted at ~5000ms); 2 of those 3 coincided
+  with the current model ALSO failing on the same frame (suggesting
+  shared provider-side congestion at that instant rather than
+  something Flash-Lite-specific), but the 3rd failed on a frame where
+  the current model succeeded, so the correlation isn't total.
+
+**Status**: this is real, decision-relevant progress toward the
+recommended 50-100-scan volume (26 new data points this window, on top
+of the earlier single data point) — genuinely promising on both axes
+(higher completion rate AND faster than the current model in this
+sample), but still short of that volume and only one session's worth
+of traffic. **No action taken** — no code changed, nothing promoted;
+this is exactly the kind of accumulating evidence the shadow test was
+built to collect. Worth flagging to the user directly as a strong
+early signal worth continuing to watch, not yet a "switch the primary
+model" decision.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
