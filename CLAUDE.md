@@ -29,29 +29,24 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
-Immediate next step: three separate fixes are deployed and verified but
-NOT yet live-confirmed in production (see "Recent / in-flight work"
-below for all three) — (1) the Gemini read-consistency fix (commit
-`3e895b1`, `thinkingLevel`/`media_resolution`) needs a live rescan of a
-hard card to confirm it actually reduces hallucination-class failures —
-**one real, unfavorable data point exists now** (test #67, 2026-08-31,
-Froakie): on `dpl_41kEm9oM4u4gAMQsM3CDJtnkHdec` (which already includes
-this fix), 4 repeat scans of the same physical card 16s apart produced
-a *different, wrong* cardNumber denominator every time ("056/066",
-"056/066", "056/086", "056/064" — never the actual "056/197"), each at
-self-reported High confidence. One hard card doesn't settle the
-question either way (it may still help on other cards/failure shapes),
-but it's real evidence the fix hasn't fully solved read-instability —
-not the clean confirmation this item is waiting for; (2) the
-name-filter rescue-path fix (commit `6708bca`, test #63) needs a live
-rescan that actually hits its specific trigger (zero name-filter
-survivors + a legible cardNumber) — no real scan has exercised it yet;
-(3) the `rarity` tie-break signal (commit `d941eb8`, test #53) needs a
-live rescan of a genuinely tied Trainer card to confirm it narrows a
-real tie in production, not just in isolated scoring-logic tests. These
-are three separate, unrelated fixes for separate problems — don't
-conflate them. Update ROADMAP.md's Phase 1 checklist once any of them
-gets a real confirmation.
+**Immediate next step (updated 2026-09-06)**: the Gemini 3.5 Flash-Lite
+promotion is live and fully verified end-to-end (tests #80-84,
+`docs/test-cases.md`) — `GEMINI_MODEL` now defaults to
+`gemini-3.5-flash-lite` in production
+(`dpl_22F3PPBwEjkB5UPAPt9oo23m1QXD`), and the `LEGACY_GEMINI_SHADOW_MODEL`
+regression watch on the old primary (`gemini-3.6-flash`) is confirmed
+collecting real data via a genuine `[legacy-model-shadow-test]` log
+line. Nothing further to build here — what matters now is **watching
+the `[legacy-model-shadow-test]` logs over the coming days/weeks** for
+any sign the new primary has a real weakness at volume or under live-
+stream conditions that the pre-promotion testing (18 ground-truth
+photos, off-stream and well-lit) didn't catch. No action needed unless
+that watch surfaces something concerning — see the "Decided, 2026-09-04"
+precedent above for the kind of bar that would justify revisiting a
+model/provider decision (a live, out-of-band test, or a sustained
+worsening over an extended window), not a single bad data point. See
+test #84 in `docs/test-cases.md` for the full promotion trace and the
+rollback plan (a one-line `GEMINI_MODEL` change) if it's ever needed.
 
 The `numbersMatch()` "totalMismatch" scoring bug found via test #67 is
 now **fixed, deployed, and CONFIRMED in production** (commit `42429a5`,
