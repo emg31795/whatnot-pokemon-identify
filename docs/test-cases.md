@@ -3129,6 +3129,67 @@ built to collect. Worth flagging to the user directly as a strong
 early signal worth continuing to watch, not yet a "switch the primary
 model" decision.
 
+### Test #81 (2026-09-06) — fuller re-pull, and a real gap: no
+healthy-Gemini comparison window exists in available data
+
+User's explicit direction after test #80: stay in shadow-test/data-
+collection mode only (no promotion, no code changes) — the 88%/58%
+split is a strong signal, but it came from a single window during
+what's been an elevated-failure period for the current model (tests
+#77-#79), so it's unclear whether Flash-Lite is genuinely better or
+just "any model that isn't currently degraded looks good by
+comparison." Asked to: (1) check the current accumulated shadow-test
+count across all windows, not just test #80's, and (2) specifically
+look for a healthy-Gemini window in the data already collected.
+
+**Re-pulled runtime logs** (`get_runtime_logs`, `query=flash-lite-
+shadow-test`, `since=1h`) a few minutes after test #80. The 1h lookback
+window shifted forward and now captures **49** real flash-lite-shadow-
+test records (up from 26) — this supersedes, not adds to, test #80's
+count: the two pulls overlap on the same underlying scanning burst
+(same requestIds/timestamps reappear), just with a later cutoff
+catching more of it. **Current running total of real, currently-
+queryable shadow-test data points: 49**, plus the 1 already-documented
+point from the 2026-09-05/06 deploy-confirmation scan (no longer
+itself re-queryable — see "Known gotchas," Vercel Hobby's 1h retention
+— but durably recorded above) — **~50 total**, right at the low end of
+the recommended 50-100.
+
+**Split on the fuller pull**: current model 17/49 = **35%** success
+(65% failure); Flash-Lite 44/49 = **90%** success. This is *wider*,
+not narrower, than test #80's 58%/88% split — because the later
+cutoff captured more of the same active elevated-failure episode, not
+less of it.
+
+**Healthy-Gemini window check — none found, and a real structural
+gap**: bucketed the 49 records into two 10-minute windows. Both show
+the current model well below its documented ~14-17% baseline failure
+rate (tests #70/#71/#76):
+- 15:40-15:49: current model 10/22 (45% success, 55% failure)
+- 15:50-15:54: current model 7/27 (26% success, 74% failure)
+
+Every available bucket is degraded — **no healthy-Gemini comparison
+window exists in the data collected so far.** (For reference, the
+current model's own *successful*-call latencies in this window ranged
+1806-4824ms, median ~2906ms — well above Flash-Lite's typical
+1.3-2.7s, but this compares favorably-for-Flash-Lite numbers gathered
+entirely during a bad Gemini stretch, exactly the confound in
+question.) Because Vercel's Hobby-plan runtime logs retain only ~1h
+(the same wall this project's own Haiku-timeout trend question hit in
+tests #70/#71/#74), there's no way to look further back to check
+whether an earlier healthy window this session or on a prior day
+already has usable Flash-Lite data sitting in the logs — it's just
+gone. **This is now a flagged, standing gap**: the 50-ish data points
+collected so far are all from a degraded-Gemini period, so the
+88-90%-vs-35-58% comparison cannot yet be trusted as "Flash-Lite is
+better than healthy Gemini" — only as "Flash-Lite held up better than
+Gemini during Gemini's bad stretch," a real but different finding.
+**Next step, not yet done**: watch for a casual log-check during a
+period when Gemini's failure rate looks back to its ~14-17% baseline,
+and specifically capture flash-lite-shadow-test data from that window
+before it rolls off the 1h retention window. No code changed, nothing
+promoted, per explicit instruction.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
