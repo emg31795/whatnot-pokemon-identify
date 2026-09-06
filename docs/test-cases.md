@@ -3692,6 +3692,93 @@ catch a window during one of the old primary's own degraded periods to
 see whether the new primary's advantage holds or widens under exactly
 the conditions that motivated this promotion.
 
+## Research: does "EX Delta Species" need a new stampType / pricing-variant, or is it already fully handled by card identification? (2026-09-06, research only — no code/schema changed)
+
+Triggered by a real user-flagged scan: a Koffing was correctly identified
+as `"EX Delta Species"` (the setName badge was right), but the stamp/
+variant panel showed `stampType: "none"` and the Print Variant dropdown
+only offered `"Normal (detected)"` — no way to flag the card's Delta
+Species stamp. Asked to research before building anything, per this
+project's own "research before building on new variant/schema
+questions" convention.
+
+**1. What does `stampType` actually enumerate, and was Delta Species
+ever meant to be in scope?** Grepped `GEMINI_SCHEMA`/`HAIKU_SCHEMA` and
+`GEMINI_PROMPT` in `api/identify.js` (lines 263-300, 490-527): the enum
+is `["none", "1st Edition", "Staff", "Prerelease", "Winner", "Pokemon
+Center", "World Championship", "other"]`. The prompt's own framing
+(line 296) confirms the intent: *tournament/promo stamps* — small
+logos applied to a subset of copies of an otherwise-normal printing
+(1st Edition vs. Unlimited print runs; Staff/Prerelease/Winner/Pokemon
+Center/World Championship event stamps on promos). **Delta Species was
+never a category this enum was built to catch, and isn't a "stamp" in
+the same sense at all** — it's a set-wide mechanic (a Pokémon reprinted
+with an altered elemental type, marked with a small "δ" glyph next to
+the name) that's baked into being a specific numbered card from a
+specific set, not a per-copy finish/event marking that varies across
+otherwise-identical copies. Categorizing it alongside "1st Edition"/
+"Staff" would be a category error, not just a missing enum value.
+
+**2. Does PPT/TCGplayer need a variant-level split for this, or is it
+already a distinct catalog entry?** Live-queried PPT's `/api/v2/cards`
+(`search=Koffing`, the same endpoint/params `fetchPokemonPriceTracker`
+already uses) and got 30 real results — `"EX Delta Species" | Koffing`
+is its own fully distinct catalog row, `cardNumber="72/113"`,
+`tcgPlayerId=86495`, completely separate from every other Koffing
+printing (Team Rocket, EX Team Rocket Returns, Great Encounters, Base
+Set, etc. — 30 separate entries total). Pulled the full record: its own
+`prices.variants` object has exactly two printings — `"Normal"`
+($3.39 market) and `"Reverse Holofoil"` ($28.66 market) — the same
+Normal/Reverse-Holo axis every other set's cards have; there is no
+third "Delta Species" SKU/printing at the TCGplayer level, because
+Delta-Species-ness isn't a purchasable finish choice — it's permanently
+true of card 72/113 in this set, the same way "is a Charizard" is.
+**Real, concrete confirmation this is already fully captured without
+any stamp/variant field**: this Koffing's own `pokemonType` field reads
+`"Grass"` — Koffing's real type is Poison, so this off-type value in
+PPT's own catalog data IS the delta-species type-swap mechanic, already
+present via existing fields (`setName` + `cardNumber` + `pokemonType`),
+with zero need for a new stampType category. **Conclusion: card
+identification (setName="EX Delta Species") is the correct and
+complete answer here — this scan already got that half right, and the
+other "half" the user expected (a stamp/variant flag) isn't something
+that needs to exist at all.** The Print Variant dropdown showing
+`"Normal (detected)"` is correct and unrelated to Delta Species — it's
+TCGplayer's own Normal/Reverse-Holofoil finish axis for this exact,
+correctly-identified card.
+
+**3. Scope, if this were ever a real catalog-family question.** Confirmed
+live that PPT's `/api/v2/cards` accepts a `setName=` exact-filter param
+(not previously used anywhere in this codebase — worth remembering for
+future set-scoped queries): `EX Delta Species` = **114 total cards**
+(95 Pokémon, 14 Trainer, 5 Energy) — matches the real published set
+size. Sibling "Holon-era" sets that also mix in some delta-mechanic
+cards: EX Team Rocket Returns (111), EX Holon Phantoms (111), EX Legend
+Maker (93), EX Dragon Frontiers (101), EX Power Keepers (108) — roughly
+638 cards total across the 6-set family, though not every card in every
+one of those sets carries the mechanic (Trainer/Energy cards never do,
+and plenty of Pokémon reprints in the same sets are ordinary, non-delta
+prints). Within EX Delta Species itself, **34 of the 95 Pokémon cards
+have `"(Delta Species)"` explicitly written into PPT's own `name`
+field** (e.g. `"Latios (Delta Species)"`) — but **the flagged Koffing is
+not one of them**, despite its off-type `pokemonType` proving it really
+is a delta card. This is a real, catalog-level labeling inconsistency
+in PPT's own data (some delta cards get the explicit name suffix, some
+don't) — not a bug in this project's code, and not something a
+stampType field would fix either, since it's a naming-completeness gap
+in the upstream catalog, not a missing category in our schema.
+
+**Bottom line / recommendation**: no schema, prompt, or dropdown change
+is needed. The user-flagged gap reads as a UI-expectation mismatch, not
+a real pricing or matching gap — the correct card, and correct live
+pricing for both its real printings, were already being shown. If
+anything is worth a small follow-up, it's cosmetic: surfacing *some*
+on-panel acknowledgment that a matched card is a Delta Species card
+(e.g. reading it off `pokemonType`/name-suffix, purely for user
+reassurance) — not a new stampType enum value, not a new PPT
+variant/pricing model, and not something this pass is proposing to
+build. Flagging as a possible future nice-to-have only, not a decision.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
