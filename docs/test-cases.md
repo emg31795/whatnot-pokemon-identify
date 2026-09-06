@@ -3546,6 +3546,12 @@ rate improvement holding up on genuine mixed live-stream traffic (35
 distinct card names across the 50 successes, not a handful of repeats),
 not just the favorable conditions of the pre-promotion shadow tests.
 
+(Note: section 3 below documents one additional current-model-failure
+case, `requestId=5c0aaf3b...`, found during the correction pass — it
+fell at 22:29:00 UTC, a few minutes after this section's stated window
+end, so it's new data rather than something missed from this specific
+52-count.)
+
 **2. Latency**, from real `[timing]` lines (n=50, de-duplicated — Vercel
 still delivers every log line twice, per the quirk documented in test
 #82):
@@ -3567,39 +3573,93 @@ the same frame): **50 data points** collected in this window — the
 first batch collected as a genuine background regression watch rather
 than a promotion-decision shadow test.
 
-- **1/50 comparisons had the legacy model itself fail** while Flash-Lite
-  succeeded: `requestId=41c12b2d-3b72-4c90-bd32-8f56ab8f199d`,
-  `cardName="Mega Excadrill EX"`, `currentMs=1493` vs.
-  `legacy={"error":"This operation was aborted"}, legacyMs=5001`. This
-  is a real data point in the *reassuring* direction — a frame the old
-  primary would have failed on, the new primary handled cleanly.
-- Of the remaining **49 both-succeeded comparisons**, following the same
-  `cardName`/`cardNumber`-only reasoning as test #82 (`setName`/
-  `subtype` mismatches are frequently just one side leaving a field null,
-  not a real disagreement): **`cardName` agreed 49/49 (100%)**;
-  **`cardNumber` agreed 24/49 (49%)**.
-- Legacy model's own successful-call latency this window: median
-  **~2256ms** — consistent with its documented ~2.5s ballpark, and
-  meaningfully slower than Flash-Lite's ~1.83s median on the same
-  frames (same-frame comparison, not just population-level).
+**Correction (caught by the user's own re-check of the raw logs, same
+day)**: the first pass through this write-up derived the regression-
+watch dataset from the same file already filtered by `query="[timing]"`
+(pulled for section 2's latency numbers). That's a real methodology bug
+— a request where the *current* model itself fails never produces a
+`[timing]` line at all (it never reaches that checkpoint), so any such
+case was structurally invisible to that dataset. The fix was a fresh,
+independent pull filtered only on `query="legacy-model-shadow-test"`
+(not `[timing]`), which correctly includes current-model failures too.
+**Corrected counts, out of 50 total comparisons**:
 
-**Does this meet the bar for revisiting the promotion?** No. CLAUDE.md's
-own bar is "a live, out-of-band test, or a sustained worsening over an
-extended window, not a single bad data point." This window shows: (a)
-100% `cardName` agreement — no sign of a new, systematic
-misidentification class specific to the new primary; (b) the one
-completion-rate disagreement in the sample favors the new primary (legacy
-failed, current succeeded), not the reverse; (c) the ~49% `cardNumber`
-disagreement rate is high in absolute terms but is the same order of
-magnitude as test #82's own pre-promotion finding (also real conflicts
-like Dusknoir/Dusknorr, `023` vs `MEP 04`) and this pass has no
-independent ground truth to say which side is right on these 25
+- **1/50 had the current model (Flash-Lite) itself fail** — completely
+  missed the first time through:
+  `requestId=5c0aaf3b-fdfc-44cd-84ec-e3c5095316a7`, `current=
+  {"error":"This operation was aborted"}` at 5003ms, while legacy
+  (`gemini-3.6-flash`) succeeded (`cardName="Rayquaza"`, 4784ms). Per
+  the separate `get_runtime_errors` trace, this exact request also had
+  Haiku fallback fail (`"Gemini failed and Haiku fallback unavailable
+  too"`) — a real double-failure the user saw as the generic "couldn't
+  identify" message, at 22:29:00 UTC.
+- **2/50 had the legacy model fail** while Flash-Lite succeeded (not
+  1/50 as originally written): `requestId=41c12b2d...`
+  (`cardName="Mega Excadrill EX"`, `currentMs=1493` vs. legacy timeout
+  at `legacyMs=5001`) and `requestId=6ce8e7ec...`
+  (`cardName="Totodile"`, `currentMs=1906` vs. legacy timeout at
+  `legacyMs=5001`) — the second one was simply absent from the original,
+  incomplete 50-record sample.
+- **47/50 (not 49/50) are both-succeeded comparisons.** Re-run on the
+  corrected 47-record set: **`cardName` agreed 45/47 (96%)**, not
+  100% as originally reported — **`cardNumber` agreed 27/47 (57%)**.
+
+**The 2 real `cardName` disagreements, quoted directly** (both missed in
+the original write-up):
+
+- `requestId=317f6b45-872b-4a7e-8583-156410b1f362` — current
+  (Flash-Lite) = `"Galarian Slowpoke"`, `cardNumber="042/198"`; legacy
+  (`gemini-3.6-flash`) = `"Slowpoke"`, `cardNumber=null` (legacy simply
+  didn't read a number here, not a numeric conflict). Flash-Lite is the
+  side that *kept* the regional-variant qualifier here; legacy dropped
+  it.
+- `requestId=627f3552-4b0e-4609-a50b-54805cd60fe5` — current
+  (Flash-Lite) = `"Rampardos"`, `cardNumber="045/064"`, `subtype=null`;
+  legacy = `"Rampardos ex"`, `cardNumber="045/084"`, `subtype="Stage
+  2"`. Here Flash-Lite is the side that *dropped* the `"ex"` qualifier
+  (and the 330 HP read is itself more consistent with an actual
+  `ex`-tier card, suggesting legacy's read is likelier correct on this
+  one).
+
+**Named pattern to watch, not yet confirmed**: both disagreements are
+variant-qualifier drops (a regional-form prefix in one case, an `"ex"`
+suffix in the other) — genuine identity differences, not spelling
+noise, and exactly the kind of miss that would matter for matching
+(different printings, different prices). But the *direction* is
+inconsistent across the 2 examples — Flash-Lite added the qualifier
+legacy dropped in the Slowpoke case, and dropped the qualifier legacy
+kept in the Rampardos case — so this is **not yet evidence of Flash-
+Lite systematically dropping variant qualifiers**, just two data points
+worth tracking as a named, specific question going forward: *does
+Flash-Lite (or either model) show a consistent one-directional bias on
+regional-variant/`"ex"`-type qualifiers as more `[legacy-model-shadow-
+test]` volume accumulates?* Watch for this pattern by name in future
+log pulls rather than letting it blend into the generic `cardName`
+agreement percentage.
+
+**Does this meet the bar for revisiting the promotion?** No, even with
+the corrected numbers. CLAUDE.md's own bar is "a live, out-of-band
+test, or a sustained worsening over an extended window, not a single
+bad data point." This window shows: (a) `cardName` agreement is 96%,
+not 100% — 2 real disagreements exist and are now named and tracked
+above, but 2/47 is still a small sample with no consistent direction,
+not a systematic new failure class; (b) of the 3 completion-rate
+disagreements in the corrected sample, 2 favor the new primary (legacy
+timed out, current succeeded) and 1 favors the old primary (current
+timed out, legacy succeeded) — a mixed, not one-sided, result; (c) the
+~57% `cardNumber` disagreement rate is high in absolute terms but is the
+same order of magnitude as test #82's own pre-promotion finding (also
+real conflicts like Dusknoir/Dusknorr, `023` vs `MEP 04`) and this pass
+has no independent ground truth to say which side is right on these 20
 disagreements — same caveat test #82 already flagged, not a new one.
 One ~22-minute window is also short of the 50-100-scan volume this
 project has used as its own bar for a real conclusion elsewhere (tests
-#80/#81), so this reads as **a good, reassuring first data point, not
-a closed verdict** — worth another casual pull in the coming days
-exactly as CLAUDE.md's "Immediate next step" already calls for.
+#80/#81), so this reads as **a good, reassuring first data point with
+one named pattern to keep watching, not a closed verdict** — worth
+another casual pull in the coming days exactly as CLAUDE.md's
+"Immediate next step" already calls for, specifically checking whether
+the qualifier-drop pattern recurs and whether it shows a consistent
+direction.
 
 **4. User-facing misses (flag reports).** Checked for `[user-flagged]`
 lines both via a direct substring grep on the raw pull and a separate

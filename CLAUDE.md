@@ -50,21 +50,33 @@ rollback plan (a one-line `GEMINI_MODEL` change) if it's ever needed.
 
 **Update, 2026-09-06, same day**: first real stats pull against live
 (not shadow-test) traffic on the new primary — see test #85 in
-`docs/test-cases.md` for full numbers. Real, reassuring first data
-point: completion rate 96.2% (2/52 full failures, both providers down
+`docs/test-cases.md` for full numbers (corrected same day after the
+user's own re-check of the raw logs caught a real methodology bug in
+the first pass — see below). Real, reassuring first data point:
+completion rate 96.2% (2/52 full failures, both providers down
 together, no rescue) vs. the old primary's documented 14-17% healthy /
 24-84% degraded failure rates; latency median ~1.83-1.95s with 92-94%
 of scans landing inside the 1-3s target; the `[legacy-model-shadow-
-test]` regression watch now has its first 50 data points —
-`cardName` agreement 100%, `cardNumber` agreement 49% (same order of
-magnitude as test #82's pre-promotion finding, no independent ground
-truth to say which side is right), and the one completion-rate
-disagreement in the sample favored the new primary (legacy model
-timed out on a frame Flash-Lite handled cleanly). Nothing here meets
-the "sustained worsening / live out-of-band test" bar for revisiting
-the promotion — just one ~22-minute window, worth another casual pull
-in the coming days as more regression-watch volume accumulates. Zero
-"flag this scan" reports in the available window.
+test]` regression watch now has its first 50 data points — corrected
+breakdown 1 current-model failure / 2 legacy-model failures / 47
+both-succeeded (the original write-up derived this from a `[timing]`-
+filtered dataset that structurally can't contain current-model-failure
+cases, undercounting both failure types). On the 47 both-succeeded
+comparisons: `cardName` agreement **96% (45/47)**, not the originally-
+reported 100% — **2 real disagreements found**, both variant-qualifier
+drops (`"Galarian Slowpoke"` vs. `"Slowpoke"`; `"Rampardos"` vs.
+`"Rampardos ex"`), inconsistent in direction (one example each way), so
+**not yet confirmed as a systematic Flash-Lite bias** but flagged as a
+named pattern to watch specifically in future pulls. `cardNumber`
+agreement 57% (27/47) (same order of magnitude as test #82's
+pre-promotion finding, no independent ground truth to say which side is
+right). Of the 3 completion-rate disagreements in the corrected sample,
+2 favored the new primary and 1 favored the old primary — mixed, not
+one-sided. Nothing here meets the "sustained worsening / live
+out-of-band test" bar for revisiting the promotion — just one
+~22-minute window, worth another casual pull in the coming days,
+specifically checking whether the qualifier-drop pattern recurs and in
+which direction. Zero "flag this scan" reports in the available window.
 
 The `numbersMatch()` "totalMismatch" scoring bug found via test #67 is
 now **fixed, deployed, and CONFIRMED in production** (commit `42429a5`,
