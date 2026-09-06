@@ -3502,6 +3502,136 @@ step is simply watching `[legacy-model-shadow-test]` logs accumulate
 over time, the same way tests #80-83 watched `[flash-lite-shadow-test]`
 before this promotion decision.
 
+### Test #85 (2026-09-06) — first real post-promotion stats pull: completion
+rate, latency, and regression-watch data with Flash-Lite as the live
+primary, not the shadow test
+
+Requested by the user as a stats/monitoring pass (no code changes, no
+deploy) to check how the promoted primary (`gemini-3.5-flash-lite`,
+decided in test #84) is actually performing now that it's live traffic,
+not shadow-test traffic. Pulled real `get_runtime_logs` covering as much
+of the retained window as Vercel's Hobby-plan 1h limit allows (see
+"Known gotchas").
+
+**Window and deployment**: the retained log history (`since=1h`, queried
+~2026-09-06T22:27 UTC) only contained real traffic from
+**2026-09-06T22:04:32Z–22:26:43Z** (~22 minutes) — the rest of the
+nominal 1h window was simply quiet (no scans), not a retention artifact.
+Confirmed via `get_deployment` that this entire window was served by a
+single deployment, `dpl_22F3PPBwEjkB5UPAPt9oo23m1QXD` (`createdAt`
+22:01:23Z, `meta.action: "redeploy"` of `dpl_85riwwo...`) — the exact
+redeploy from test #84 that picked up `LEGACY_GEMINI_SHADOW_MODEL`. This
+is genuinely the first stats pull that's 100% post-promotion, live-
+primary traffic — tests #80-83 were shadow-test-only data collected
+while `gemini-3.6-flash` was still the real primary.
+
+**1. Completion rate.** 52 real `/api/identify` attempts identified by
+requestId (50 with a full `[timing]` trace = real successes; 2 more
+found only via `get_runtime_errors`, both "Gemini failed and Haiku
+fallback unavailable too"):
+
+- Full success (Flash-Lite alone, no fallback needed): **50/52 = 96.2%**
+- Fallback rescue: **0/52 = 0%** (the only 2 real failures this window
+  had Haiku fail simultaneously too — same "both down together" shape
+  documented in tests #71/#80, not a new pattern)
+- Both providers failed: **2/52 = 3.8%** — both are the identical
+  genuine `GEMINI_TIMEOUT_MS=5000` wall (`"This operation was aborted"`
+  at 5001-5002ms), no new error type.
+
+Compared to the old primary's documented baseline: **healthy 14-17%
+failure** (tests #70/#71/#76) and **degraded 24-84% failure** (tests
+#77-#79). This window's 3.8% failure rate is well below even the old
+primary's best healthy-window performance — a real, large completion-
+rate improvement holding up on genuine mixed live-stream traffic (35
+distinct card names across the 50 successes, not a handful of repeats),
+not just the favorable conditions of the pre-promotion shadow tests.
+
+**2. Latency**, from real `[timing]` lines (n=50, de-duplicated — Vercel
+still delivers every log line twice, per the quirk documented in test
+#82):
+
+- `gemini ms`: median **1830.5ms** (range 1362-3861ms). **47/50 (94%)
+  land inside the 1-3s target**; 3/50 above 3s; 0 below 1s.
+- `total ms` (gemini + lookup): median **1952.5ms** (range 1552-4040ms).
+  **46/50 (92%) inside 1-3s**; 4/50 above 3s.
+
+The old primary's documented successful-call median was ~2.5s (2026-09-
+05 latency research) and ~2.26s-2.9s across various same-window checks
+in tests #80/#81. This window's new-primary median (~1.83-1.95s) is
+meaningfully faster and sits comfortably inside the 1-3s sudden-death-
+auction target on the large majority of real scans.
+
+**3. Regression watch** (`[legacy-model-shadow-test]`, comparing live
+Flash-Lite reads against a parallel, unused `gemini-3.6-flash` call on
+the same frame): **50 data points** collected in this window — the
+first batch collected as a genuine background regression watch rather
+than a promotion-decision shadow test.
+
+- **1/50 comparisons had the legacy model itself fail** while Flash-Lite
+  succeeded: `requestId=41c12b2d-3b72-4c90-bd32-8f56ab8f199d`,
+  `cardName="Mega Excadrill EX"`, `currentMs=1493` vs.
+  `legacy={"error":"This operation was aborted"}, legacyMs=5001`. This
+  is a real data point in the *reassuring* direction — a frame the old
+  primary would have failed on, the new primary handled cleanly.
+- Of the remaining **49 both-succeeded comparisons**, following the same
+  `cardName`/`cardNumber`-only reasoning as test #82 (`setName`/
+  `subtype` mismatches are frequently just one side leaving a field null,
+  not a real disagreement): **`cardName` agreed 49/49 (100%)**;
+  **`cardNumber` agreed 24/49 (49%)**.
+- Legacy model's own successful-call latency this window: median
+  **~2256ms** — consistent with its documented ~2.5s ballpark, and
+  meaningfully slower than Flash-Lite's ~1.83s median on the same
+  frames (same-frame comparison, not just population-level).
+
+**Does this meet the bar for revisiting the promotion?** No. CLAUDE.md's
+own bar is "a live, out-of-band test, or a sustained worsening over an
+extended window, not a single bad data point." This window shows: (a)
+100% `cardName` agreement — no sign of a new, systematic
+misidentification class specific to the new primary; (b) the one
+completion-rate disagreement in the sample favors the new primary (legacy
+failed, current succeeded), not the reverse; (c) the ~49% `cardNumber`
+disagreement rate is high in absolute terms but is the same order of
+magnitude as test #82's own pre-promotion finding (also real conflicts
+like Dusknoir/Dusknorr, `023` vs `MEP 04`) and this pass has no
+independent ground truth to say which side is right on these 25
+disagreements — same caveat test #82 already flagged, not a new one.
+One ~22-minute window is also short of the 50-100-scan volume this
+project has used as its own bar for a real conclusion elsewhere (tests
+#80/#81), so this reads as **a good, reassuring first data point, not
+a closed verdict** — worth another casual pull in the coming days
+exactly as CLAUDE.md's "Immediate next step" already calls for.
+
+**4. User-facing misses (flag reports).** Checked for `[user-flagged]`
+lines both via a direct substring grep on the raw pull and a separate
+`get_runtime_logs` call with `query="user-flagged"` over the same
+window — **zero flags in the available ~1h retention window.** No
+"couldn't identify" reports to trace this time (unlike test #80's 3
+flagged scans). Cannot say anything about flags from before this
+retention window; they're gone per Vercel's Hobby-plan 1h log limit.
+
+**Secondary check — match-quality on the lookup/pricing side (unrelated
+to the vision-model swap, included for continuity with tests #76-79):**
+of the 50 successful scans, 2 hit `AMBIGUOUS MATCH` and 18 hit `NO
+NUMBER MATCH IN POOL` (both de-duplicated counts) — **20/50 (40%)**
+landed in some Low-confidence warning state, in the same 34-45% range
+tests #76-78 documented for the old primary. Zero `pricingError`s, zero
+`"found":false` (no fully-failed matches). This side of the pipeline
+looks unaffected by the model swap, as expected since matching/scoring
+code wasn't touched.
+
+**Status**: no code changes, no deploy — stats/monitoring pass only, per
+explicit instruction. Real numbers now exist for all four things asked:
+completion rate is dramatically better than any pre-promotion baseline
+(3.8% vs 14-84% failure), latency is meaningfully faster and mostly
+inside the 1-3s target, the regression watch has its first 50 data
+points with no concerning pattern (and one point favoring the new
+primary), and there are no flag reports to investigate this window.
+Recommend one more casual pull in the next few days once more
+`[legacy-model-shadow-test]` volume accumulates, particularly hoping to
+catch a window during one of the old primary's own degraded periods to
+see whether the new primary's advantage holds or widens under exactly
+the conditions that motivated this promotion.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
