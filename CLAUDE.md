@@ -651,6 +651,58 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Extension toolbar-icon UX fix — BUILT AND COMMITTED LOCALLY, NOT YET
+  RELOADED IN THE REAL BROWSER (2026-09-07)**, commit `ae98dfe`. Root
+  cause investigation: clicking the toolbar icon always opened Settings
+  (`popup.html`) and never toggled the on-page Card ID panel, because
+  `manifest.json`'s old `action.default_popup` and a `chrome.action.
+  onClicked` listener are mutually exclusive in Manifest V3 — there was
+  no missing conditional to add, the manifest wiring itself made a
+  toggle impossible. Separately confirmed `backendUrl` was NOT actually
+  stale/cached anywhere (both `identifyDirect()` in `extension/
+  content.js` and `getBackendUrl()` in `extension/background.js` read
+  `chrome.storage.sync` fresh at click-time) — the real cause of the
+  "need to refresh" friction was that Chrome only auto-injects
+  `content_scripts` on *future* navigations, so a tab already open
+  before an install/reload never gets `content.js` at all until
+  reloaded.
+
+  **Fix**: removed `action.default_popup` from `extension/
+  manifest.json`; added a `chrome.action.onClicked` listener in
+  `extension/background.js` that pings the active tab's content script
+  first, and only falls back to on-demand `chrome.scripting.
+  insertCSS`/`executeScript` injection when that ping fails (the
+  stale-tab case) — either way followed by a `TOGGLE_PANEL` message.
+  `extension/content.js` now has a `TOGGLE_PANEL` listener and a shared
+  `setPanelVisible()` function that the existing "×" close button was
+  refactored to use too — this incidentally fixes a real pre-existing
+  bug where closing the panel via "×" left no way to reopen it short of
+  a page reload. Settings moved off the primary click path into a gear
+  icon inside the panel's title bar (`#wnpk-settings-btn`), opening an
+  inline backend-URL field + Save button styled to match the rest of the
+  panel (`extension/content.css`); `popup.html` is unchanged and now
+  serves as the `options_ui` page (Chrome's right-click → "Options") as
+  a backup entry point. Added the `"scripting"` permission
+  (`manifest.json`) for the on-demand injection fallback; `activeTab`
+  already covered host access. No first-run special-casing was needed —
+  `DEFAULT_BACKEND_URL` in both `content.js` and `background.js` already
+  points at the live Vercel deployment, so icon-click-toggles-panel is
+  correct even on a fresh install.
+
+  **Verified so far (does not touch the real browser)**: `node --check`
+  passes on both `background.js` and `content.js`; `manifest.json`
+  parses as valid JSON; full diff reviewed line-by-line against the
+  plan. **Not yet verified**: no live reload-and-test pass in
+  `chrome://extensions` yet (icon toggling the panel with no refresh,
+  the stale-tab injection fallback, the gear-icon inline settings
+  save/load, and reopening via the icon after closing via "×") — per
+  this project's own "ask before anything that touches the user's real,
+  in-use extension" convention (this ships by the user reloading their
+  actual installed extension, not a Vercel deploy, but the same
+  go-ahead-first bar applies), waiting on the user to run through that
+  locally before calling this done. Update this entry once that pass
+  happens.
+
 - **Test #79 — severe live Gemini failure cluster (2026-09-05)**: caught
   during a routine audit via real Vercel logs, not the user's own
   report — six sequential ~10-minute windows spanning
