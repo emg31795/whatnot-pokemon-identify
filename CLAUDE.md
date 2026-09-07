@@ -651,8 +651,8 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
-- **Extension toolbar-icon UX fix — BUILT AND COMMITTED LOCALLY, NOT YET
-  RELOADED IN THE REAL BROWSER (2026-09-07)**, commit `ae98dfe`. Root
+- **Extension toolbar-icon UX fix — BUILT, COMMITTED, AND CORE BEHAVIOR
+  LIVE-CONFIRMED (2026-09-07)**, commits `ae98dfe`/`961eb0a`. Root
   cause investigation: clicking the toolbar icon always opened Settings
   (`popup.html`) and never toggled the on-page Card ID panel, because
   `manifest.json`'s old `action.default_popup` and a `chrome.action.
@@ -706,19 +706,24 @@ checklist before reporting something as finished:
   execution, so on a real first load it's always absent at check-time.
   `node --check` passes.
 
-  **Verified so far (does not touch the real browser)**: `node --check`
-  passes on both `background.js` and `content.js`; `manifest.json`
-  parses as valid JSON; full diff reviewed line-by-line against the
-  plan. **Not yet verified**: no live reload-and-test pass in
-  `chrome://extensions` yet (icon toggling the panel with no refresh,
-  the stale-tab injection fallback, the gear-icon inline settings
-  save/load, and reopening via the icon after closing via "×") — per
-  this project's own "ask before anything that touches the user's real,
-  in-use extension" convention (this ships by the user reloading their
-  actual installed extension, not a Vercel deploy, but the same
-  go-ahead-first bar applies), waiting on the user to run through that
-  locally before calling this done. Update this entry once that pass
-  happens.
+  **Verified pre-reload (doesn't touch the real browser)**: `node
+  --check` passes on both `background.js` and `content.js`;
+  `manifest.json` parses as valid JSON; full diff reviewed line-by-line
+  against the plan.
+
+  **Live-confirmed 2026-09-07**: user reloaded the real installed
+  extension and confirmed the core fix — clicking the toolbar icon now
+  opens the panel immediately ("it pops right up now"), no page refresh
+  needed. **Not individually confirmed by name** (the user's test
+  wasn't broken down sub-case by sub-case, so don't assume these are
+  separately verified): the specific stale-tab `chrome.scripting`
+  injection fallback path, the gear-icon inline settings save/load, and
+  reopening the panel via the icon after closing it with "×". These are
+  the same code path as the core fix and plausibly exercised, but per
+  this project's own "verify, don't assume" convention, treat them as
+  open until they're specifically seen working (or a live scan/click
+  incidentally proves one of them, the way organic traffic has
+  confirmed other fixes elsewhere in this file).
 
 - **Test #79 — severe live Gemini failure cluster (2026-09-05)**: caught
   during a routine audit via real Vercel logs, not the user's own
