@@ -55,7 +55,8 @@
   flex: 1;
 }
 
-#wnpk-close {
+#wnpk-close,
+#wnpk-settings-btn {
   background: none;
   border: none;
   color: #17181c;
@@ -63,6 +64,60 @@
   cursor: pointer;
   line-height: 1;
   padding: 0 2px;
+}
+
+/* ADDED 2026-09-07 (toolbar-icon UX fix): inline Settings, opened via the
+   gear button in #wnpk-bar. Hidden by default; .wnpk-settings-open is
+   toggled by content.js. */
+#wnpk-settings {
+  display: none;
+  padding: 8px 10px 0;
+}
+
+#wnpk-settings.wnpk-settings-open {
+  display: block;
+}
+
+#wnpk-settings label {
+  display: block;
+  color: #a3a4ab;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+#wnpk-settings input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #26272e;
+  color: #f2f2f2;
+  border: 1px solid #3a3b44;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+#wnpk-settings-save {
+  width: 100%;
+  background: #26272e;
+  color: #f2f2f2;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#wnpk-settings-save:hover {
+  background: #33343c;
+}
+
+#wnpk-settings-status {
+  color: #a3a4ab;
+  font-size: 10px;
+  margin: 4px 0 2px;
+  min-height: 12px;
 }
 
 #wnpk-controls {

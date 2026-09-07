@@ -39,7 +39,14 @@
     <div id="wnpk-bar">
       <span id="wnpk-dot"></span>
       <span id="wnpk-title">Card ID (Free)</span>
+      <button id="wnpk-settings-btn" title="Settings">⚙</button>
       <button id="wnpk-close" title="Hide">×</button>
+    </div>
+    <div id="wnpk-settings">
+      <label for="wnpk-backend-url">Backend URL</label>
+      <input id="wnpk-backend-url" type="text" placeholder="https://your-project.vercel.app/api/identify" />
+      <button id="wnpk-settings-save">Save</button>
+      <div id="wnpk-settings-status"></div>
     </div>
     <div id="wnpk-controls">
       <button id="wnpk-zone-btn">Set Scan Area</button>
@@ -57,9 +64,51 @@
   document.documentElement.appendChild(root);
 
   const $ = (sel) => root.querySelector(sel);
-  $("#wnpk-close").addEventListener("click", () => {
-    root.style.display = "none";
+
+  // ADDED 2026-09-07 (toolbar-icon UX fix): the "×" button and the toolbar
+  // icon's TOGGLE_PANEL message (below) both just flip this one function
+  // instead of each tracking their own visibility state — that's what
+  // fixes the old bug where closing via "×" left no way to reopen the
+  // panel short of a page reload.
+  function setPanelVisible(visible) {
+    root.style.display = visible ? "" : "none";
+  }
+
+  $("#wnpk-close").addEventListener("click", () => setPanelVisible(false));
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message.type === "TOGGLE_PANEL") {
+      setPanelVisible(root.style.display === "none");
+    }
   });
+
+  // ADDED 2026-09-07 (toolbar-icon UX fix): Settings used to be the
+  // popup.html shown by every toolbar-icon click (manifest.json's old
+  // `action.default_popup`). Now that the icon toggles this panel instead,
+  // Settings moves to a small in-panel gear so it's reachable without
+  // leaving the stream page; popup.html itself is repurposed as the
+  // right-click "Options" page (manifest.json's `options_ui`) as a backup
+  // entry point, unchanged.
+  const settingsPanel = $("#wnpk-settings");
+  const settingsInput = $("#wnpk-backend-url");
+  const settingsStatus = $("#wnpk-settings-status");
+
+  $("#wnpk-settings-btn").addEventListener("click", async () => {
+    const opening = !settingsPanel.classList.contains("wnpk-settings-open");
+    if (opening) {
+      const { backendUrl } = await chrome.storage.sync.get("backendUrl");
+      settingsInput.value = backendUrl || "";
+    }
+    settingsPanel.classList.toggle("wnpk-settings-open", opening);
+  });
+
+  $("#wnpk-settings-save").addEventListener("click", () => {
+    chrome.storage.sync.set({ backendUrl: settingsInput.value.trim() }, () => {
+      settingsStatus.textContent = "Saved.";
+      setTimeout(() => (settingsStatus.textContent = ""), 1500);
+    });
+  });
+
   $("#wnpk-zone-btn").addEventListener("click", startZoneSelection);
   $("#wnpk-zone-clear").addEventListener("click", () => {
     scanZone = null;

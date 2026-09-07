@@ -22,6 +22,35 @@ async function getBackendUrl() {
 // explanation.
 const REQUEST_TIMEOUT_MS = 14000;
 
+function isWhatnotLivePage(url) {
+  return !!url && /^https:\/\/[^/]*\.whatnot\.com\/live\//.test(url);
+}
+
+// ADDED 2026-09-07 (toolbar-icon UX fix): the icon used to always open
+// popup.html (Settings) via manifest.json's `action.default_popup` — Chrome
+// makes that and `action.onClicked` mutually exclusive, so with the popup
+// removed from the manifest, a click now toggles the on-page panel instead.
+// A tab that was already open before this extension was installed/reloaded
+// never gets content.js auto-injected (content_scripts only fire on future
+// navigations), so a plain sendMessage would silently fail there — ping
+// first, and only fall back to on-demand injection when that ping fails.
+// This is also what removes the old "refresh the page" requirement.
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab.id || !isWhatnotLivePage(tab.url)) return;
+
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PANEL" });
+  } catch (err) {
+    try {
+      await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ["content.css"] });
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+      await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PANEL" });
+    } catch (injectErr) {
+      console.warn("[wnpk] couldn't toggle Card ID panel:", injectErr);
+    }
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type !== "IDENTIFY_CARD") return;
 
