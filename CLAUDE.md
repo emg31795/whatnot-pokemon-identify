@@ -78,6 +78,25 @@ out-of-band test" bar for revisiting the promotion — just one
 specifically checking whether the qualifier-drop pattern recurs and in
 which direction. Zero "flag this scan" reports in the available window.
 
+**Update, 2026-09-07**: what matters most is still the passive
+`[legacy-model-shadow-test]` log-watching above — no action needed
+there unless it surfaces something. Separately, an off-Phase-1
+extension-tooling fix shipped and was pushed today: the toolbar icon
+now toggles the on-page Card ID panel (it used to always force-open
+Settings and needed a page refresh to respond) — see "Recent /
+in-flight work" below for the full root-cause/fix writeup. Core
+behavior is live-confirmed by the user; three sub-cases (the gear-icon
+inline settings save/load, the stale-tab `chrome.scripting` injection
+fallback, and reopening the panel via the icon after closing it with
+"×") share the same code path but weren't individually exercised in
+that test — worth a specific look next time the extension comes up,
+not urgent. (Also closed out today, no action needed: a research-only
+question on whether "EX Delta Species" needs its own stampType/pricing
+handling — confirmed it's already fully and correctly handled by
+existing card identification, no code changed; see
+`docs/test-cases.md`'s "Research: does 'EX Delta Species' need a new
+stampType / pricing-variant" section for the full trace.)
+
 The `numbersMatch()` "totalMismatch" scoring bug found via test #67 is
 now **fixed, deployed, and CONFIRMED in production** (commit `42429a5`,
 `dpl_DjjbNMqE5nHb45MGYb3Sjby6JXXB`, aliased to
