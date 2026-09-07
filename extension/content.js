@@ -7,6 +7,21 @@
 // panel, frame capture, and result rendering all live here.
 
 (function () {
+  // ADDED 2026-09-07 (toolbar-icon UX fix, follow-up): background.js's
+  // onClicked handler injects this file on demand when its sendMessage
+  // ping to an existing content script fails — but a failed ping doesn't
+  // always mean the script is genuinely missing (e.g. a timing race right
+  // after page load could produce the same error). Manifest-declared
+  // content_scripts can also still run normally on top of that. Each
+  // injection is a fresh script execution with its own closure, so a
+  // module-scoped flag from a prior run wouldn't be visible here — check
+  // the DOM instead, which persists across injections, and bail out
+  // immediately if the panel already exists. Without this, a redundant
+  // injection would rebuild #wnpk-root and re-register every listener a
+  // second time, including the Identify Card click handler — meaning one
+  // click would fire two real, billed API calls.
+  if (document.getElementById("wnpk-root")) return;
+
   const CONDITION_ORDER = ["NM", "LP", "MP", "HP", "DMG"];
 
   const DEFAULT_BACKEND_URL = "https://whatnot-pokemon-identify.vercel.app/api/identify";
