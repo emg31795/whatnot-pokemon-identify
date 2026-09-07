@@ -21,6 +21,11 @@ compression repeatedly caused lost history (see "Continuity note" in
 
 ## Current priority
 
+> **STANDING RULE — READ THIS BEFORE ANY STATS / COMPLETION-RATE / REGRESSION-WATCH LOG PULL:**
+> **Never derive a completion-rate or regression-watch count from a `get_runtime_logs` pull filtered on `query="[timing]"` alone.** A `[timing]` line only gets logged *after* the Gemini call to the current/primary model succeeds — so a request where the current model itself fails (times out, errors) **structurally never produces a `[timing]` line at all** and is silently absent from any dataset built that way, undercounting failures and inflating the reported completion rate. This is not a hypothetical: it has already happened **twice**, in test #85 and test #86 (`docs/test-cases.md`), both times caught only by the user's own manual re-check of the raw logs, not by the pull itself.
+>
+> **Always filter on `query="legacy-model-shadow-test"` (it fires unconditionally, on every request, success or failure) or pull unfiltered and grep for `[identify]`/`"Gemini call failed"` instead.** `[timing]` is fine for latency stats specifically (where excluding failed calls is correct and intended), but never for a completion-rate or regression-watch denominator. See test #86's "Correction" section for the full trace of what this looks like when it's missed.
+
 **Phase 1 of `docs/ROADMAP.md`: stabilize raw-card (English + Japanese)
 identification accuracy and speed before expanding scope.** Do not start
 Phase 2 (graded slabs) or Phase 3 (sealed packs) work until Phase 1's
@@ -96,6 +101,42 @@ handling — confirmed it's already fully and correctly handled by
 existing card identification, no code changed; see
 `docs/test-cases.md`'s "Research: does 'EX Delta Species' need a new
 stampType / pricing-variant" section for the full trace.)
+
+**Update, 2026-09-07, later same day**: second real post-promotion
+stats pull (test #86, `docs/test-cases.md`), a stats/monitoring pass
+only (no code, no deploy) covering a real ~16.5-minute scanning session.
+**Corrected same day**: the first pass reported 100% completion (34/34)
+from a `get_runtime_logs` pull filtered on `query="[timing]"` — the same
+structural bug test #85 already caught once (a current-model failure
+never reaches the `[timing]` checkpoint, so it's invisible to that
+query). The user's own re-check of the raw logs found the real total
+was **36 requests, not 34**, including 2 genuine current-model
+failures. Corrected: **completion rate 94.4% (34/36)** — close to, not
+better than, test #85's 96.2% — with 0/36 fallback rescues (neither
+failure was rescued by Haiku; one of the two had the legacy model
+succeed with a good read on the same frame, but Haiku still failed,
+so the user saw the honest "couldn't identify" message anyway).
+Latency-when-successful is holding in the same range (gemini-ms median
+1853ms, total-ms median 2082ms, 94% inside the 1-3s target, n=34
+successful calls). The `[legacy-model-shadow-test]` regression watch is
+at **100% coverage (36/36)**, not 34/34 — 2 current-model failures and
+2 legacy-model failures (not 0 and 1 as originally reported); the
+agreement percentages on the 33 both-succeeded records (94% cardName,
+45% cardNumber) were correct as originally reported and are unchanged.
+The named qualifier-drop pattern from test #85 recurs once more
+(`"Crobat V"` vs. legacy's `"Crobat"` + `subtype:"V"`) but again in an
+inconsistent direction — 3 instances across 2 pulls now, still not
+confirmed as a systematic Flash-Lite bias either way. Also checked, per
+explicit request, for any sign of the 2026-09-07 toolbar-icon
+double-injection bug (two billed calls from one click) — none found in
+this window's traffic pattern (every close-timestamp scan cluster is
+2-13s apart with independent requestIds and often differing reads,
+consistent with manual back-to-back rescans, not a duplicate fire),
+though log timestamp granularity can't fully rule out a true sub-second
+duplicate. Zero flag reports this window. Nothing here changes the
+"keep as-is"
+status of the Flash-Lite promotion or the Haiku fallback — just
+continued watching, per the "Immediate next step" note above.
 
 The `numbersMatch()` "totalMismatch" scoring bug found via test #67 is
 now **fixed, deployed, and CONFIRMED in production** (commit `42429a5`,
@@ -580,6 +621,10 @@ checklist before reporting something as finished:
    just a different wrong one each scan), and the real reason the
    accurate warning path didn't fire was a separate, still-unfixed
    scoring bug (see CLAUDE.md "Recent / in-flight work" below).
+   **For stats/completion-rate/regression-watch pulls specifically, see
+   the standing rule at the top of "Current priority" above** — filtering
+   on `[timing]` alone has already silently undercounted failures twice
+   (tests #85 and #86).
 2. **If a user pushes back with a specific correction, re-investigate —
    don't just re-assert the prior conclusion.** Several real root causes
    in this project's history were only found because the user corrected

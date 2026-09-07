@@ -3692,6 +3692,273 @@ catch a window during one of the old primary's own degraded periods to
 see whether the new primary's advantage holds or widens under exactly
 the conditions that motivated this promotion.
 
+### Test #86 (2026-09-07) — second real post-promotion stats pull, corrected:
+94.4% completion (not the originally-reported 100%), latency holding,
+and the qualifier-drop pattern recurs in the opposite direction
+
+Requested by the user as a stats/monitoring pass (no code changes, no
+deploy) after a real ~20-30 minute scanning session, to check whether
+test #85's promising first pull holds up. Pulled real `get_runtime_logs`
+for `since=30m` against `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`.
+
+**Correction (caught by the user's own re-check of the raw logs, same
+day)**: the original pass through this write-up derived section 1's
+completion-rate count from a `get_runtime_logs` pull filtered on
+`query="[timing]"` — the **exact same structural methodology bug test
+#85 already found and corrected once**: a request where the *current*
+model itself fails never reaches the `[timing]` checkpoint, so it's
+structurally invisible to a dataset built that way. That pull found 34
+requests and reported 34/34 = 100% completion. The user's own re-check
+of the raw records found **36 unique comparisons, not 34**, including 2
+where the current model genuinely failed — both silently absent from
+the first pass because of the query filter, not because they didn't
+happen. A fresh, independent re-pull (`since=40m`, filtered on
+`query="legacy-model-shadow-test"` directly, cross-referenced against
+the real `[identify]` log lines for both flagged requestIds) confirmed
+the user's correction exactly: **36 total requests in the
+2026-09-07T21:11:50Z–21:28:25Z window, not 34.** Section 3's agreement
+percentages (94% `cardName`, 45% `cardNumber` on the 33 both-succeeded
+records) were unaffected by this bug and check out as originally
+reported — both missing records are failures, not both-succeeded
+comparisons, so they never touched that subset. The corrected numbers
+below replace the originally-reported ones throughout; nothing here was
+guessed or re-derived from memory — every number below is quoted
+directly from real log lines.
+
+**Window and deployment**: actual scan traffic spanned
+**2026-09-07T21:11:50Z–21:28:25Z** (~16.5 minutes) inside the requested
+30-minute lookback — the rest of the window was quiet. All 36 requests
+in the window returned HTTP 200 (a Gemini/Haiku failure still resolves
+to a 200 with an honest `found:false` body, not a 5xx — see section 1),
+and `grep`-ing for 5xx/4xx statuses on `/api/identify` returned nothing.
+
+**1. Completion rate — corrected.** **36 real scans**, not 34. Two of
+them had the current model (the live primary, Flash-Lite) genuinely
+fail, confirmed via the real `[identify]` log lines for each exact
+`requestId` (not inferred from the shadow-test comparison alone):
+
+- `requestId=56487257-da17-4aa8-bcde-5c3fd47dac4d` (21:13:10 UTC):
+  `"Gemini call failed: This operation was aborted after ms= 5003"`,
+  immediately followed by `"Gemini failed and Haiku fallback
+  unavailable too: This operation was aborted"`. **Both providers
+  failed together** — the real, honest "couldn't identify" message is
+  what the user actually saw for this scan. (The legacy shadow call
+  also timed out here, at the same 5003ms — irrelevant to the user's
+  outcome, but confirms this was a genuinely hard moment for the
+  provider, not just a current-model-specific issue.)
+- `requestId=4125832a-e0a0-414c-abc2-c279b787dbb4` (21:25:28 UTC):
+  `"Gemini call failed: This operation was aborted after ms= 5001"`,
+  immediately followed by `"Gemini failed and Haiku fallback
+  unavailable too: This operation was aborted"`. **Haiku did NOT rescue
+  this one** — despite the legacy shadow call succeeding cleanly on the
+  same frame (`cardName="Corviknight VMAX"`, `cardNumber="110/163"`,
+  High confidence, 4806ms — a real, correct-looking read that simply
+  wasn't the model in the user-facing path), the user still saw the
+  generic "couldn't identify" message, not a rescued result.
+
+So, corrected:
+
+- **Full success (current model alone): 34/36 = 94.4%**
+- **Fallback rescue: 0/36 = 0%** — neither of the 2 real failures this
+  window was rescued; both had Haiku fail simultaneously, the same
+  "both down together" shape documented repeatedly in this project's
+  history (tests #71/#80/#85).
+- **Both providers failed: 2/36 = 5.6%**
+
+Compared to the old primary's baseline (14-17% healthy / 24-84%
+degraded failure), 94.4% is still a large, real improvement. Compared
+to test #85's 96.2%, this window is **close to, not better than**, that
+first pull — the original write-up's "even cleaner than test #85"
+claim was wrong and is retracted. Two real data points now sit in the
+94-96% range on live traffic, both far above the old primary's
+documented ceiling — a second real point in the same direction, just
+not a strictly-improving one.
+
+**2. Latency**, from real `[timing]` lines — **unaffected by the
+correction above**, since `[timing]` lines only ever exist for calls
+that reached that checkpoint, i.e. exactly the 34 successful current-
+model calls (the 2 failed calls hit the 5000ms wall as failures,
+logged as `"Gemini call failed... after ms= 5001/5003"`, not as
+`[timing]` lines — they are correctly excluded from a latency stat,
+not missing from one):
+
+- `gemini ms`: n=34 (successful calls only), median **1853ms** (range
+  1463-4803ms). One outlier at 4803ms (`requestId=8b2727ab...`, a
+  Tyranitar V scan) came close to the `GEMINI_TIMEOUT_MS=5000` wall
+  without crossing it — notably, this is the same request where the
+  legacy-model shadow call *did* time out (see section 3), suggesting a
+  genuinely slow round-trip that hit, not a fluke.
+- `total ms` (gemini + lookup): n=32 (2 of the 34 successful calls never
+  emit a `total ms` line — one because `cardName` came back `null` (Low
+  confidence, back-of-card-only frame, so the lookup step is skipped
+  entirely — a legitimate no-lookup path, not a failure), one because it
+  took the page1+page2 merged-fallback branch, which doesn't emit that
+  specific timing tag). Median **2082ms**, range 1572-5114ms. **30/32
+  (94%) land inside the 1-3s target**; the 2 outside are 3091ms (the
+  page1+page2 merge, just over) and 5114ms (the same slow-Gemini-call
+  outlier from above).
+
+This closely matches test #85's ~1.83-1.95s median (gemini-ms median
+here is 1853ms, right in that range; total-ms median is a bit higher at
+2082ms but still comfortably inside the 1-3s target on the large
+majority of successful scans). Latency-when-successful is holding, not
+drifting, on a second real session.
+
+**3. Regression watch** (`[legacy-model-shadow-test]`, comparing live
+Flash-Lite against a parallel, unused `gemini-3.6-flash` call on the
+same frame) — **corrected denominator, same agreement percentages**.
+Re-pulled filtered on `legacy-model-shadow-test` directly, not
+`[timing]`, so a current-model failure couldn't be structurally
+invisible to the count (this is what surfaced the 2 missing failures
+above).
+
+**36/36 requests fired the shadow test** (100% coverage — the
+regression-watch safety net from test #84 is still fully collecting
+data on this deployment, `dpl_22F3PPBwEjkB5UPAPt9oo23m1QXD`), not 34/34
+as originally reported.
+
+- **2/36 current-model (Flash-Lite) failures** (not 0/34 as originally
+  reported): `56487257...` (both sides failed together) and
+  `4125832a...` (current failed, legacy succeeded with `"Corviknight
+  VMAX"`) — both detailed in section 1 above.
+- **2/36 legacy-model failures** (not 1/34 as originally reported):
+  `56487257...` (both sides failed together, already counted above) and
+  `requestId=8b2727ab-28bb-4b5b-9be1-7e2805fae908` — legacy
+  (`gemini-3.6-flash`) returned `{"error":"This operation was aborted"}`
+  while current succeeded (slowly — this is the 4803ms outlier from
+  section 2).
+- **33/36 are both-succeeded comparisons** (36 total minus the 3 records
+  above — the 56487257 double-failure counts once, not twice). This
+  part of the original write-up was correct: `cardName` agreed **31/33
+  (94%)** — close to test #85's 96%. `cardNumber` agreed **15/33
+  (45%)** — same order of magnitude as test #85's 57% and the older
+  test #82 finding; still no independent ground truth to say which
+  side is right on the disagreements.
+
+**Completion-rate disagreements, by direction**: of the 2 records where
+exactly one side succeeded and the other failed, 1 favored the new
+primary (`8b2727ab`: current succeeded, legacy timed out) and 1 favored
+the old primary (`4125832a`: current timed out, legacy succeeded) — a
+mixed, not one-sided, result, plus 1 record where neither side succeeded
+(`56487257`). Same "mixed, not one-sided" shape test #85 documented on
+its own completion-rate disagreements.
+
+**The 2 real `cardName` disagreements, quoted directly:**
+
+- `requestId=149f3943-f0d8-4b48-a43d-6f2a25aff54e` — current
+  (Flash-Lite) = `"Galarian Moltres V"` (`hp="220"`, `subtype="VMAX"`,
+  confidence Low, reasoning explicitly says it inferred the name from
+  "artwork, dark color scheme, and HP 220" despite motion blur); legacy
+  = `null` (everything null, reasoning says the frame was "extremely
+  blurry... making text, HP, and set numbers completely illegible").
+  **This is not the qualifier-drop pattern** — it's a "guessed from
+  partial visual cues vs. declined to guess" disagreement on a genuinely
+  bad frame, a different and arguably more concerning shape (Flash-Lite
+  committing to a specific card name from indirect visual cues alone on
+  a blurry frame) worth its own watch, separate from the qualifier
+  question.
+- `requestId=b71ffb85-ed2f-472f-a549-9dfd3c1f6347` — current
+  (Flash-Lite) = `"Crobat V"` (single cardName field, `subtype=null`);
+  legacy = `"Crobat"` with `subtype="V"` (split into two fields). **This
+  is the named qualifier-drop pattern from test #85**, and it recurs —
+  but in the **opposite direction** from both of test #85's examples:
+  there, Flash-Lite was the side that both added (Slowpoke) and dropped
+  (Rampardos) a qualifier relative to legacy; here, **legacy** is the
+  side that split the qualifier out of `cardName`, while Flash-Lite kept
+  the fuller single-string form intact.
+
+**Pattern status, updated**: across the two pulls (test #85 + this one),
+there are now 3 named qualifier-related `cardName` disagreements total,
+split roughly evenly in direction — still **not confirmed as a
+systematic Flash-Lite bias in either direction** (dropping or adding
+qualifiers), consistent with test #85's own hedge. Keep watching by
+name rather than folding this into the generic `cardName` agreement
+percentage, per the standing instruction.
+
+**Does this meet the bar for revisiting the promotion?** No. Completion
+rate (94.4%) sits close to test #85's 96.2%, not clearly better and not
+clearly worse — both real data points on live traffic sitting far above
+the old primary's documented 14-84% failure range. Latency-when-
+successful is holding in the same range, and the regression watch's
+only new disagreement of the named-pattern type is a small,
+direction-inconsistent data point, not a worsening trend. Of the 2 real
+completion-rate failures this window, 1 was a genuine double-failure
+(both providers down) and the other had Haiku fail to rescue a case
+where the legacy model actually had a good read available — worth
+naming honestly as a real, if small, gap between "the fallback exists"
+and "the fallback reliably rescues," consistent with this project's
+already-decided 2026-09-04 position (test #75) that the Haiku fallback
+is being kept as strictly-additive-but-unreliable, not tuned or
+reverted. CLAUDE.md's bar for revisiting the *model promotion*
+specifically (a live out-of-band test or sustained worsening over an
+extended window) is not met — this is a real, mixed-but-still-good data
+point, not a verdict either way.
+
+**4. Sanity check for the toolbar-icon double-injection bug** (the
+2026-09-07 fix added a `document.getElementById("wnpk-root")` guard
+against a failed content-script ping triggering a duplicate
+`chrome.scripting.executeScript` injection, which could double every
+event listener including the Identify Card click handler). Looked for
+pairs of `/api/identify` requests with near-identical timestamps that
+could indicate one click firing two billed calls.
+
+Several close-timestamp clusters exist in this window (e.g. four
+Tyranitar V scans at 21:17:48/18:01/18:05/18:08/18:12, four Gardevoir
+scans at 21:24:32-21:24:43, three Tornadus VMAX scans at
+21:25:08-21:25:16) — but every one of these pairs is **2-13 seconds
+apart**, each with its own distinct `requestId`, its own independent
+Gemini API call and token usage, and (in several cases) a genuinely
+*different* `cardNumber` read across the repeats on the same physical
+card (e.g. the Tyranitar V cluster reads 151/163, then 097/163, then
+097/163, then 151/163, then 057/163) — the well-documented Gemini
+read-instability behavior from this project's history, not evidence of
+a resent duplicate payload. A true double-injection duplicate would be
+expected to fire within the same browser event tick (well under a
+second), not several seconds apart, and these timestamp gaps read as
+the user manually re-clicking "Identify Card" several times per card —
+exactly this project's own documented "scan 2-3 times back-to-back
+while a card is still on screen" rescan convention.
+**No evidence of the double-injection bug in this window.** Caveat:
+Vercel's pulled log headers only carry second-level timestamp
+granularity, so a true sub-second duplicate pair can't be fully ruled
+out by this method alone — but combined with the differing reads on
+repeated cards, this is a reasonably strong (not airtight) negative
+result. Only the core toggle behavior has been individually
+live-confirmed per CLAUDE.md; this check adds indirect evidence the
+injection-fallback path isn't currently double-firing, without being a
+direct test of that specific code path.
+
+**5. Flag reports.** `grep -c "user-flagged"` on the full pulled window
+returned **0** — no flagged scans to investigate this session.
+
+**Status**: no code changes, no deploy — stats/monitoring pass only, per
+explicit instruction. **Corrected same day** after the user's own
+re-check of the raw logs caught the same `[timing]`-filter methodology
+bug test #85 already found once — see the "Correction" note above
+section 1. Second real post-promotion data point, corrected: completion
+rate **94.4% (34/36)**, not the originally-reported 100% (34/34) —
+2 real failures existed and were initially invisible to the query used;
+neither was rescued by Haiku, one of them despite the legacy model
+having a good read available on the same frame. Latency-when-successful
+median is in line with test #85 (~1.85-2.08s, 94% inside the 1-3s
+target), the regression watch is at **36/36 coverage** (not 34/34) with
+2 current-model and 2 legacy-model failures (not 0 and 1 as originally
+reported) — agreement percentages on the 33 both-succeeded records were
+correct as originally reported and are unchanged — plus a small,
+direction-inconsistent addition to the named qualifier-drop watch list,
+no sign of the double-injection bug in this window's traffic pattern,
+and zero flag reports. Nothing here changes the "keep as-is" status of
+either the Flash-Lite promotion or the Haiku fallback — the corrected
+94.4% is still far above the old primary's baseline, and the 2 real
+misses are consistent with the already-decided, already-accepted shape
+of the fallback's limitations (test #75), not new evidence. Recommend
+continuing casual pulls, still hoping to eventually catch a live-stream
+window during one of the old primary's degraded periods to see if the
+new primary's advantage holds there too — and, per this correction,
+always deriving completion-rate counts from a query that cannot
+structurally exclude current-model failures (`legacy-model-shadow-test`
+or an unfiltered pull), never from a `[timing]`-filtered one.
+
 ## Research: does "EX Delta Species" need a new stampType / pricing-variant, or is it already fully handled by card identification? (2026-09-06, research only — no code/schema changed)
 
 Triggered by a real user-flagged scan: a Koffing was correctly identified
