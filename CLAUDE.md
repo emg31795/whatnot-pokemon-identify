@@ -689,6 +689,23 @@ checklist before reporting something as finished:
   points at the live Vercel deployment, so icon-click-toggles-panel is
   correct even on a fresh install.
 
+  **Follow-up, same day, commit `961eb0a`**: before live-testing, a
+  real double-injection risk was flagged in the on-demand fallback
+  above — a failed `sendMessage` ping doesn't strictly prove the
+  content script is missing (e.g. a timing race right after page load
+  could produce the same error), so `chrome.scripting.executeScript`
+  could in theory re-run `content.js` on top of an already-injected
+  copy, doubling every event listener including the Identify Card
+  click handler (→ two real, billed API calls per click). Fixed with a
+  guard at the very top of `content.js`'s IIFE:
+  `if (document.getElementById("wnpk-root")) return;` — each injection
+  is a fresh script execution with its own closure, so a JS flag from a
+  prior run wouldn't be visible, but the DOM persists across
+  injections. Confirmed this does NOT block a genuine fresh page load:
+  the check runs before `#wnpk-root` is created later in the same
+  execution, so on a real first load it's always absent at check-time.
+  `node --check` passes.
+
   **Verified so far (does not touch the real browser)**: `node --check`
   passes on both `background.js` and `content.js`; `manifest.json`
   parses as valid JSON; full diff reviewed line-by-line against the
