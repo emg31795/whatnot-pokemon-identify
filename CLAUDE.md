@@ -410,6 +410,46 @@ regression-watch safety net on the new primary model** — worth
 prioritizing soon given the whole point of this rollback plan depends
 on it.
 
+**Update, 2026-09-09 (from a Claude chat session, not Claude Code)**: two
+new items surfaced, neither acted on yet — flagging per standing
+convention rather than building speculatively.
+
+1. **Real Gemini timeout / dual-failure cluster found via
+   `get_runtime_errors`** (not a `[timing]`-filtered pull — the standing
+   rule at the top of this section doesn't apply to this method, since
+   Vercel's own error-cluster aggregation isn't gated on a successful
+   `[timing]` log line). Over the last 7 days: 210 occurrences of
+   `[identify] Gemini call failed: ... aborted after ms=5002` (the
+   `GEMINI_TIMEOUT_MS` wall) and 57 occurrences of the worse case,
+   `Gemini failed and Haiku fallback unavailable too` (both providers
+   dead on the same request — the user sees a bare "couldn't identify").
+   Not just historical — both error types recurred on the *current*
+   production deployment (`dpl_22F3PPBwEjkB5UPAPt9oo23m1QXD`) as recently
+   as **2026-09-07T21:39:16-17Z** (`requestId=1e2cff83...` and
+   `8e44729e...`, same scan, back to back). This is the same known
+   failure signature documented extensively above (tests #77-79 etc.),
+   not a new error shape — but worth a fresh dedicated stats pull
+   (following the `[legacy-model-shadow-test]`-or-unfiltered convention,
+   never `[timing]` alone) next time Claude Code or this chat is back in
+   this project, to see whether the elevated-rate pattern from tests
+   #77-79 is still ongoing post-promotion or was specific to the old
+   primary. No code changed.
+2. **User received a real Google AI Studio email** ("Your Gemini API
+   billing account has been moved to a lower tier" / "Suspended Service
+   Tier"). Verified via web research (not assumed) that this is a
+   currently-widespread, real Google AI Studio behavior — multiple
+   concurrent Google AI Developer Forum threads report the same
+   automated tier-downgrade, not a phishing pattern. **Not yet
+   cross-checked against this project's own billing account** — the
+   user was advised to check aistudio.google.com directly (typed
+   manually, not via the email's own link/button) rather than trust the
+   email alone, and to submit any appeal from the console itself.
+   Notably, the error cluster in item 1 above shows zero 429/quota-
+   exceeded errors in the last 7 days — only timeouts and 503s — which
+   doesn't obviously match an already-throttled billing tier, so treat
+   these as two separate open items, not one, until the console
+   actually confirms a tier change and its effective date.
+
 ## When to ask before acting
 
 - **Free rein, no need to ask**: local file edits, local git commits,
