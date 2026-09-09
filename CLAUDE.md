@@ -501,14 +501,71 @@ convention rather than building speculatively.
    last 24h came back clean (zero errors) — a good sign, but one quiet
    day isn't confirmation; the real test is whether the
    `aborted after ms=5002` pattern stays away over several more days of
-   real stream use. **New, unexplained, not yet investigated**: Google's
-   console also shows `404 NotFound` errors that have never once
-   appeared in this project's own Vercel-side error logs (only 503s and
-   our own client-side timeout aborts show there) — either unrelated
-   traffic on the same Google Cloud project, or the AI Studio project
-   shown ("My First Project") isn't actually the same project/key
-   `api/identify.js` uses. Not chased down yet, flagging rather than
-   guessing.
+   real stream use. **Investigated, 2026-09-09 (Claude Code)**: the
+   404s in Google's console are almost certainly not this app's own
+   traffic — real evidence, not a guess:
+   - This repo has **exactly one** Gemini API call site in the entire
+     codebase (`api/identify.js:308`,
+     `` `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}` ``,
+     confirmed via a repo-wide grep for the endpoint string), using
+     exactly one env var (`process.env.GEMINI_API_KEY`) for both the
+     real primary-model calls and the `LEGACY_GEMINI_SHADOW_MODEL`
+     shadow calls.
+   - That call site's own error handling (`api/identify.js:373-375`:
+     `if (!resp.ok) { ... throw new Error('Gemini error ${resp.status}:
+     ${errBody}') }`) logs any non-2xx Gemini response the same way,
+     status code and all — this is the exact mechanism that already
+     surfaced the 3 real `Gemini error 503: {...}` entries in
+     `get_runtime_errors`. A 404 from this app's own calls would show up
+     identically, as `Gemini error 404: ...`.
+   - Pulled the **full** 7-day `get_runtime_errors` breakdown (all 50
+     error groups, not a sample) — **zero** occurrences of any 4xx
+     status anywhere in it. Every single Gemini-related failure across
+     all 7 days is either the client-side `GEMINI_TIMEOUT_MS` abort or a
+     `Gemini error 503`. Direct, real evidence this app's own production
+     traffic has not produced one 404 in the entire window.
+   - `list_deployments` shows all 20 recent deployments as
+     `target: "production"` — no preview/staging deployments exist that
+     could be running with a different or misconfigured
+     `GEMINI_API_KEY`.
+   - Locally, `.env.local` has no `GEMINI_API_KEY` entry at all (only
+     `POKEMONPRICETRACKER_API_KEY` and `ANTHROPIC_API_KEY`), and
+     `~/Documents` on this Mac contains no other project directory — so
+     no local script or other project on this machine can be generating
+     stray Gemini traffic under this key either.
+
+   **Working conclusion, not fully closed**: given this app's own real
+   traffic demonstrably produces zero 404s (and would surface them
+   identically to the 503s if it ever did), the console's 404s most
+   likely come from something outside this app entirely — manual
+   experimentation directly in the AI Studio playground/console itself
+   (e.g. trying an invalid or deprecated model name, an easy way to get
+   a `404 NotFound` while poking around a generically-named "My First
+   Project") is the leading explanation, not a hidden second production
+   consumer of this key. **Not fully confirmed**: no tool available here
+   can read the live `GEMINI_API_KEY` value from Vercel's Production
+   environment or browse the user's Google account, so a literal
+   key/project match against "My First Project" couldn't be verified
+   directly. **Concrete next step, for the user**: in Vercel's dashboard,
+   reveal the `GEMINI_API_KEY` value configured for Production, and
+   compare its prefix against the key(s) listed on
+   aistudio.google.com's "API keys" page (each key there is tagged with
+   its owning project) to confirm they're literally the same key/project
+   as "My First Project." Low priority — this doesn't affect app
+   behavior either way (see "Standing rule" evidence above), it's just
+   an open curiosity about the console's own numbers.
+
+   **Nothing else changed as a result of today's findings.** Per
+   explicit instruction: no retuning of `thinkingLevel`, timeouts, or
+   the Flash-Lite promotion based on today's cluster or billing-fix
+   alone — the billing fix is confirmed unrelated to the timeout cluster
+   (see above), and the real test for whether anything has measurably
+   improved is watching `get_runtime_errors`/`[legacy-model-shadow-test]`
+   over the next several days of real stream use, always via a query
+   that can't structurally exclude current-model failures (never
+   `[timing]` alone — see the standing rule at the top of this section).
+   Any future stats pull on this gets logged as its own new dated
+   `docs/test-cases.md` entry, not folded into today's.
 
 ## When to ask before acting
 
