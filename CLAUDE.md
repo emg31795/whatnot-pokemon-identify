@@ -486,6 +486,30 @@ convention rather than building speculatively.
    these as two separate open items, not one, until the console
    actually confirms a tier change and its effective date.
 
+   **Resolved, same day**: user fixed the payment issue (no appeal
+   needed) and confirmed directly on aistudio.google.com — the account
+   is back to a normal **Tier 1** badge, usage nowhere near any cap
+   (13/4K RPM, 29.65K/4M TPM, 515/150K RPD on Flash-Lite). **Real
+   cross-check, not assumed**: Google's own 28-day error breakdown on
+   that same console page shows only `404 NotFound` and
+   `503 ServiceUnavailable` — never a `429`/quota-exceeded error, at any
+   point — matching Vercel's own error logs (also zero 429s across the
+   whole timeout cluster). Two independent sources agreeing on "never a
+   429" is real evidence the billing/tier issue was **not** the
+   mechanism behind the timeout cluster in item 1 above, even though
+   fixing it was still worth doing. Vercel `get_runtime_errors` for the
+   last 24h came back clean (zero errors) — a good sign, but one quiet
+   day isn't confirmation; the real test is whether the
+   `aborted after ms=5002` pattern stays away over several more days of
+   real stream use. **New, unexplained, not yet investigated**: Google's
+   console also shows `404 NotFound` errors that have never once
+   appeared in this project's own Vercel-side error logs (only 503s and
+   our own client-side timeout aborts show there) — either unrelated
+   traffic on the same Google Cloud project, or the AI Studio project
+   shown ("My First Project") isn't actually the same project/key
+   `api/identify.js` uses. Not chased down yet, flagging rather than
+   guessing.
+
 ## When to ask before acting
 
 - **Free rein, no need to ask**: local file edits, local git commits,
