@@ -19,6 +19,42 @@ compression repeatedly caused lost history (see "Continuity note" in
   on disk, not just inside a chat product. This CLAUDE.md is the
   *condensed, current* summary; the docs/ files are the detailed archive.
 
+## Two collaborators, one project — roles
+
+This project is worked on from two separate Claude surfaces that never
+talk to each other directly — the user relays context between them.
+Keeping the division of labor explicit here (not just in chat) is what
+lets either side pick up correctly after the other's work, and why this
+file's own "no need to ask" vs. "ask first" rules below apply to both.
+
+- **Claude Code, running locally in this repo**
+  (`~/Documents/whatnot-pokemon-extension` on the user's Mac): does
+  essentially all the real legwork on this project — writing code,
+  running/debugging locally, deploying to Vercel (with go-ahead),
+  pushing to GitHub (with go-ahead), and keeping this file / ROADMAP.md /
+  `docs/test-cases.md` updated as things change. Read this file first at
+  the start of any session, per the intro above.
+- **The Claude chat assistant** (claude.ai, the "Whatnot extension"
+  Project — reads this repo via a GitHub sync, and can also get a live
+  device-bridge link to this same Mac): is not primarily the one writing
+  code. Its role is to review what Claude Code reports, independently
+  verify it against real state (Vercel logs/deployments via its own MCP
+  tools, live git state via the device bridge, live API/docs research)
+  rather than take a report at face value, catch discrepancies, and draft
+  the next prompt to send back to Claude Code. It also handles things a
+  local coding session usually wouldn't: a forwarded email or screenshot,
+  broader research, cross-referencing multiple data sources. With a
+  working device link it can make small, low-risk, doc-only edits
+  directly (e.g. logging a new open item here) rather than only drafting
+  a prompt for Claude Code to do it — but substantive code changes stay
+  Claude Code's job, not something to build inline in chat.
+- **Verification applies to both directions.** "Never trust a report at
+  face value, verify against real logs/git state" (see "Standing working
+  conventions" below) isn't just Claude Code checking its own work — it's
+  also the chat assistant independently checking Claude Code's reports,
+  and Claude Code independently checking anything relayed back from chat,
+  before either acts on it.
+
 ## Current priority
 
 > **STANDING RULE — READ THIS BEFORE ANY STATS / COMPLETION-RATE / REGRESSION-WATCH LOG PULL:**
