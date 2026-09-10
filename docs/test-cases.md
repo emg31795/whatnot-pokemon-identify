@@ -4046,6 +4046,170 @@ reassurance) — not a new stampType enum value, not a new PPT
 variant/pricing model, and not something this pass is proposing to
 build. Flagging as a possible future nice-to-have only, not a decision.
 
+## Test #87 — User-flagged "NO LIVE PRICE" on an Irida (Secret) scan — identification was clean, root cause is a real, ongoing TCGplayer price-history reliability issue (2026-09-10)
+
+User flagged a panel screenshot showing a card that identified cleanly
+(`Irida`, Trainer/Supporter, `Read: High`, `Match: High`) but with a red
+`NO LIVE PRICE` banner: `TCGplayer price-history request failed for
+productId=272459 (after 1 retry): This operation was aborted`. Per
+standing convention, pulled real logs before characterizing anything —
+found the exact matching request
+(`requestId=23390985-b21c-4f94-9d81-abca92d9c5ca`, 2026-09-10T00:40:31Z).
+
+**Identification side: fully correct, nothing to fix.** Gemini read
+`cardName: "Irida"`, `cardNumber: "204/189"`, High confidence;
+`lookupCardPPT` scored it cleanly against `Irida (Secret)` (SWSH10:
+Astral Radiance, `tcgPlayerId=272459`) at `bestScore=25, tieCount=1` —
+an unambiguous top match, matching what the panel showed
+(`Match: High`).
+
+**Pricing side: the existing single-retry logic (test #72,
+2026-09-04) fired exactly as designed and still failed** —
+`TCGplayer price-history request failed for productId=272459 (after 1
+retry): This operation was aborted`, `lookup ms=5283` (two
+`AbortController` timeouts back to back, ~2500ms each, matching
+`fetchTCGPlayerPriceHistory`'s existing 2500ms-per-attempt design).
+This is TCGplayer's own price-history endpoint
+(`infinite-api.tcgplayer.com/price/history/...`) timing out, not
+malformed data or a bug in this codebase's request — same failure
+signature test #72 first found, just not rescued by the retry this
+time.
+
+**Checked whether this was a one-off**: pulled the full available
+30-minute window (2026-09-10T00:11-00:41 UTC) and counted every
+`[tcgplayer-price]` success line against every `LIVE TCGPLAYER PRICING
+FAILED` line. **9 failures out of 43 total pricing attempts — 20.9%.**
+All 9 failures show the identical `lookup ms≈5070-5283` signature (both
+attempts timing out), across 8 distinct `productId`s (one,
+`productId=89470`, failed twice on two separate scans 15 seconds
+apart), spread across the whole window rather than one tight burst
+(00:18, a 00:22-00:24 cluster of 4, a 00:40-00:41 cluster of 3) — reads
+as an ongoing elevated failure rate on TCGplayer's side during this
+window, not a single transient blip.
+
+**User impact, and why this isn't a "wrong answer" bug**: every one of
+these 9 cases correctly showed `NO LIVE PRICE` / `—` for every
+condition rather than a stale or fabricated price — exactly the
+"honest uncertainty over false confidence" design principle this
+project follows (see CLAUDE.md "Key design principle"). The
+identification itself (name/set/number/confidence) was unaffected in
+all 9 cases.
+
+**No code changed.** This reads as the same class of external,
+provider-side flakiness as the Gemini timeout clusters documented
+throughout this project's history (tests #77-79, #85, #86) — just on
+TCGplayer's price-history endpoint instead of Gemini's API. Per this
+project's own pattern for this kind of finding (transient/external,
+already degrading honestly, no user-facing wrong-answer risk): **worth
+noting, not worth reacting to with a code change yet.** If a future
+session sees this rate sustained or worsening (test #72's own retry-add
+was itself a reaction to a single occurrence, so there's already one
+precedent for tightening this further — e.g. a 2nd retry, or a longer
+per-attempt timeout), that's the trigger to revisit
+`fetchTCGPlayerPriceHistory`'s retry/timeout tuning — not a single
+20%-over-30-minutes data point.
+
+## Test #88 — Follow-up on test #87: why is TCGplayer price-history failing, and does it change the "just watching" status? Answer: not self-inflicted, TCGplayer is basically healthy, but the fetch blocks the whole response — that last part changes the status (2026-09-10)
+
+Direct follow-up to test #87 (same day, ~10-30 minutes later, same
+~00:11-00:41 UTC window plus fresh direct testing at ~00:49 UTC).
+Four questions, in order, all backed by real logs and live direct
+requests — no guessing.
+
+**1. Self-inflicted rate limit? Ruled out.** Mapped all 43 requests in
+test #87's window chronologically and checked whether the 9 pricing
+failures cluster around bursts of rapid scanning (the exact shape of
+this project's own test #30 PPT rate-limit bug). They don't — the
+opposite, if anything. The single densest, most rapid scanning burst in
+the entire window (00:35:45-00:39:44 UTC, ~14 requests as close as 3-4s
+apart) had **zero** TCGplayer pricing failures — every one succeeded in
+58-358ms. Most of the 9 failures are isolated, preceded by 30-107s gaps
+from the prior request (00:18:22, 00:24:19, 00:40:31, 00:41:05). Two
+pairs are closer together (00:22:37/52/00:23:07, three ~15s apart; and
+00:40:03/00:40:08, 5s apart — likely genuinely overlapping server-side
+invocations) but even these don't come close to the density of the
+zero-failure burst. Also confirmed via `fetchTCGPlayerPriceHistory`'s
+own code (`api/identify.js` ~line 1401-1421): every one of the 9
+failures is a bare client-side `AbortError` ("This operation was
+aborted") from our own `AbortController`/2500ms timeout — none show the
+`TCGplayer price-history returned HTTP ###...` message that would fire
+if TCGplayer had actually responded with an error/block status. Before
+this investigation we had zero visibility into whether TCGplayer was
+actually down, slow, or blocking us — this confirms it was never an
+HTTP-level rejection, at least for these 9.
+
+**2. Direct testing of the failed productIds: TCGplayer is healthy.**
+Curled 5 of the exact failing `productId`s directly against
+`infinite-api.tcgplayer.com` (real, public, unauthenticated endpoint —
+no key needed) with a generous 12s timeout, outside the app's own fetch
+path entirely. **Every single one returned real HTTP 200 data with
+actual pricing** — `272459` (the original Irida), `89470`, `90000`,
+`241854`, `241856` — no exceptions, no error statuses, no genuine
+non-response. First pass: 4 of 5 came back in 150-500ms (matching test
+#72's documented ~170ms baseline); one (`90000`) came back in 2.65s —
+just over our own 2500ms per-attempt budget. Repeated `90000` 5 more
+times immediately after: 185-449ms every time — the 2.65s was a one-off
+spike, not a persistent per-ID problem. A broader batch of 20 sequential
+calls across a mix of IDs (including several other cards from the same
+window) all came back in 155-327ms, zero exceeding 2.5s. A batch of 6
+concurrent requests fired at once also all returned in ~200-230ms — no
+sign that concurrent load from a single client induces slowness either.
+
+Net: of ~36 total direct calls made across all these batches, exactly 1
+(≈3%) exceeded our 2500ms timeout — far below the app's own observed
+21% (9/43) failure rate for the same period. **This is possibility (a)
+from the brief: TCGplayer eventually responds, just occasionally slower
+than its documented baseline — a timeout-tuning problem, not (b) a real
+outage/gap or (c) a block/rate-limit signal.** The gap between my ~3%
+locally-observed slow-tail rate and the app's 21% is itself worth
+noting as unresolved — it suggests something about the Vercel-to-
+TCGplayer path specifically (egress routing, per-invocation DNS/TLS
+cost on a cold serverless function, or a header/fingerprint difference —
+`fetchWithTimeout` sends no custom headers at all, just Node's default
+fetch) may be adding latency beyond what a well-connected direct client
+sees. Not confirmed — I have no way to test from Vercel's actual
+egress IP — flagged as an open question, not a finding to act on by
+itself.
+
+**3. Does the failing fetch block the response? Confirmed yes, and
+this is the real finding.** Traced the call chain: `res.status(200).
+json(result)` (`api/identify.js:2427`) comes after `await
+lookupCardPPT(...)` (line 2314/2347), which itself `await`s
+`buildLiveVariantsForCandidate` (line 1987), which `await`s
+`fetchTCGPlayerPriceHistory`. There is no fire-and-forget path here —
+pricing is fully synchronous with the response the user sees. The
+numbers prove the cost directly: the original Irida scan
+(`requestId=23390985-...`) had `gemini ms=1533` — the identification
+itself was ready in 1.5s, well inside the 1-3s target — but `total
+ms=6816`, because the failing price fetch (2 attempts × ~2.5s) added
+**~5.3 extra seconds of pure dead time** before the user saw anything
+at all, correct ID included. All 9 failures in the window show the same
+shape: `total ms` in the 6444-6816 range vs. a healthy scan's
+1552-2727ms. Every one of these turns a sub-2-second result into a
+6.5-6.8 second wait — against this project's own 1-3s target, and
+worse, against the 10-second sudden-death-auction framing that target
+exists for, over half the auction can elapse waiting on a price for a
+card whose name was already known 5+ seconds earlier.
+
+**Does this change the "just watching" status from test #87? Yes —
+but not for the reason originally flagged.** Item 1 (self-inflicted
+rate limit) is ruled out. Item 2 shows TCGplayer itself is fundamentally
+healthy, not in an outage or actively blocking us — so "TCGplayer is
+flaky, nothing to do" is not quite right either, but tuning the retry/
+timeout against TCGplayer's reliability alone is not the highest-value
+target. **Item 3 is the real, actionable finding**: independent of
+whether TCGplayer's own tail latency ever gets tuned away, a correct,
+already-ready identification should not be held hostage for 5+ extra
+seconds by a pricing fetch that's failing anyway. That's an
+architecture question (e.g. return the identification immediately and
+let pricing resolve separately/async), not a timeout-tuning question,
+and per the brief's own framing this is a legitimate trigger to move
+from "just watching" to "worth a fix" — specifically the blocking
+behavior, not the retry count or timeout duration. **No code changed
+in this investigation** — per explicit instruction, this is a report
+only; see CLAUDE.md's "Current priority" for the corresponding status
+update.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

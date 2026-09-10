@@ -567,6 +567,108 @@ convention rather than building speculatively.
    Any future stats pull on this gets logged as its own new dated
    `docs/test-cases.md` entry, not folded into today's.
 
+**Update, 2026-09-09, same day, later (from Claude Code, live-log
+investigation prompted by the user reporting scans were broken)**: a
+NEW, distinct Gemini failure mode found via real runtime logs — this is
+NOT the tier-downgrade issue closed out earlier today, and it is
+currently ongoing. Every single `/api/identify` request in the full
+available 1-hour log retention window (roughly 22:53-23:53 UTC) that
+called Gemini got back a fast (~170-290ms) `429 RESOURCE_EXHAUSTED`:
+`"Your prepayment credits are depleted. Please go to AI Studio at
+https://ai.studio/projects to manage your project and billing."` This
+hits both the real primary-model call AND the `[legacy-model-shadow-
+test]` call identically (same `GEMINI_API_KEY`, confirmed in the log
+lines — `currentModel=gemini-3.5-flash-lite` and
+`legacyModel=gemini-3.6-flash` both return the identical 429 body every
+time). **100% Gemini failure rate for the entire available window** —
+a new, different failure signature from the `aborted after ms=5002`
+timeout cluster documented throughout this file (tests #77-79, #85,
+#86, item 1 above) — this one fails fast and is a hard billing stop,
+not a timeout/overload.
+
+**Effect on what the user sees**: the Haiku active fallback (see
+"Recent / in-flight work") is still doing its job where it can — of
+roughly 20 requests in the window, a handful got a real Haiku fallback
+read through (e.g. `cardName: "Raichu"`, `"Reshiram"`, `"Raidou"`,
+each correctly labeled `visionProvider: "haiku-fallback"`) — but
+whenever Haiku's own `HAIKU_TIMEOUT_MS=5000` also gets hit (the
+already-known, decided-to-keep-as-is Haiku completion-rate issue, see
+the "Haiku active fallback" entry and its 2026-09-04 decision), the
+user gets the honest "both primary and fallback AI failed" message
+instead. This is exactly what "something is broken" looked like from
+the user's side.
+
+**No code changed — this is not a code bug.** The single Gemini call
+site (`api/identify.js:308`) and error handling are both working
+exactly as designed: a non-2xx Gemini response is caught and logged
+faithfully (`Gemini error 429: ...`), same mechanism that already
+surfaced the real `503`s documented elsewhere in this file. **Action
+needed is on Google AI Studio billing, not in this repo**: add
+prepayment credit at https://ai.studio/projects (the exact URL the
+error itself names) — per this project's own "ask before spending
+money" rule, this is the user's call, not something to act on
+autonomously. Once credits are added, no redeploy should be needed
+(this isn't an env-var change, just the same `GEMINI_API_KEY` starting
+to succeed again) — worth a live rescan afterward to confirm normal
+service resumes, and worth a fresh log check to see whether the
+existing `aborted after ms=5002` timeout cluster (item 1 above) is
+still separately present once the 429s clear, since the two are
+distinct problems that happened to be visible in the same window.
+
+**Resolved, 2026-09-09, same day, minutes later**: user added prepayment
+credit at AI Studio; confirmed via real logs, not just the user's own
+sense that it worked. Last 429 was at 23:53:08 UTC
+(`requestId=ea49daa1-...`). Two real scans since then, both clean:
+23:54:53 UTC (`requestId=5e475698-...`, Necrozma GX, High confidence,
+matched correctly against PPT, `gemini ms=1477`, `total ms=1600`) and
+23:55:38 UTC (`requestId=48e9fff5-...`, Hitmonchan, High confidence,
+matched correctly, `gemini ms=1992`, `total ms=2126`) — both inside the
+1-3s latency target. The `[legacy-model-shadow-test]` call
+(`gemini-3.6-flash`) also succeeded on both, confirming the whole
+`GEMINI_API_KEY` is healthy again, not just the primary model. No
+redeploy was needed (as expected — this was never an env-var issue).
+Only 2 data points so far; worth a normal amount of continued watching
+via `get_runtime_errors` (not a special new watch) to make sure the
+429s don't recur, same as any other billing account.
+
+**Update, 2026-09-10: TCGplayer price-history blocking the response is
+now a real, actionable open item — status changed from "just
+watching" (test #87) to "worth a fix."** Follow-up investigation (test
+#88, `docs/test-cases.md`) answered the open question from test #87
+("is this happening" → "why, and does it change what we should do").
+Four findings: (1) ruled out self-inflicted rate-limiting — the
+window's single densest, most rapid scanning burst (~14 requests as
+close as 3-4s apart) had zero pricing failures, while the actual
+failures cluster during sparser periods; (2) direct curls of the exact
+failed `productId`s (real endpoint, no key needed) all returned real
+HTTP 200 data — TCGplayer is not down and not blocking us, it's
+occasionally just slower than our 2500ms-per-attempt budget (≈3%
+observed locally vs. the app's own 21% — an unresolved, not-yet-
+actionable gap, possibly something about the Vercel egress path); (3)
+**the real finding**: `fetchTCGPlayerPriceHistory` is fully `await`ed
+inside `lookupCardPPT`, which is `await`ed before the response is
+sent — so a failing price fetch doesn't just show "no price," it holds
+the ENTIRE response (including an already-correct identification)
+hostage for the full ~5.3s of both timeout attempts. Real example: the
+test #87 Irida scan had the identification ready in `gemini ms=1533`
+(inside the 1-3s target) but the user didn't see anything until `total
+ms=6816` — a 6.8-second wait for a result that was substantively done
+in 1.5s. Against this project's own 1-3s target and the 10-second
+sudden-death-auction framing that target exists for, this blocking
+behavior is arguably worse than the missing price itself.
+
+**Not yet fixed — this is a status change, not a completed fix.** Per
+explicit instruction, test #88 was investigation-only, no code changed.
+The indicated direction (not yet built, not yet decided) is
+architectural — decouple the identification response from the pricing
+fetch (e.g. return the ID immediately, resolve pricing separately) —
+rather than tuning `TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS` or the retry
+count, since TCGplayer itself was shown to be fundamentally healthy.
+Worth prioritizing given the direct 1-3s-target/user-experience impact,
+but needs an explicit go-ahead before building per this project's
+normal conventions — flagging here so it doesn't get lost, not
+proposing a specific implementation yet.
+
 ## When to ask before acting
 
 - **Free rein, no need to ask**: local file edits, local git commits,
