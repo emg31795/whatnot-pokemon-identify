@@ -4210,6 +4210,104 @@ in this investigation** — per explicit instruction, this is a report
 only; see CLAUDE.md's "Current priority" for the corresponding status
 update.
 
+**CLOSED OUT — FIX BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-10**
+(same day, later, per explicit user go-ahead — deploy verified good by
+the chat assistant independently first: sha1
+`90fcfa1b86600f41b45fd38cbe67dc13711626e8` on `api/identify.js`, full
+diff, and `node -c` on both files, via the device bridge). The
+architectural fix this test's own finding pointed to is now live:
+`lookupCardPPT` (`api/identify.js`) no longer fetches live TCGplayer
+pricing inline — it returns identification immediately plus a
+`pricingLookup` payload, and a new `POST /api/price` endpoint
+(`api/price.js`, reusing `buildLiveVariantsForCandidate`/
+`pickDefaultVariantKey` unchanged via `require`) does the actual
+TCGplayer fetch on a second, independent request. `extension/content.js`
+renders the card ID immediately with a "Loading price…" placeholder,
+then updates just the price section in place once `/api/price` resolves.
+Full build/local-test detail in CLAUDE.md's "Current priority" (the
+"Built, 2026-09-10" entry) — this section covers the live deploy
+verification only.
+
+**Deployment**: `dpl_99HuujYGdMKpsPnpY5Rh2LE6Lk8Y`, target production,
+aliased to `whatnot-pokemon-identify.vercel.app` (confirmed via
+`get_deployment`: `readyState: "READY"`, `aliasError: null`, alias list
+includes the real production domain). Two earlier attempts in this same
+deploy session both failed with `errorCode: "unused_function"` (omitted
+`api/identify.js` from the `files` array — the same historically-
+documented mistake this file has recorded before) — both caught
+immediately via `get_deployment`, both confirmed to have never gone
+`READY` and never touched the real production alias (live `curl`
+against `whatnot-pokemon-identify.vercel.app` immediately after each
+failure showed the prior deployment still serving, unaffected). The
+third attempt included all 5 files (`api/identify.js`, `api/price.js`,
+`api/flag.js`, `vercel.json`, `package.json`) and deployed clean.
+Manual transcription of `api/identify.js` (2407 lines, over the Read
+tool's single-call cap) hit the SAME recurring diacritic-regex
+corruption documented repeatedly elsewhere in this file — caught via a
+byte-for-byte `diff`/`shasum` verification against the real source
+BEFORE deploying (scratch reconstruction initially diffed non-clean:
+the escaped `̀-ͯ` regex literal had been transcribed as
+actual combining Unicode characters), fixed non-generatively by
+splicing the exact correct line from source via a Python script, then
+re-verified a clean 0-diff and matching sha1
+(`90fcfa1b86600f41b45fd38cbe67dc13711626e8`) before using that content
+for the deploy.
+
+**Confirmed live, full checklist**:
+- `GET /api/identify` → `normalizeDiacriticTest: "pokemon collector"`
+  (diacritic regex deployed intact, despite the close call above).
+- `POST /api/identify {}` → real `400 {"error":"Missing imageBase64","requestId":"..."}`.
+- `POST /api/price {}` → real `400 {"error":"Missing pricingLookup.tcgPlayerId"}`
+  — new endpoint live and validating correctly.
+- **Real end-to-end scan** (a real Hitmonchan HGSS Promo card photo
+  fetched from TCGplayer's own public CDN, POSTed the same way the
+  extension would): `/api/identify` returned `found:true`, correct
+  identification (`cardName: "Hitmonchan - HGSS24"`, matching the real
+  product), a fully-populated `pricingLookup`
+  (`tcgPlayerId: "86097"`), and **zero old pricing fields present**
+  (no `marketPrice`/`conditionPrices`/`priceVariants`/`pricingError`/
+  `noPriceNote`/`priceVariantUsed` — confirms the decoupling is real in
+  production, not just in the mocked tests) — `timingMs: {gemini: 1704,
+  lookup: 257, total: 1961}`, i.e. **identification alone completed in
+  1961ms**, inside the 1-3s target. A second, separate `POST /api/price`
+  call with that exact `pricingLookup` returned in **435ms** (curl
+  wall-clock) with real, complete 5-tier TCGplayer data (NM $22.53, LP
+  $9.20, MP $5.73, HP $4.99, DMG $3.40, `conditionPricesPartial: false`)
+  — two real, independently-timed stages, not one combined round-trip.
+- **Forced pricing failure**, live: `POST /api/price` with a fabricated
+  `tcgPlayerId` (`999999999999`) returned `pricingError: "TCGplayer
+  price-history returned zero SKUs for productId=999999999999"`,
+  `HTTP 200`, all other fields correctly `null`, no exception — and
+  since this ran as a fully separate request fired well after the real
+  scan's identification had already returned, it directly demonstrates
+  (not just implies) that a pricing failure can no longer delay or
+  break the identification the user already sees; the old blocking
+  architecture structurally cannot recur since `/api/identify` no
+  longer calls TCGplayer at all.
+- **Flag button, both before and after pricing** (POSTed directly to
+  `/api/flag` with the exact payload shapes `content.js` would send):
+  a "before" flag with the raw identify response (no price fields) and
+  an "after" flag with `Object.assign`-style merged identify+price
+  fields both returned `{"ok":true}`; `get_runtime_logs` confirms both
+  `[user-flagged]` lines landed with the expected shape — the "before"
+  entry has no `marketPrice`, the "after" entry has the full real price
+  data merged in. Confirms the `requestId`-guarded merge in
+  `fetchAndRenderPricing` produces the intended shape when it actually
+  runs.
+- `get_runtime_logs` for the full test window and `get_runtime_errors`
+  (1h) show exactly one error group — the forced-failure test above,
+  intentional and expected — nothing else. `[haiku-shadow-test]` and
+  `[legacy-model-shadow-test]` both fired normally on the real scan
+  too, confirming those unrelated features are unaffected by this
+  change.
+
+**Status: live and confirmed, not just deployed.** Pushed to GitHub
+(`9fb24e8..e8b1db0`, `main`). The one known, explicitly-scoped-out gap
+(the graded-slab `gradedPriceUnavailable` raw-price fallback no longer
+having synchronous `marketPrice`/`conditionPrices` to show) is tracked
+as a separate, non-urgent open item — see CLAUDE.md's "Current
+priority".
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

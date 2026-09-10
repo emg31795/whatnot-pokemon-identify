@@ -723,30 +723,69 @@ screen; the flag button was already enabled as soon as identification
 rendered (unchanged), so flagging before pricing resolves sends
 whatever's there, exactly as intended — no gating added.
 
-**Verified locally, not yet against a live deployment**: a mocked-
-fetch backend smoke test (`api/identify.js` + `api/price.js`, no real
-network calls) confirms `pricingLookup` is shaped correctly, zero old
-pricing fields (`marketPrice`/`conditionPrices`/`priceVariants`/
-`pricingError`/`noPriceNote`/`priceVariantUsed`/
-`conditionPricesEstimated`/`conditionPricesPartial`) remain on the
-`/api/identify` response, zero TCGplayer calls happen during identify,
-and `/api/price` correctly resolves both the success and failure cases
-(including the existing single-retry logic still firing exactly once).
-A separate jsdom-based frontend functional test (jsdom installed only
-in a scratch directory, not a project dependency) drove a real click
-on the Identify button against mocked `fetch` responses and confirmed:
-card ID renders in single-digit ms with the "Loading price…"
-placeholder visible immediately; the price section updates in place
-~300ms later (matching an injected artificial delay) without
-re-rendering the header/image/warnings; the flag button is enabled
-and works both before and after pricing resolves; and a simulated
-`/api/price` failure surfaces the `🛑 NO LIVE PRICE` warning without
-disturbing the already-rendered card ID. **Not yet verified**: a real
-end-to-end scan against a live Whatnot stream and the deployed backend
-(needs deploy go-ahead first, per standing convention — see "When to
-ask before acting" below), and a live confirmation via `timingMs`
-that a real scan's identification lands meaningfully faster than the
-old combined round-trip.
+**Verified locally before deploy**: a mocked-fetch backend smoke test
+(`api/identify.js` + `api/price.js`, no real network calls) confirmed
+`pricingLookup` is shaped correctly, zero old pricing fields remain on
+the `/api/identify` response, zero TCGplayer calls happen during
+identify, and `/api/price` correctly resolves both the success and
+failure cases. A jsdom-based frontend functional test (jsdom installed
+only in a scratch directory, not a project dependency) drove a real
+click on the Identify button against mocked `fetch` responses and
+confirmed the same two-stage render, the flag button working
+before/after pricing, and a simulated price failure not disturbing the
+already-rendered card ID.
+
+**DEPLOYED, PUSHED, AND LIVE-CONFIRMED, 2026-09-10** (same day, later,
+per explicit user go-ahead — deploy pre-verified good by the chat
+assistant independently: sha1 `90fcfa1b86600f41b45fd38cbe67dc13711626e8`
+on `api/identify.js`, full diff, `node -c` on both files, via the
+device bridge). Deployment `dpl_99HuujYGdMKpsPnpY5Rh2LE6Lk8Y`, target
+production, aliased to `whatnot-pokemon-identify.vercel.app`
+(`readyState: "READY"`, `aliasError: null`). Two earlier attempts in
+this deploy session omitted `api/identify.js` from the `files` array
+(the same historically-documented mistake) — both caught immediately
+via `get_deployment`, both confirmed to have never gone `READY` or
+touched the real production alias. The deploy-checklist transcription
+of `api/identify.js` also hit the SAME recurring diacritic-regex
+corruption documented repeatedly in this file — caught via a
+byte-for-byte diff/shasum check against the real source BEFORE
+deploying (not after), fixed non-generatively via a Python splice, then
+re-verified clean.
+
+**Real end-to-end scan, live** (a real Hitmonchan HGSS Promo photo
+fetched from TCGplayer's own public CDN): `/api/identify` returned
+correct identification with a fully-populated `pricingLookup` and
+**zero old pricing fields** — `timingMs: {gemini: 1704, lookup: 257,
+total: 1961}`, i.e. identification alone completed in **1961ms**,
+inside the 1-3s target. A separate `POST /api/price` call with that
+`pricingLookup` returned in **435ms** with real, complete 5-tier
+TCGplayer data — two independently-timed stages, not one combined
+round-trip, confirming the actual latency win is real, not just
+"card ID before price" in isolation. A forced pricing failure (bad
+`tcgPlayerId`) on a separate request returned a clean `pricingError`
+with no exception, directly demonstrating a pricing failure can no
+longer delay or break identification. The flag button was tested both
+before and after pricing (via `/api/flag` with the exact payload
+shapes `content.js` sends) — both landed correctly, the "after" one
+carrying the real merged price data. `get_runtime_errors` (1h) shows
+exactly one error group — the intentional forced-failure test — nothing
+else; `[haiku-shadow-test]`/`[legacy-model-shadow-test]` both fired
+normally on the real scan, confirming those features are unaffected.
+Full trace: test #88's "CLOSED OUT" section in `docs/test-cases.md`.
+Pushed to GitHub (`9fb24e8..e8b1db0`, `main`).
+
+**Open item, not urgent, explicitly scoped out of this build**: the
+graded-slab `gradedPriceUnavailable` fallback branch (`extension/
+content.js`, the "raw-card estimate" shown when a slab's graded price
+isn't found) used to show a synchronous raw `marketPrice`/
+`conditionPrices` from the old inline pricing block — since that block
+no longer exists, this branch now always shows "—" for that estimate
+(it was never wired to call the new `/api/price` endpoint). Graded
+slabs are Phase 2 and not otherwise built out (see `docs/ROADMAP.md`),
+so this is a minor, low-priority regression in an already-partial
+feature, not a Phase-1 raw-card issue — worth a small follow-up
+(wire that one fallback branch to also call `/api/price`) whenever
+graded-slab work is next picked up, not urgent on its own.
 
 ## When to ask before acting
 
