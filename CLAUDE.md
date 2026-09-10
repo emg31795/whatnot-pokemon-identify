@@ -813,6 +813,21 @@ the underlying concern is very likely resolved by real usage, but the
 docs should not be read as claiming someone directly observed the
 two-stage UI render live.
 
+**Closed, 2026-09-10 (later): `requestId=740a66cc` base64-decode error
+investigated and ruled benign.** A single `Gemini error 400: Base64
+decoding failed` (Haiku failed identically on the same request) turned
+up during log review and initially looked like a real client bug. After
+a full investigation — including a user-corrected re-check of the CORS
+preflight evidence, a byte-for-byte match of the logged payload against
+a local scratch file, and an audit of every `captureFrame()`/
+`identifyCard()` code path — it was traced to a leftover manual `curl`
+test from earlier the same session, coincidentally landing a few
+seconds from a real user scan in the same traffic window. Confirmed
+benign, not a code issue; no code changed. The input-validation/
+richer-error-logging hardening discussed alongside this is intentionally
+NOT built — not needed right now, revisit if a real occurrence ever
+happens.
+
 ## When to ask before acting
 
 - **Free rein, no need to ask**: local file edits, local git commits,
