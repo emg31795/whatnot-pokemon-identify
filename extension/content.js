@@ -45,6 +45,16 @@
     return identifyUrl.replace(/\/api\/identify\/?$/i, "/api/flag");
   }
 
+  // ADDED 2026-09-10 (identify/pricing decoupling, see CLAUDE.md /
+  // docs/test-cases.md test #88): live TCGplayer pricing now runs as a
+  // separate backend call so a slow/failing price fetch can never hold
+  // up the card identification the user is actually waiting on. Same
+  // derivation pattern as getFlagUrl() above.
+  async function getPriceUrl() {
+    const identifyUrl = await getBackendUrl();
+    return identifyUrl.replace(/\/api\/identify\/?$/i, "/api/price");
+  }
+
   let scanZone = null; // {x, y, w, h} as fractions of the video element, or null = full frame
   let selectingZone = false;
 
@@ -550,6 +560,191 @@
     lastResultData = response.data;
     updateFlagButton();
     renderResult(response.data);
+
+    // ADDED 2026-09-10 (identify/pricing decoupling, see CLAUDE.md /
+    // docs/test-cases.md test #88): identification is already rendered
+    // above — pricing is fetched as a second, independent request right
+    // after, so a slow or failing TCGplayer price fetch can no longer
+    // delay the card ID the user is actually waiting on (real measured
+    // cost of the old combined path: up to ~5.3s of pure dead time on a
+    // scan whose ID was ready in ~1.5s). Graded slabs (data.isSlab) are
+    // untouched by this change — graded pricing still comes back
+    // synchronously on the first call, same as always.
+    if (response.data.found && !response.data.isSlab && response.data.pricingLookup) {
+      fetchAndRenderPricing(response.data);
+    }
+  }
+
+  // Fires the second, independent /api/price call and updates just the
+  // price section of the already-rendered panel when it resolves. Never
+  // awaited by identifyCard() above — the identify response is already
+  // fully rendered before this is even called.
+  function fetchAndRenderPricing(identifyData) {
+    getPriceUrl()
+      .then((url) =>
+        fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestId: identifyData.requestId, pricingLookup: identifyData.pricingLookup }),
+        })
+      )
+      .then((resp) => resp.json())
+      .then((priceData) => {
+        // Guard against a slow /api/price response landing after the user
+        // has already fired off a NEW scan (which resets lastResultData to
+        // the new scan's identify response) — never let a stale price
+        // update clobber whatever's currently on screen.
+        if (!lastResultData || lastResultData.requestId !== identifyData.requestId) return;
+        // Merge pricing fields into lastResultData so Flag sends a
+        // complete record once pricing has loaded. Flagging before this
+        // resolves is fine too — see the flag-button setup above, which
+        // never gates on pricing.
+        Object.assign(lastResultData, priceData);
+        renderPriceSection(priceData);
+      })
+      .catch((e) => {
+        console.warn("[wnpk] price fetch failed:", e);
+        if (!lastResultData || lastResultData.requestId !== identifyData.requestId) return;
+        renderPriceSection({
+          pricingError: "Couldn't reach the pricing service — try again.",
+          noPriceNote: null,
+          marketPrice: null,
+          conditionPrices: null,
+          conditionPricesEstimated: null,
+          conditionPricesPartial: false,
+          priceVariants: null,
+          priceVariantUsed: null,
+        });
+      });
+  }
+
+  // HOISTED 2026-09-10 (identify/pricing decoupling) from inner functions
+  // of renderResult to module scope — renderPriceSection (below) needs to
+  // call these too, and it's invoked later/independently of renderResult
+  // once /api/price resolves, so it can't rely on renderResult's own
+  // closure.
+  //
+  // FIX (2026-08-30, user report — Ditto 18/62 Fossil, LP shown $13.45 vs.
+  // real TCGplayer LP $6.84): pricing comes straight from TCGplayer's real
+  // per-condition data instead of PPT's own (sometimes incomplete)
+  // breakdown, and per explicit user instruction, a failure to pull
+  // genuine live numbers surfaces loudly (see renderPriceSection's
+  // pricingError handling) instead of falling back to a guessed price.
+  // `estimatedMap` is kept only for shape compatibility with the backend
+  // response (always all-false when prices are present) — no "*" marking
+  // is needed since nothing shown is ever a guess.
+  function conditionRowsHtml(conditions) {
+    return CONDITION_ORDER.map((tier) => {
+      const price = conditions ? conditions[tier] : null;
+      return `<div class="wnpk-cond-row"><span>${tier}</span><span>${
+        price != null ? "$" + price.toFixed(2) : "—"
+      }</span></div>`;
+    }).join("");
+  }
+
+  // CHANGED (2026-08-29, user report — Hitmontop/Cinccino/Snorlax Japanese
+  // promos all showing zero prices even though real TCGplayer listings
+  // existed for some conditions): shows whichever tiers TCGplayer has
+  // genuine live data for, dashing out the rest, and only sends
+  // `pricingError` when NONE of the 5 tiers have any real data at all.
+  // `partial` says whether this printing's table has real numbers for
+  // every tier or just some — every number shown is still always genuine,
+  // never a guess, in both cases.
+  function conditionLabelNote(estimatedMap, partial) {
+    if (!estimatedMap) return "(no live data)";
+    return partial
+      ? "(real-time data from TCGplayer — some conditions have no market data yet)"
+      : "(real-time data from TCGplayer)";
+  }
+
+  // The market-price line spells out the edition/finish inline (not just
+  // in the badge above) so there is never a moment where the price on
+  // screen and the label describing it can visually separate and go out
+  // of sync — this was the exact bug a user hit (badge said "Unlimited",
+  // but the price shown was actually the 1st Edition figure). Both the
+  // badge and this line are driven from the SAME variant object, on both
+  // initial render and every dropdown change, so they can't disagree.
+  const marketPriceLine = (variant) =>
+    `Market${variant && variant.label ? " (" + escapeHtml(variant.label) + ")" : ""}: ${
+      variant && variant.basePrice != null ? "$" + variant.basePrice.toFixed(2) : "—"
+    }`;
+
+  // ADDED 2026-09-10 (identify/pricing decoupling, see CLAUDE.md /
+  // docs/test-cases.md test #88): fills in the price section of an
+  // already-rendered raw-card panel once the separate /api/price call
+  // resolves (or fails). Replaces ONLY #wnpk-price-section's contents —
+  // never touches the header/warnings/image/scroll position of the panel
+  // that's already on screen, per explicit instruction not to re-render
+  // the whole panel here.
+  function renderPriceSection(priceData) {
+    const section = $("#wnpk-price-section");
+    if (!section) return; // panel has since moved on to a different scan/state
+
+    const pricingWarnings = `
+      ${
+        priceData.noPriceNote
+          ? `<div class="wnpk-warning">⚠ ${escapeHtml(priceData.noPriceNote)}</div>`
+          : ""
+      }
+      ${
+        // Deliberately styled/worded to stand out from the softer
+        // ambiguous-match/stamp warnings in the header above — it means NO
+        // price is being shown, not "the price might be off."
+        priceData.pricingError
+          ? `<div class="wnpk-warning wnpk-price-error">🛑 NO LIVE PRICE: ${escapeHtml(priceData.pricingError)}</div>`
+          : ""
+      }
+    `;
+
+    // Plain raw card — original condition-table view, with a manual
+    // print-variant picker instead of trusting a single AI-guessed
+    // edition/finish. Gemini's stampType read (1st Edition, etc.) is only
+    // used to pick the DEFAULT selection — vintage-card stamps in
+    // particular are easy for a vision model to misread or miss from a
+    // video frame, so the user can just switch the dropdown to whatever
+    // matches what they're actually holding, no rescan needed.
+    const variantPicker = priceData.priceVariants
+      ? `
+        <div class="wnpk-cond-label">PRINT VARIANT <span class="wnpk-estimate-note">(AI's best guess — switch if it looks wrong)</span></div>
+        <select id="wnpk-variant-select" class="wnpk-variant-select">${Object.entries(priceData.priceVariants)
+          .map(
+            ([key, v]) =>
+              `<option value="${escapeHtml(key)}"${key === priceData.priceVariantUsed ? " selected" : ""}>${escapeHtml(
+                v.label
+              )}${key === priceData.priceVariantUsed ? " (detected)" : ""}</option>`
+          )
+          .join("")}</select>
+      `
+      : "";
+
+    const initialVariant = priceData.priceVariants ? priceData.priceVariants[priceData.priceVariantUsed] : null;
+    const initialEstimatedMap = initialVariant ? initialVariant.estimated : priceData.conditionPricesEstimated;
+    const initialPartial = initialVariant ? initialVariant.partial : priceData.conditionPricesPartial;
+
+    section.innerHTML = `
+      ${pricingWarnings}
+      <div class="wnpk-market-price" id="wnpk-market-price">
+        ${initialVariant ? marketPriceLine(initialVariant) : marketPriceLine({ basePrice: priceData.marketPrice })}
+      </div>
+      ${variantPicker}
+      <div class="wnpk-cond-label" id="wnpk-cond-label">
+        CONDITION PRICES <span class="wnpk-estimate-note" id="wnpk-cond-note">${conditionLabelNote(initialEstimatedMap, initialPartial)}</span>
+      </div>
+      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(priceData.conditionPrices)}</div>
+    `;
+
+    if (priceData.priceVariants) {
+      const select = $("#wnpk-variant-select");
+      select.addEventListener("change", () => {
+        const variant = priceData.priceVariants[select.value];
+        if (!variant) return;
+        $("#wnpk-market-price").textContent = marketPriceLine(variant);
+        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions);
+        $("#wnpk-cond-note").textContent = conditionLabelNote(variant.estimated, variant.partial);
+        const badge = $("#wnpk-edition-badge");
+        if (badge && variant.printEdition) badge.textContent = variant.printEdition;
+      });
+    }
   }
 
   function renderResult(data) {
@@ -617,26 +812,14 @@
           ? `<div class="wnpk-warning">⚠ ${escapeHtml(data.stampNote)}</div>`
           : ""
       }
-      ${
-        data.noPriceNote
-          ? `<div class="wnpk-warning">⚠ ${escapeHtml(data.noPriceNote)}</div>`
-          : ""
-      }
-      ${
-        // FIX (2026-08-30, user report — Ditto 18/62 Fossil, LP shown
-        // $13.45 vs. real TCGplayer LP $6.84): pricing now comes straight
-        // from TCGplayer's real per-condition data instead of PPT's own
-        // (sometimes incomplete) breakdown, and per explicit user
-        // instruction, a failure to pull genuine live numbers now surfaces
-        // here loudly instead of falling back to a guessed price. This is
-        // deliberately styled/worded to stand out from the softer
-        // ambiguous-match/stamp warnings above — it means NO price is
-        // being shown, not "the price might be off."
-        data.pricingError
-          ? `<div class="wnpk-warning wnpk-price-error">🛑 NO LIVE PRICE: ${escapeHtml(data.pricingError)}</div>`
-          : ""
-      }
     `;
+    // CHANGED 2026-09-10 (identify/pricing decoupling): `noPriceNote` and
+    // `pricingError` used to render right here, but both now come back
+    // from the separate /api/price call (see fetchAndRenderPricing /
+    // renderPriceSection below) instead of the identify response this
+    // template is built from — they're rendered inside the price section
+    // once that second call resolves, right next to the price data they
+    // describe, instead of up here where they'd always be empty now.
 
     // Prefer the exact TCGPlayer product page for the matched printing
     // (pokemontcg.io hands this back directly) over a bare name search,
@@ -690,47 +873,6 @@
       return;
     }
 
-    // FIX (2026-08-30, user report — Ditto 18/62 Fossil, LP shown $13.45
-    // vs. real TCGplayer LP $6.84): pricing no longer comes from PPT's own
-    // data (or a synthetic multiplier fallback) at all — the backend now
-    // fetches real per-condition, per-printing prices straight from
-    // TCGplayer's own price-history endpoint for the matched card (see the
-    // "Live TCGplayer per-condition pricing" section in identify.js). Per
-    // explicit user instruction, there is no more "some tiers are
-    // estimated" partial state: either every condition in the table is
-    // genuine live TCGplayer data, or the backend throws and this whole
-    // card shows the loud `pricingError` banner above instead of any
-    // price. `estimatedMap` is kept only for shape compatibility with the
-    // backend response (always all-false when prices are present) — no
-    // "*" marking is needed anymore since nothing shown is ever a guess.
-    function conditionRowsHtml(conditions) {
-      return CONDITION_ORDER.map((tier) => {
-        const price = conditions ? conditions[tier] : null;
-        return `<div class="wnpk-cond-row"><span>${tier}</span><span>${
-          price != null ? "$" + price.toFixed(2) : "—"
-        }</span></div>`;
-      }).join("");
-    }
-
-    // CHANGED (2026-08-29, user report — Hitmontop/Cinccino/Snorlax
-    // Japanese promos all showing zero prices even though real TCGplayer
-    // listings existed for some conditions): the backend no longer
-    // requires all 5 conditions to have real data before showing any of
-    // them (see buildLivePriceVariantsFromTCGPlayer) — it now shows
-    // whichever tiers TCGplayer has genuine live data for, dashing out
-    // the rest, and only sends `pricingError` when NONE of the 5 tiers
-    // have any real data at all. `partial` (from the backend's
-    // `conditionPricesPartial` / a variant's own `partial` field) says
-    // whether this printing's table has real numbers for every tier or
-    // just some — every number shown is still always genuine, never a
-    // guess, in both cases.
-    function conditionLabelNote(estimatedMap, partial) {
-      if (!estimatedMap) return "(no live data)";
-      return partial
-        ? "(real-time data from TCGplayer — some conditions have no market data yet)"
-        : "(real-time data from TCGplayer)";
-    }
-
     // Detected as a slab, but no graded-price data available (API key not
     // set up yet, or that exact grade wasn't found) — say so plainly rather
     // than silently showing a misleading raw-card price.
@@ -752,68 +894,24 @@
       return;
     }
 
-    // Plain raw card — original condition-table view, now with a manual
-    // print-variant picker instead of trusting a single AI-guessed
-    // edition/finish. Gemini's stampType read (1st Edition, etc.) is only
-    // used to pick the DEFAULT selection — vintage-card stamps in
-    // particular are easy for a vision model to misread or miss from a
-    // video frame, so the user can just switch the dropdown to whatever
-    // matches what they're actually holding, no rescan needed.
-    const variantPicker = data.priceVariants
-      ? `
-        <div class="wnpk-cond-label">PRINT VARIANT <span class="wnpk-estimate-note">(AI's best guess — switch if it looks wrong)</span></div>
-        <select id="wnpk-variant-select" class="wnpk-variant-select">${Object.entries(data.priceVariants)
-          .map(
-            ([key, v]) =>
-              `<option value="${escapeHtml(key)}"${key === data.priceVariantUsed ? " selected" : ""}>${escapeHtml(
-                v.label
-              )}${key === data.priceVariantUsed ? " (detected)" : ""}</option>`
-          )
-          .join("")}</select>
-      `
-      : "";
-
-    // The market-price line spells out the edition/finish inline (not just
-    // in the badge above) so there is never a moment where the price on
-    // screen and the label describing it can visually separate and go out
-    // of sync — this was the exact bug a user hit (badge said "Unlimited",
-    // but the price shown was actually the 1st Edition figure). Both the
-    // badge and this line are driven from the SAME variant object below, on
-    // both initial render and every dropdown change, so they can't disagree.
-    const marketPriceLine = (variant) =>
-      `Market${variant && variant.label ? " (" + escapeHtml(variant.label) + ")" : ""}: ${
-        variant && variant.basePrice != null ? "$" + variant.basePrice.toFixed(2) : "—"
-      }`;
-
-    const initialVariant = data.priceVariants ? data.priceVariants[data.priceVariantUsed] : null;
-    const initialEstimatedMap = initialVariant ? initialVariant.estimated : data.conditionPricesEstimated;
-    const initialPartial = initialVariant ? initialVariant.partial : data.conditionPricesPartial;
-
+    // Plain raw card — CHANGED 2026-09-10 (identify/pricing decoupling,
+    // see CLAUDE.md / docs/test-cases.md test #88): identification
+    // (everything in `header` above — name, set, image, confidence,
+    // ambiguous/stamp warnings) is already fully known at this point and
+    // renders immediately below. Market price / condition table / print-
+    // variant picker are NOT known yet — they arrive from a separate
+    // /api/price call fired right after this function returns (see
+    // fetchAndRenderPricing in identifyCard) — so #wnpk-price-section
+    // starts in a lightweight loading state and gets filled in by
+    // renderPriceSection once that call resolves, without touching
+    // anything else already on screen.
     $("#wnpk-body").innerHTML = `
       ${header}
-      <div class="wnpk-market-price" id="wnpk-market-price">
-        ${initialVariant ? marketPriceLine(initialVariant) : marketPriceLine({ basePrice: data.marketPrice })}
+      <div id="wnpk-price-section">
+        <div class="wnpk-cond-label">Loading price…</div>
       </div>
-      ${variantPicker}
-      <div class="wnpk-cond-label" id="wnpk-cond-label">
-        CONDITION PRICES <span class="wnpk-estimate-note" id="wnpk-cond-note">${conditionLabelNote(initialEstimatedMap, initialPartial)}</span>
-      </div>
-      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices)}</div>
       ${footer}
     `;
-
-    if (data.priceVariants) {
-      const select = $("#wnpk-variant-select");
-      select.addEventListener("change", () => {
-        const variant = data.priceVariants[select.value];
-        if (!variant) return;
-        $("#wnpk-market-price").textContent = marketPriceLine(variant);
-        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions);
-        $("#wnpk-cond-note").textContent = conditionLabelNote(variant.estimated, variant.partial);
-        const badge = $("#wnpk-edition-badge");
-        if (badge && variant.printEdition) badge.textContent = variant.printEdition;
-      });
-    }
   }
 
   function escapeHtml(str) {

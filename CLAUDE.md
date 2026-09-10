@@ -669,6 +669,85 @@ but needs an explicit go-ahead before building per this project's
 normal conventions — flagging here so it doesn't get lost, not
 proposing a specific implementation yet.
 
+**Built, 2026-09-10: identify/pricing decoupling — the fix indicated by
+test #88, per explicit user go-ahead. NOT YET DEPLOYED, NOT YET
+PUSHED.** `/api/identify` no longer fetches live TCGplayer pricing
+inline — `lookupCardPPT` (`api/identify.js`) now returns identification
+(name/set/image/confidence/warnings/`tcgplayerUrl`) immediately, plus a
+new `pricingLookup` object (`tcgPlayerId`, `tag`, `siblingTcgPlayerId`,
+`siblingTag`, `stampType`, `primaryPrinting`) describing what a new,
+separate `POST /api/price` endpoint needs to fetch pricing for. New
+`api/price.js` (same CORS/`requestId` pattern as `api/flag.js`)
+`require()`s `buildLiveVariantsForCandidate`/`pickDefaultVariantKey`
+UNCHANGED from `api/identify.js` (exported as named properties on the
+handler function, not duplicated) and does exactly what the removed
+block used to do, returning `{ priceVariants, priceVariantUsed,
+marketPrice, conditionPrices, conditionPricesEstimated,
+conditionPricesPartial, pricingError, noPriceNote }`.
+`TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS` (2500ms) and its single retry are
+untouched. `vercel.json` now also declares `api/price.js` with
+`maxDuration: 15`, matching `api/identify.js`. Graded slabs
+(`read.isSlab`) are deliberately untouched — `lookupCardPPT` is still
+called on that path for `setName`/`cardImageUrl`/`matchConfidence`/
+`tcgplayerUrl`, but graded pricing itself comes from a separate
+PPT-comps function (`lookupGradedPrice`) that never used live
+TCGplayer pricing anyway, so removing it from `lookupCardPPT` doesn't
+regress the graded-with-price path. **One real, honestly-flagged side
+effect, explicitly out of scope for this change**: the graded-slab
+*fallback* branch (`gradedPriceUnavailable`, which used to show a raw-
+card price estimate as a substitute) now always shows "—" for that
+estimate, since `marketPrice`/`conditionPrices` no longer exist
+synchronously on any `/api/identify` response, and this fallback was
+never wired up to call the new `/api/price` endpoint — graded slabs are
+Phase 2 and not otherwise built out yet, so this wasn't extended to
+call `/api/price` too; flagging so it isn't mistaken for an oversight
+later.
+
+`extension/content.js`: `identifyCard()` renders identification
+immediately (`renderResult`), then fires a second, independent
+`fetch` to a new `/api/price` endpoint (`getPriceUrl()`, derived from
+`getBackendUrl()` the same way `getFlagUrl()` already was) carrying
+that response's `pricingLookup`. `#wnpk-price-section` starts in a
+"Loading price…" state and is updated in place by a new
+`renderPriceSection()` once the second call resolves — never a full
+panel re-render, so scroll position/etc. are undisturbed.
+`conditionRowsHtml`/`conditionLabelNote`/`marketPriceLine` were hoisted
+from inner functions of `renderResult` to module scope so
+`renderPriceSection` can reuse them. `pricingError`/`noPriceNote`
+(now only available from the second call) moved out of the immediate
+header into the price section, right next to the data they describe.
+`lastResultData` (used by Flag) is merged with the pricing fields once
+the second call resolves, guarded by a `requestId` match so a slow
+`/api/price` response can never clobber a newer scan already on
+screen; the flag button was already enabled as soon as identification
+rendered (unchanged), so flagging before pricing resolves sends
+whatever's there, exactly as intended — no gating added.
+
+**Verified locally, not yet against a live deployment**: a mocked-
+fetch backend smoke test (`api/identify.js` + `api/price.js`, no real
+network calls) confirms `pricingLookup` is shaped correctly, zero old
+pricing fields (`marketPrice`/`conditionPrices`/`priceVariants`/
+`pricingError`/`noPriceNote`/`priceVariantUsed`/
+`conditionPricesEstimated`/`conditionPricesPartial`) remain on the
+`/api/identify` response, zero TCGplayer calls happen during identify,
+and `/api/price` correctly resolves both the success and failure cases
+(including the existing single-retry logic still firing exactly once).
+A separate jsdom-based frontend functional test (jsdom installed only
+in a scratch directory, not a project dependency) drove a real click
+on the Identify button against mocked `fetch` responses and confirmed:
+card ID renders in single-digit ms with the "Loading price…"
+placeholder visible immediately; the price section updates in place
+~300ms later (matching an injected artificial delay) without
+re-rendering the header/image/warnings; the flag button is enabled
+and works both before and after pricing resolves; and a simulated
+`/api/price` failure surfaces the `🛑 NO LIVE PRICE` warning without
+disturbing the already-rendered card ID. **Not yet verified**: a real
+end-to-end scan against a live Whatnot stream and the deployed backend
+(needs deploy go-ahead first, per standing convention — see "When to
+ask before acting" below), and a live confirmation via `timingMs`
+that a real scan's identification lands meaningfully faster than the
+old combined round-trip.
+
 ## When to ask before acting
 
 - **Free rein, no need to ask**: local file edits, local git commits,

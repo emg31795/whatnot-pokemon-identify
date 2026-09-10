@@ -1976,46 +1976,24 @@ async function lookupCardPPT(read, requestId) {
       )
     : null;
 
-  // LIVE TCGPLAYER PRICING (2026-08-30) — see the big comment above
-  // buildLivePriceVariantsFromTCGPlayer for the full story. PPT is done
-  // being used at this point except for its `tcgPlayerId`/`tcgPlayerUrl`
-  // fields; every dollar figure from here on is either genuine live
-  // TCGplayer data or an explicit `pricingError` — never a guess.
-  let priceVariants = null;
-  let pricingError = null;
-  try {
-    priceVariants = await buildLiveVariantsForCandidate(best, bestIsShadowless ? "Shadowless" : null);
-    if (shadowlessSibling) {
-      try {
-        const siblingIsShadowless = isShadowlessSetName(shadowlessSibling.setName);
-        const siblingVariants = await buildLiveVariantsForCandidate(shadowlessSibling, siblingIsShadowless ? "Shadowless" : null);
-        priceVariants = { ...priceVariants, ...siblingVariants };
-        console.log(
-          `[requestId=${requestId}]`,
-          `[lookup] merged Shadowless-sibling LIVE prices into dropdown: best=${best.setName}, sibling=${shadowlessSibling.setName}, sibling keys=`,
-          Object.keys(siblingVariants)
-        );
-      } catch (e) {
-        // Non-fatal: the sibling is a bonus dropdown option, not the
-        // primary match's own price. Log and move on rather than failing
-        // the whole scan over a secondary printing's data.
-        console.error(`[requestId=${requestId}]`, "[lookup] Shadowless sibling LIVE price fetch failed (non-fatal):", e && e.message);
-      }
-    }
-  } catch (e) {
-    console.error(`[requestId=${requestId}]`, "[lookup] LIVE TCGPLAYER PRICING FAILED:", e && e.message, "tcgPlayerId=", best.tcgPlayerId);
-    pricingError = (e && e.message) || "Could not fetch live TCGplayer pricing for this card.";
-    priceVariants = null;
-  }
-
-  const defaultKeyRaw = priceVariants ? pickDefaultVariantKey(priceVariants, read, best.prices?.primaryPrinting) : null;
-  const priceVariantUsed = defaultKeyRaw;
-  const chosenVariant = priceVariantUsed && priceVariants ? priceVariants[priceVariantUsed] : null;
-
-  let noPriceNote = null;
-  if (!chosenVariant && !pricingError) {
-    noPriceNote = "TCGplayer doesn't have complete live condition pricing for this printing yet. Check the link below for current listings.";
-  }
+  // DECOUPLED (2026-09-10, see docs/test-cases.md test #88): live
+  // TCGplayer per-condition pricing used to run inline right here,
+  // `await`ed before this function (and therefore the whole /api/identify
+  // response) could return — a real, measured problem: a single failing
+  // price fetch (2 attempts x TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS) added
+  // up to ~5.3s of pure dead time to a response whose identification was
+  // otherwise ready in ~1.5s, well inside the 1-3s target. Test #88 ruled
+  // out self-inflicted rate-limiting and confirmed TCGplayer itself is
+  // fundamentally healthy (direct curls of the exact failing productIds
+  // all returned real data) — the blocking architecture, not TCGplayer's
+  // reliability, was the actionable finding. So: this function no longer
+  // fetches live pricing at all. It returns identification immediately,
+  // plus a `pricingLookup` payload carrying everything the separate
+  // POST /api/price endpoint needs to do exactly what used to run here
+  // (see api/price.js, which requires buildLiveVariantsForCandidate/
+  // pickDefaultVariantKey UNCHANGED from this file rather than
+  // duplicating them).
+  const siblingIsShadowless = shadowlessSibling ? isShadowlessSetName(shadowlessSibling.setName) : null;
 
   const tcgSearchName = String(best.name).replace(/\s*-\s*\S+\/\S+\s*$/, "").trim();
 
@@ -2026,27 +2004,15 @@ async function lookupCardPPT(read, requestId) {
     cardImageUrl: best.cardImageUrl || null,
     matchConfidence,
     ambiguousNote,
-    noPriceNote,
-    // Loud, explicit failure per user instruction (2026-08-30, active
-    // testing phase): set only when live TCGplayer pricing could not be
-    // fetched at all. Never paired with a fabricated marketPrice/
-    // conditionPrices — those stay null whenever this is set.
-    pricingError,
     tcgplayerUrl: best.tcgPlayerUrl || null,
-    marketPrice: chosenVariant ? chosenVariant.basePrice : null,
-    conditionPrices: chosenVariant ? chosenVariant.conditions : null,
-    // Kept for frontend/shape compatibility — always all-false now, since
-    // every surviving number is genuine live TCGplayer data (see
-    // buildLivePriceVariantsFromTCGPlayer).
-    conditionPricesEstimated: chosenVariant ? chosenVariant.estimated : null,
-    // NEW (2026-08-29): true when TCGplayer had real live data for SOME
-    // but not all 5 condition tiers on the shown printing (see
-    // buildLivePriceVariantsFromTCGPlayer) — lets the frontend caption
-    // this differently from full 5-condition coverage without implying
-    // any of the missing tiers were guessed.
-    conditionPricesPartial: chosenVariant ? !!chosenVariant.partial : false,
-    priceVariants,
-    priceVariantUsed,
+    pricingLookup: {
+      tcgPlayerId: best.tcgPlayerId || null,
+      tag: bestIsShadowless ? "Shadowless" : null,
+      siblingTcgPlayerId: shadowlessSibling ? shadowlessSibling.tcgPlayerId || null : null,
+      siblingTag: siblingIsShadowless ? "Shadowless" : null,
+      stampType: read.stampType,
+      primaryPrinting: best.prices?.primaryPrinting ?? null,
+    },
     _tcgSearchName: tcgSearchName,
   };
 }
@@ -2103,7 +2069,7 @@ async function lookupGradedPrice(read) {
 // Handler
 // ---------------------------------------------------------------------------
 
-module.exports = async function handler(req, res) {
+async function handler(req, res) {
   withCors(res);
 
   // FLAG FEATURE (2026-09-04, see CLAUDE.md): every request gets a short
@@ -2425,4 +2391,17 @@ module.exports = async function handler(req, res) {
   // `requestId`'s declaration above.
   result.requestId = requestId;
   res.status(200).json(result);
-};
+}
+
+module.exports = handler;
+// DECOUPLED PRICING (2026-09-10, see docs/test-cases.md test #88):
+// exported so api/price.js can `require("./identify.js")` and reuse
+// these two functions UNCHANGED — same closures, same access to
+// TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS/fetchTCGPlayerPriceHistory/
+// buildLivePriceVariantsFromTCGPlayer defined earlier in this file —
+// rather than duplicating ~150 lines of pricing logic across two files
+// and risking the two copies drifting apart. Vercel still treats this
+// file's default export as the /api/identify handler; attaching named
+// properties to that same function value doesn't change that.
+module.exports.buildLiveVariantsForCandidate = buildLiveVariantsForCandidate;
+module.exports.pickDefaultVariantKey = pickDefaultVariantKey;

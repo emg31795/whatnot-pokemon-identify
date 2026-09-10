@@ -2,6 +2,9 @@
   "functions": {
     "api/identify.js": {
       "maxDuration": 15
+    },
+    "api/price.js": {
+      "maxDuration": 15
     }
   }
 }
