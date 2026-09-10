@@ -785,7 +785,33 @@ slabs are Phase 2 and not otherwise built out (see `docs/ROADMAP.md`),
 so this is a minor, low-priority regression in an already-partial
 feature, not a Phase-1 raw-card issue — worth a small follow-up
 (wire that one fallback branch to also call `/api/price`) whenever
-graded-slab work is next picked up, not urgent on its own.
+graded-slab work is next picked up, not urgent on its own. **Re-verified
+2026-09-10 (doc-accuracy pass)**: `content.js`'s deferred-pricing fetch
+is gated on `!response.data.isSlab` (`content.js:573`), so this branch
+is still definitively unwired — confirmed by reading the current code,
+not just carried over from memory.
+
+**Documentation-accuracy note, 2026-09-10 (later, doc-accuracy pass)**:
+the "Status: live and confirmed, not just deployed" line in
+`docs/test-cases.md` test #88 is worth reading precisely — the
+"confirmed" there was a direct `curl` round-trip against `/api/identify`
++ `/api/price` plus an earlier mocked-jsdom test of `content.js`'s
+render logic, not an observed run of the real extension UI on an actual
+Whatnot live stream (nobody watched the two-stage "ID appears, then
+price fills in" render happen live in the panel). That's a real,
+narrower basis than "live and confirmed" implies on its own, though not
+a false claim — the backend behavior it describes is accurate. Separately,
+and independently: a fresh production health check run today found 50
+real `/api/identify` requests (and a closely matching number of
+`/api/price` requests) served cleanly since this deploy went live, zero
+identify-side errors, latency solidly inside the 1-3s target, real
+varying card reads consistent with genuine scanning rather than a
+repeated synthetic test — strong circumstantial evidence the real
+extension has been working in practice, just not something narrated
+here as an explicit "watched it happen on stream" confirmation. Net:
+the underlying concern is very likely resolved by real usage, but the
+docs should not be read as claiming someone directly observed the
+two-stage UI render live.
 
 ## When to ask before acting
 
@@ -1165,6 +1191,62 @@ checklist before reporting something as finished:
   open until they're specifically seen working (or a live scan/click
   incidentally proves one of them, the way organic traffic has
   confirmed other fixes elsewhere in this file).
+
+- **Update, 2026-09-10: real "icon click does nothing" report, root
+  cause found and CONFIRMED via user rescan — a latent bug in the
+  2026-09-07 fix above, not caused by that day's pricing-decoupling
+  deploy.** Right after commit `21fc98e` (the identify/pricing
+  decoupling, which touched `content.js` substantially), the user
+  reported the toolbar icon had stopped doing anything. Investigation
+  (no code changed) ruled out every structural explanation first, via
+  real checks, not guesses: the loaded-unpacked path in Chrome's own
+  `Secure Preferences` file matches the git repo's `extension/`
+  directory exactly (`/Users/ericgeller/Documents/whatnot-pokemon-
+  extension/extension`, `git status` clean, no drift); `node -c` passes
+  on both `content.js` and `background.js`; and a real fresh load of a
+  live `whatnot.com/live/*` page (via a real Chrome tab, not a
+  reimplementation) showed **zero console errors** and `#wnpk-root`
+  rendering correctly (`display: flex`, `visibility: visible`) — so the
+  rewritten `content.js` itself is not broken.
+
+  **Real root cause**: the reinjection guard added 2026-09-07
+  (`if (document.getElementById("wnpk-root")) return;`, `content.js`
+  line 23) interacts badly with reloading the extension itself.
+  Reloading the extension in Chrome invalidates the JS context of
+  `content.js` in any tab that was already open beforehand — that old
+  instance's `chrome.runtime`/`chrome.tabs` calls start failing
+  silently — but the **DOM** persists across the reload, so the dead
+  `#wnpk-root` element is still there. `background.js`'s `onClicked`
+  handler pings the tab, the ping fails (dead context), it falls back to
+  re-injecting `content.js` — and that fresh injection immediately sees
+  the stale `#wnpk-root`, bails out via the guard, and never
+  re-registers the `TOGGLE_PANEL` listener. Net effect: click → nothing,
+  silently, on any tab that predates the day's extension reload.
+  Confirmed as the real mechanism, not just plausible: a **hard reload**
+  of the affected live tab (not just re-clicking the icon) fixed it
+  immediately — exactly what the DOM-persistence theory predicts, and
+  what a stale-folder or a genuine JS bug would NOT predict.
+
+  **Not yet fixed in code, and not urgent** — this is a real, recurring
+  bit of friction (every future extension reload will again strand any
+  already-open Whatnot tab until it's hard-refreshed), but it's fully
+  and reliably worked around today by refreshing the tab, and the user
+  hasn't asked for a fix yet. If it's worth closing properly later, the
+  fix is small and scoped: change the guard in `content.js` to also
+  verify the existing `#wnpk-root`'s listeners are actually alive
+  (e.g. have `background.js` first try removing a stale root via
+  `executeScript` before reinjecting, or have `content.js` register a
+  `chrome.runtime.onMessage` listener check rather than a bare DOM
+  check) — flagging here so it isn't lost, not building it without
+  explicit go-ahead per this project's normal conventions.
+
+  Two tooling gaps hit during this investigation, worth knowing for next
+  time: neither Claude in Chrome (extension-based automation is blocked
+  by Chrome itself from scripting `chrome://` pages) nor computer-use
+  (browsers are granted read-only — screenshots only, no clicks) can
+  open `chrome://extensions`'s Errors button or service-worker
+  DevTools console directly — that check still needs the user's own
+  eyes when it's ever actually needed.
 
 - **Test #79 — severe live Gemini failure cluster (2026-09-05)**: caught
   during a routine audit via real Vercel logs, not the user's own
