@@ -4308,6 +4308,39 @@ having synchronous `marketPrice`/`conditionPrices` to show) is tracked
 as a separate, non-urgent open item — see CLAUDE.md's "Current
 priority".
 
+**Update, 2026-09-11 (~00:26-00:27 UTC) — two more real occurrences of
+the same pricing-timeout signature, more data for this still-open item,
+not a new bug.** User flagged two scans; pulled real Vercel logs for
+both.
+
+- `requestId=96fe83d0-99f6-46d6-b210-345da1550713` (Solgaleo Prism
+  Star, 00:26:34-36 UTC): clean, correct identification — Gemini read
+  `cardName=Solgaleo`, `number=89/156`, `hp=160`, exact match to
+  "Solgaleo Prism Star" (SM - Ultra Prism, 89/156), `bestScore=32`,
+  `tieCount=1`, `gemini ms=1350`, `total ms=1430` (inside the 1-3s
+  target). `/api/price` for `tcgPlayerId=157706` failed: `TCGplayer
+  price-history request failed for productId=157706 (after 1 retry):
+  This operation was aborted`.
+- `requestId=0629778d-41d5-4fd1-9779-ae970681f6ca` (Bunnelby,
+  00:27:05-08 UTC): also correct behavior, not a bug — Gemini read
+  `cardNumber=SV092/SV122`, which doesn't exist in PPT's catalog (page
+  1+2 and a combined name+number search all came up empty for that
+  exact number); the code correctly fell back to the closest same-
+  name/HP candidate (Shining Fates: Shiny Vault, SV097/SV122) with an
+  honest Low-confidence "no printing has the exact card number that was
+  read" warning — same class as tests #35/#37/#49/#60, working as
+  designed. `gemini ms=2063`, `total ms=2198`. `/api/price` for
+  `tcgPlayerId=232485` failed with the identical signature: `This
+  operation was aborted` after 1 retry.
+
+Both `/api/price` failures are the same known `TCGPLAYER_PRICE_HISTORY_
+TIMEOUT_MS=2500`-plus-one-retry abort documented in tests #72/#87/#88 —
+TCGplayer price-history timing out, not an identification failure (both
+identifications were correct or correctly honest). No code changed, no
+action taken — just another data point for the still-open pricing-
+timeout gap; see CLAUDE.md's "Current priority" for the item this rolls
+up into.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
