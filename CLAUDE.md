@@ -947,12 +947,64 @@ full browser-driven simulation; flagging this precisely rather than
 overclaiming "tested" the way test #88's write-up was later found to
 read more broadly than what was actually observed.
 
-`sha1 135f8791c009748837cc6afac32565aacd7d90f6` on the current
-`api/identify.js` — noted here for the pre-deploy hash-verify step,
-per the standing "Before you deploy" checklist. **Waiting on explicit
-go-ahead to deploy and to `git push`**, per this project's own
-standing convention (build/test freely, always ask before deploying or
-pushing) and the user's own explicit instruction this round.
+**DEPLOYED, PUSHED, AND LIVE-CONFIRMED, 2026-09-12** (same day, per
+explicit go-ahead). `sha1 135f8791c009748837cc6afac32565aacd7d90f6`
+re-verified unchanged immediately before deploying. Deployment
+`dpl_2JPYhSbmSig1Tkvrs4ew4R68mVvS`, target production, `READY`,
+aliased correctly to `whatnot-pokemon-identify.vercel.app`
+(`aliasError: null`); build log confirms "Downloading 5 deployment
+files" (identify.js, price.js, flag.js, vercel.json, package.json).
+Live `GET /api/identify` returned `normalizeDiacriticTest: "pokemon
+collector"` — the diacritic-stripping regex, this file's own most
+historically fragile transcription spot, deployed intact. Live `POST
+{}` returned the real `400 {"error":"Missing imageBase64","requestId":
+"..."}`.
+
+**Real end-to-end scan, live** (a real Pikachu XY95 promo photo fetched
+from TCGplayer's own public CDN): `found:true`, `cardName:"Pikachu"`,
+matched the exact same card (`tcgPlayerId:"114004"`), High confidence,
+`timingMs: {gemini: 1730, lookup: 190, total: 1920}` — inside the 1-3s
+target, real logs confirm a genuine `[lookup] search= Pikachu ...` PPT
+call fired (`raw candidate count=30`, `bestScore=30 tieCount=1`).
+
+**Cache confirmed live, decisively, not just inferred from timing**:
+the identical image sent again immediately after (same request body)
+returned the same correct match in `timingMs: {gemini: 1069, lookup:
+11, total: 1080}` — lookup dropped from 190ms to 11ms — and the real
+runtime log for that second `requestId` shows `[lookup] PPT CACHE HIT
+— skipping PokemonPriceTracker entirely, key= english:pikachu:xy95`
+with **no** `[lookup] search=` line anywhere in that request's log
+block, confirming PPT was never called on the second scan. The
+`[haiku-shadow-test]`/`[legacy-model-shadow-test]` lines fired
+normally on both scans, confirming those unrelated features are
+unaffected. No `"Runtime Cache unavailable in this environment"`
+fallback warning appeared in production logs (unlike a local run,
+where it does, and the in-memory fallback still works — see the local
+test above) — consistent with the real distributed Runtime Cache
+backend being used in production, not a same-warm-instance fluke,
+though this session's tools can't directly confirm two different
+Lambda instances handled the two requests.
+
+**`get_runtime_errors` clean**: 0 errors in both a 15-minute and a
+1-hour post-deploy window; the 1-hour window's 10 error groups (PPT
+minute-rate-limit 429s, a couple of TCGplayer zero-SKU cases, one
+Gemini timeout) are all real, but every one of them is stamped
+`lastDeployment=dpl_99HuujYGdMKpsPnpY5Rh2LE6Lk8Y` — the PRIOR
+deployment, all predating this deploy going live at 22:49:44 UTC.
+Nothing new or unexpected.
+
+**Not yet observed**: whether the cache still hits after the full 30s
+TTL elapses, or correctly misses once it does (both are direct
+consequences of `ttl: PPT_CACHE_TTL_SECONDS` and weren't separately
+timed here — the two test scans were seconds apart, well inside the
+window) — and whether the client-side auto-retry actually fires on a
+live 429 in real use (no real minute-limit rate-limit occurred during
+this deploy's verification window, so `identifyAttempt`'s retry path
+itself hasn't been exercised by real traffic yet, only by the earlier
+local mocked-fetch test). Worth a normal amount of continued log
+watching, not a dedicated follow-up test.
+
+Pushed to GitHub (`d355c0c..e76ed9b`, `main`).
 
 ## When to ask before acting
 

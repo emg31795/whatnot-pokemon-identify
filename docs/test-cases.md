@@ -4468,6 +4468,24 @@ is the one option with real behavioral risk (could reduce recall on
 already-hard cards); worth a follow-on only if caching doesn't fully
 solve it, with its own dedicated before/after test.
 
+**Built, DEPLOYED, PUSHED, AND LIVE-CONFIRMED, 2026-09-12** (options 3
+and 5 only, per explicit go-ahead — options 2 and 4 remain deliberately
+deferred). Deployment `dpl_2JPYhSbmSig1Tkvrs4ew4R68mVvS`, `READY`,
+aliased to `whatnot-pokemon-identify.vercel.app`. A real end-to-end
+scan (Pikachu XY95 promo, a real TCGplayer product photo) matched
+correctly (`tcgPlayerId=114004`, High confidence, `timingMs.total=
+1920ms`) with a genuine PPT search firing (`raw candidate count=30`).
+The identical image sent again immediately after hit the cache
+decisively — real logs show `[lookup] PPT CACHE HIT — skipping
+PokemonPriceTracker entirely, key= english:pikachu:xy95` with no fresh
+`[lookup] search=` line, and `timingMs.lookup` dropped from 190ms to
+11ms. `get_runtime_errors` clean for both a 15-minute and 1-hour
+post-deploy window (the 1-hour window's 10 error groups all belong to
+the prior deployment, before this one went live). Full trace, sha1
+verification, and the "not yet observed" caveats (TTL expiry behavior,
+a real live 429 exercising the client auto-retry) logged in CLAUDE.md's
+"Current priority" section. Pushed to GitHub (`d355c0c..e76ed9b`).
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
