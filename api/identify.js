@@ -468,6 +468,70 @@ try {
   waitUntil = null;
 }
 
+// ADDED (2026-09-12, PPT per-minute rate-limit research — see
+// docs/test-cases.md "Research: PPT per-minute rate limit hit during
+// normal single-click scanning"): a short-TTL cache for lookupCardPPT's
+// result, to avoid spending fresh PokemonPriceTracker credits on
+// identical/near-identical repeat searches within a short window (the
+// same card visible for several seconds while the user considers, or a
+// manual re-scan) — real logs showed a scan can cost up to 3 separate
+// PPT calls (90 credits) in the worst case, and that worst case fires
+// on over a third of real scans. Uses Vercel's own Runtime Cache
+// (`getCache()`), confirmed via Vercel's docs to be available on the
+// Hobby plan with no new dependency (this file already requires
+// `@vercel/functions` for `waitUntil` above) and no new paid service —
+// same guarded-require pattern as `waitUntil`, so a missing/unavailable
+// package just disables caching rather than breaking real requests.
+let getCache = null;
+try {
+  ({ getCache } = require("@vercel/functions"));
+} catch (e) {
+  getCache = null;
+}
+
+// Namespaced separately from anything else that might ever share this
+// team's single Hobby-plan Runtime Cache (Runtime Cache is per-team on
+// Hobby, not per-project — confirmed via Vercel's docs).
+const PPT_CACHE_NAMESPACE = "wnpk-ppt-lookup";
+
+// TTL chosen at the SHORT end of the 30-60s range the user asked for,
+// deliberately, not the middle or long end: Whatnot's own sudden-death
+// auctions run ~10s each (the reason this project's own latency target
+// is 1-3s, not the original 2-5s — see CLAUDE.md), so "same card visible
+// for several seconds" plus a manual re-scan or two is comfortably
+// covered by 30s. A longer TTL would buy a higher hit rate but widens
+// the window in which a DIFFERENT physical card sharing the exact same
+// name+number+language as an earlier one (a real possibility — see the
+// cache-key comment below) could serve a stale result; 30s keeps that
+// window as small as the caching benefit allows.
+const PPT_CACHE_TTL_SECONDS = 30;
+
+// Cache key deliberately includes cardNumber, not just cardName+language.
+// A wholesale cardName+language-only key would let two DIFFERENT
+// physical cards that happen to share a species name (extremely common
+// on this app's own use case — e.g. several different Pikachu prints
+// sold back-to-back in the same stream) collide within the TTL window
+// and silently serve one card's identification/price for another — the
+// exact kind of confident-wrong-answer this project's whole design
+// philosophy exists to avoid (see CLAUDE.md's "Key design principle").
+// cardNumber is this codebase's own highest-weighted, most reliable
+// match signal (see SCORE / pickBestCandidate below) precisely because
+// it's the one field that actually disambiguates printings — so it's
+// the right disambiguator here too. When no cardNumber was read at all,
+// return null (skip caching entirely for that lookup) rather than cache
+// under a weaker key: a numberless read is exactly the case with the
+// least ability to tell two different cards apart, so failing toward
+// "spend the PPT credits" is safer than failing toward "maybe serve the
+// wrong card."
+function pptCacheKey(read) {
+  if (!read || !read.cardNumber) return null;
+  const name = normalizeNameForMatch(read.cardName || "");
+  if (!name) return null;
+  const number = String(read.cardNumber).trim().toLowerCase();
+  const language = String(read.language || "English").trim().toLowerCase();
+  return `${language}:${name}:${number}`;
+}
+
 // Same field set as GEMINI_SCHEMA, re-expressed in standard JSON Schema
 // (Anthropic's output_config.format uses plain JSON Schema, not Gemini's
 // OpenAPI-flavored `nullable: true` — nullable fields here use a
@@ -1615,6 +1679,28 @@ function normalizeNameForMatch(name) {
 }
 
 async function lookupCardPPT(read, requestId) {
+  const cacheKey = pptCacheKey(read);
+  if (cacheKey && getCache) {
+    try {
+      const cached = await getCache({ namespace: PPT_CACHE_NAMESPACE }).get(cacheKey);
+      // Only trust a cache entry that actually looks like a successful
+      // lookupCardPPT() result — never `notFound`/`error` responses (see
+      // the write side below for why those are never cached), and never
+      // a malformed/unexpected shape (e.g. a stale entry from a schema
+      // this function no longer produces).
+      if (cached && cached.found && cached.pricingLookup) {
+        console.log(`[requestId=${requestId}]`, "[lookup] PPT CACHE HIT — skipping PokemonPriceTracker entirely, key=", cacheKey);
+        // stampType comes straight from THIS read (see the return
+        // statement below — it was never derived from PPT/candidate
+        // data), so it's refreshed from the current read rather than
+        // trusted from the cached one, even on a hit.
+        return { ...cached, pricingLookup: { ...cached.pricingLookup, stampType: read.stampType } };
+      }
+    } catch (e) {
+      console.error("[lookup] PPT cache get failed (treating as a miss):", e && e.message);
+    }
+  }
+
   let data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
   if (!data) return { error: "card-db-unavailable" };
   if (data.error === "rate-limited") return { error: "rate-limited", retryAfter: data.retryAfter, isDailyLimit: data.isDailyLimit };
@@ -1997,7 +2083,7 @@ async function lookupCardPPT(read, requestId) {
 
   const tcgSearchName = String(best.name).replace(/\s*-\s*\S+\/\S+\s*$/, "").trim();
 
-  return {
+  const lookupResult = {
     found: true,
     cardName: best.name,
     setName: best.setName,
@@ -2015,6 +2101,29 @@ async function lookupCardPPT(read, requestId) {
     },
     _tcgSearchName: tcgSearchName,
   };
+
+  // Only a genuine `found: true` result is ever cached — never
+  // `notFound`/`error` (rate-limited, card-db-unavailable) responses.
+  // Caching a failure would be actively harmful here: a cached
+  // rate-limited response would keep telling every request within the
+  // TTL "rate limited" even after PPT's own minute window has reset,
+  // and a cached notFound could hide a result that a moment's PPT
+  // recovery (or a differently-timed fallback chain) would have found.
+  // Fire-and-forget via waitUntil — never awaited before responding, so
+  // a slow or failing cache write can't add latency or break a real
+  // scan (same pattern as the shadow-test logging above).
+  if (cacheKey && getCache) {
+    try {
+      const writePromise = getCache({ namespace: PPT_CACHE_NAMESPACE })
+        .set(cacheKey, lookupResult, { ttl: PPT_CACHE_TTL_SECONDS })
+        .catch((e) => console.error("[lookup] PPT cache set failed:", e && e.message));
+      if (waitUntil) waitUntil(writePromise);
+    } catch (e) {
+      console.error("[lookup] PPT cache set threw synchronously (non-fatal):", e && e.message);
+    }
+  }
+
+  return lookupResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -2339,13 +2448,32 @@ async function handler(req, res) {
       // on `isDailyLimit` (set in fetchPokemonPriceTracker from PPT's own
       // `error` field) to show the correct explanation and action for
       // each real, distinct cause.
-      const reason =
-        result && result.error === "rate-limited"
-          ? result.isDailyLimit
-            ? `PokemonPriceTracker's daily credit allowance is used up for today (resets in ~${Math.ceil((result.retryAfter || 3600) / 60)} min) — wait for the reset, or buy more credits at pokemonpricetracker.com/api-keys to keep scanning today.`
-            : `Our card database's per-minute limit was hit from scanning quickly — wait about ${result.retryAfter || 15}s and try again.`
-          : "Couldn't reach our card database right now (it's been intermittently flaky) — try again in a moment.";
-      res.status(200).json({ found: false, reason, usage, requestId });
+      const isRateLimited = !!(result && result.error === "rate-limited");
+      const reason = isRateLimited
+        ? result.isDailyLimit
+          ? `PokemonPriceTracker's daily credit allowance is used up for today (resets in ~${Math.ceil((result.retryAfter || 3600) / 60)} min) — wait for the reset, or buy more credits at pokemonpricetracker.com/api-keys to keep scanning today.`
+          : `Our card database's per-minute limit was hit from scanning quickly — wait about ${result.retryAfter || 15}s and try again.`
+        : "Couldn't reach our card database right now (it's been intermittently flaky) — try again in a moment.";
+      // ADDED (2026-09-12, client-side auto-retry — see docs/test-cases.md
+      // "Research: PPT per-minute rate limit hit during normal
+      // single-click scanning"): retryAfter/isDailyLimit were already
+      // computed above but only ever reached the client baked into the
+      // English `reason` string — fine for a human to read, useless for
+      // content.js to act on programmatically. Exposed as real fields so
+      // the extension can auto-retry a per-minute rate limit without
+      // parsing prose. `retryAfter`/`isDailyLimit` are only meaningful
+      // (non-null) when `rateLimited` is true — a generic "intermittently
+      // flaky" failure has no known wait time and should never be
+      // auto-retried blindly.
+      res.status(200).json({
+        found: false,
+        reason,
+        usage,
+        requestId,
+        rateLimited: isRateLimited,
+        retryAfter: isRateLimited ? result.retryAfter || null : null,
+        isDailyLimit: isRateLimited ? !!result.isDailyLimit : null,
+      });
       return;
     }
 

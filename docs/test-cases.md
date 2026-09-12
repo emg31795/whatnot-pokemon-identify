@@ -4341,6 +4341,133 @@ action taken — just another data point for the still-open pricing-
 timeout gap; see CLAUDE.md's "Current priority" for the item this rolls
 up into.
 
+## Research: PPT per-minute rate limit hit during normal single-click scanning (2026-09-12, research only — no code changed)
+
+**Trigger**: real 429s confirmed via live logs — three scans 7 seconds
+apart (21:58:44-51 UTC) each got `"Minute rate limit exceeded"` from
+PokemonPriceTracker (`required:3` minute-credits, `available` down to
+0-2), during completely normal single-click use, not a burst/retry
+loop. Investigated per explicit request; nothing built yet, pending a
+decision on tradeoffs.
+
+**1. Real PPT call count per scan, measured against live traffic.**
+`lookupCardPPT()` (`api/identify.js`) can fire up to 5 separate PPT
+calls in an extreme worst case (initial search → zero-result retry with
+a stripped species name → name-filter rescue-by-number → page-2
+`offset=30` fallback → combined name+number search), but the realistic
+worst case the code's own comments describe is 3 (initial + page-2 +
+combined). Pulled real runtime logs for a 2-hour live window
+(2026-09-12, ~20:05-22:05 UTC) and de-duplicated a log-tool artifact
+that returned every line twice (confirmed via byte-identical repeated
+blocks for the same `requestId` at two different line offsets in the
+raw pull — a `get_runtime_logs` quirk, not a real double-invocation).
+**50 real scans reached PPT in that window:**
+- 18/50 (36%) — cheap 1-call path
+- 14/50 (28%) — 2-call path (9 page-2-only + 5 combined-only)
+- 18/50 (36%) — full 3-call worst-case path (page-2 AND combined both fired)
+- 2/50 (4%) additionally hit the name-filter rescue call
+
+Total ≈ 102 PPT calls for 50 scans → **~2.04 calls/scan average**. At
+`limit=30` (30 daily-credits/call, confirmed unchanged since the
+2026-09-01 `includeHistory` removal), that's **~61 credits/scan on
+average, up to 90 credits/scan on the 36% of scans hitting the 3-call
+path**. Conclusion: the 3-call worst case is not a rare edge case in
+real use — it's more than a third of all scans — so both frequency
+(fewer scans) and cost-per-scan (fewer PPT calls/scan) are real levers,
+not just one or the other.
+
+**2. PPT's real rate-limit tiers/pricing — verified live, not just from
+docs** (per this project's own standing rule that a docs summary has
+been wrong before — see the `cardNumber`-param saga). A live test call
+against `/api/v2/cards` with the real production API key returned
+these headers: `x-ratelimit-daily-limit: 20000`,
+`x-ratelimit-minute-limit: 60`, `x-ratelimit-minute-remaining` dropped
+from 60→57 after exactly one `limit=30` call — confirming the per-
+minute budget is consumed proportionally to the `limit` param (3 units
+per `limit=30` call), not 1 unit per raw HTTP call, and confirming the
+account is genuinely on the documented **$9.99/mo "API" tier** (daily
+limit matches). `x-ratelimit-minute-reset` was `now + 60s` (a rolling
+window, not a fixed clock-minute boundary). Pricing page
+(pokemonpricetracker.com/pricing), fetched live:
+
+| Tier | $/mo | Daily credits | Per-minute limit |
+|---|---|---|---|
+| Free | $0 | 100 | 60 |
+| **API (current)** | $9.99 | 20,000 | **60** |
+| Business | $99 | 200,000 | **500** |
+| Enterprise | $300 | 1,000,000 | 1,000 |
+
+No intermediate add-on exists for the minute limit specifically (only
+"purchase additional credits" for the daily quota, price unlisted) —
+raising the per-minute ceiling means the full jump to Business, a 10x
+price increase for an 8.3x larger minute budget. Math: at 60 units/min
+÷ ~6.1 units/scan (2.04 calls × 3), real sustainable throughput today
+is only **~9-10 scans/minute (~1 every 6s)** before saturating — a
+short burst of 3-call (9-unit) scans exhausts it in under 7 scans,
+exactly matching the observed live incident. Business tier would raise
+that to ~80-98 scans/minute, comfortably past what one live user could
+ever need.
+
+**3. Caching option — a free, already-available fix, not a new paid
+service.** Vercel serverless functions don't share plain in-memory
+state reliably across invocations (confirmed, not assumed). But
+Vercel's own first-party **Runtime Cache** (`getCache()` from
+`@vercel/functions`) is a real cross-invocation, cross-region,
+TTL-aware KV-style cache, confirmed available on the **Hobby plan for
+free** — no Vercel KV/Redis/Upstash purchase needed. This project
+**already depends on `@vercel/functions`** (used today for
+`waitUntil()` in the Haiku/legacy-model shadow tests), so this needs
+zero new dependencies and zero new cost. One caveat found in research:
+on Hobby, the Runtime Cache is shared across every project on the
+team's account (Pro/Enterprise get per-project isolation) — trivially
+mitigated with `getCache()`'s own `namespace` option. Proposed shape:
+cache key = normalized `cardName + language`; cache the whole
+`lookupCardPPT()` result (post-fallback-chain), not just the raw first
+PPT response, so a cache hit skips every one of the up-to-5 calls, not
+just the first; TTL 30-60s per the user's own suggestion.
+
+**4. Fallback triggers — real evidence they often don't earn their
+credit spend.** From the same 50-scan window: page-2 fired 27 times,
+but only 9 of those (33%) resolved without needing the combined-search
+call on top — the other 18 (67%) spent the page-2 call and still
+needed (or still failed even with) the 3rd call. Combined-search fired
+23 times; only ~5 (~22%) actually logged "surfaced the missing number
+— re-scoring" (the rest returned nothing that changed the outcome). Net:
+of the 18 scans that paid for the full 90-credit 3-call path, only
+about 5 actually resolved the exact card number — the other ~13 (72%)
+spent all 3 calls and still landed on a same-signals-only match or an
+ambiguous-tie note, an outcome the 1-call result would likely have
+reached anyway. Real, measured evidence the fallback chain is not very
+selective today — worth tightening, but unlike caching this one carries
+real risk to match recall on genuinely hard-to-find cards (the exact
+cases tests #35/#37/#49/#60/#63 fixed), so it needs care and a real
+before/after comparison, not just a credit-savings argument.
+
+**5. Client-side softening — cheap, orthogonal, no credit-spend
+change.** The API already computes `retryAfter`/`isDailyLimit`
+internally (`fetchPokemonPriceTracker`) but today only folds them into
+an English `reason` string in the JSON response
+(`res.json({found:false, reason, ...})`) — not as structured top-level
+fields. `content.js`'s `identifyCard()` just calls `setStatus(reason)`
+on any non-ok response and stops; there is no retry logic anywhere in
+the identify path today. Proposed: expose `retryAfter`/`isDailyLimit`
+as real JSON fields (small, non-breaking), and have `identifyCard()`
+auto-retry once after `retryAfter*1000`ms — but only when
+`isDailyLimit` is false (never auto-retry a daily-quota exhaustion;
+that's not fixed by a short wait).
+
+**Recommendation given to the user, nothing decided or built**:
+caching (3) + client-side auto-retry (5) first — both free, additive,
+and carry no matching-accuracy risk, and caching directly targets the
+"same card visible for several seconds, or a manual re-scan" scenario
+the user described. Reassess whether the minute limit is still being
+hit after that before spending on the Business-tier bump (2) — a 10x
+cost increase that may be disproportionate for a single-user tool if
+caching alone resolves most real-world bursts. Fallback-tightening (4)
+is the one option with real behavioral risk (could reduce recall on
+already-hard cards); worth a follow-on only if caching doesn't fully
+solve it, with its own dedicated before/after test.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

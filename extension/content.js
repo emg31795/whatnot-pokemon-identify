@@ -502,9 +502,28 @@
       setStatus("Couldn't find the stream video — is a stream playing?");
       return;
     }
+    await identifyAttempt(imageBase64, false);
+  }
 
-    setStatus("Identifying card…");
-    console.log("[wnpk] starting identify, image bytes:", imageBase64.length);
+  // ADDED (2026-09-12, client-side auto-retry — see docs/test-cases.md
+  // "Research: PPT per-minute rate limit hit during normal single-click
+  // scanning"): pulled the actual request+render logic out of
+  // identifyCard() into its own function so a rate-limited response can
+  // call it again once, automatically, without requiring the user to
+  // click "Identify Card" a second time. `isRetry` guards against ever
+  // retrying more than once — a second 429 in a row means PPT's minute
+  // window is still busy, and hammering it again isn't the fix.
+  //
+  // Deliberately reuses the SAME already-captured `imageBase64` for the
+  // retry rather than capturing a fresh video frame: the rate limit hit
+  // AFTER Gemini already successfully read the card (see api/identify.js
+  // — PPT lookup is the step that fails, never Gemini), so resending the
+  // exact same image guarantees the retry is about the same physical
+  // card the user actually clicked on, not whatever happens to be on
+  // screen ~retryAfter seconds later.
+  async function identifyAttempt(imageBase64, isRetry) {
+    setStatus(isRetry ? "Retrying…" : "Identifying card…");
+    console.log("[wnpk] starting identify, image bytes:", imageBase64.length, "isRetry=", isRetry);
 
     // 14s here — the backend's own worst-case internal budget is up to
     // ~13s (Gemini 6.5s + card DB 3.5s + one 1.5s retry on a pokemontcg.io
@@ -553,6 +572,27 @@
       return;
     }
     recordScanCost(response.data.usage);
+
+    // ADDED (2026-09-12, client-side auto-retry): a `rateLimited` response
+    // is PPT's own per-minute limit (not the daily quota — `isDailyLimit`
+    // is checked and excluded, since that's ~an hour+ wait, not a short
+    // cooldown) with a server-computed `retryAfter` already telling us
+    // exactly how long until it's safe to try again. Auto-retry exactly
+    // once instead of leaving the user to read the message and click
+    // again by hand.
+    if (
+      !isRetry &&
+      response.data &&
+      !response.data.found &&
+      response.data.rateLimited &&
+      !response.data.isDailyLimit &&
+      response.data.retryAfter
+    ) {
+      console.log("[wnpk] rate-limited by PPT, auto-retrying once in", response.data.retryAfter, "s");
+      await waitWithRetryCountdown(response.data.retryAfter);
+      return identifyAttempt(imageBase64, true);
+    }
+
     // Keep this response (and its requestId) around for the flag button
     // regardless of found/not-found — a "couldn't confidently match" result
     // is just as worth flagging as a wrong match. See the flag-button setup
@@ -573,6 +613,26 @@
     if (response.data.found && !response.data.isSlab && response.data.pricingLookup) {
       fetchAndRenderPricing(response.data);
     }
+  }
+
+  // ADDED (2026-09-12, client-side auto-retry): shows a live "Retrying in
+  // Ns…" countdown for the wait forced by identifyAttempt() above, rather
+  // than a silent, confusing pause — the user otherwise has no way to
+  // tell a ~15s auto-retry wait apart from the extension being stuck.
+  function waitWithRetryCountdown(waitSeconds) {
+    return new Promise((resolve) => {
+      let remaining = Math.max(1, Math.ceil(waitSeconds));
+      setStatus(`Rate limited — retrying in ${remaining}s…`);
+      const interval = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          clearInterval(interval);
+          resolve();
+        } else {
+          setStatus(`Rate limited — retrying in ${remaining}s…`);
+        }
+      }, 1000);
+    });
   }
 
   // Fires the second, independent /api/price call and updates just the

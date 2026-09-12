@@ -828,6 +828,132 @@ richer-error-logging hardening discussed alongside this is intentionally
 NOT built — not needed right now, revisit if a real occurrence ever
 happens.
 
+**Open, 2026-09-12: PPT per-minute rate limit is being hit during
+normal single-click scanning — investigated, options proposed, NOTHING
+BUILT, needs a decision.** Real 429s confirmed live (3 scans 7s apart,
+21:58:44-51 UTC, each `"Minute rate limit exceeded"`). Real numbers,
+verified via live logs and a live API call (not just docs): a single
+card scan fires 1-5 PPT calls depending on `lookupCardPPT()`'s fallback
+chain, and in a real 2-hour production window (50 scans), 36% hit the
+full 3-call worst case, averaging ~2.04 calls/scan (~61 credits/scan,
+up to 90). The account's real per-minute budget (confirmed via live
+response headers, not the docs page alone) is 60 units/60s rolling
+window at 3 units per `limit=30` call — only ~9-10 scans/minute
+sustainable before saturating, matching the observed incident exactly.
+Options costed out: (2) PPT's Business tier ($99/mo, 500/min) — a 10x
+price jump, no cheaper add-on exists for just the minute limit; (3) a
+free 30-60s cache via Vercel's built-in Runtime Cache (`getCache()`
+from `@vercel/functions`, already a dependency here, free on Hobby);
+(4) tighten the page-2/combined-search fallback triggers — real data
+shows they only actually change the outcome ~22-33% of the time they
+fire, but this carries real accuracy risk unlike caching; (5) a cheap,
+orthogonal client-side auto-retry using the `retryAfter` the backend
+already computes. **Recommendation given, not yet approved**: build (3)
++ (5) first (free, no accuracy risk), reassess before spending on (2).
+See the "Research: PPT per-minute rate limit hit during normal
+single-click scanning" section in `docs/test-cases.md` for the full
+numbers, log traces, and pricing-page/header evidence.
+
+**Update, 2026-09-12, same day: caching (3) + client-side auto-retry
+(5) BUILT AND TESTED LOCALLY, per explicit go-ahead. NOT YET DEPLOYED,
+NOT YET PUSHED.** Fallback-tightening (4) and the PPT tier upgrade (2)
+remain deliberately untouched, per the user's explicit instruction to
+defer them.
+
+`api/identify.js`'s `lookupCardPPT()` now checks a short-TTL cache
+before ever calling PokemonPriceTracker, and writes to it on every
+genuine `found: true` result (never on `notFound`/`error`/rate-limited
+— caching a failure would be actively harmful, e.g. a cached
+rate-limited response outliving PPT's own minute window). Uses Vercel's
+built-in Runtime Cache (`getCache()` from `@vercel/functions`, already
+a dependency here for `waitUntil()` — no new package). **Real signature
+correction, caught before it shipped**: the docs page's parameter table
+reads like `getCache()` takes positional args
+(`keyHashFunction, namespace, namespaceSeparator`) — the actual
+installed package (`node_modules/@vercel/functions@3.9.5`) takes a
+single options object, `getCache({ namespace, keyHashFunction,
+namespaceSeparator })`. Caught by reading the real installed source
+before testing, not by trusting the docs table — same standing
+"verify, don't just trust a docs summary" discipline this file has
+needed before (the `cardNumber`-param saga).
+
+**TTL: 30s** (the short end of the 30-60s range asked for) — Whatnot's
+own auctions run ~10s each, so 30s comfortably covers a re-scan while
+minimizing the window where a genuinely different physical card could
+collide with a stale cache entry.
+
+**Cache key deliberately includes `cardNumber`, not just
+`cardName+language`** — a real correctness bug in the original ask,
+caught before building: keying on name+language alone would let two
+DIFFERENT physical cards sharing a species name (routine on this app —
+several different Pikachu prints sold back-to-back) collide within the
+TTL and silently serve one card's identification/price for another,
+exactly the confident-wrong-answer failure mode this project's whole
+design philosophy exists to avoid. `cardNumber` is already this
+codebase's own highest-weighted match signal for the same reason. A
+numberless read skips the cache entirely (read AND write) rather than
+caching under a weaker key — failing toward "spend the PPT credits" is
+the safe direction, not "maybe serve the wrong card." On a cache hit,
+`pricingLookup.stampType` is refreshed from the CURRENT read rather
+than trusted from the cached entry, since stampType was always
+read-derived, never PPT-derived — the one field in the cached shape
+that could legitimately vary between two scans sharing the same
+cardName+cardNumber+language.
+
+**Confirmed scoped away from live TCGplayer pricing** (the user's
+explicit concern, re: the 2026-09-10 identify/pricing decoupling):
+`api/price.js` never calls `lookupCardPPT`/`fetchPokemonPriceTracker`
+at all — it only calls `buildLiveVariantsForCandidate` against
+TCGplayer's separate public endpoint using the `tcgPlayerId` inside
+`pricingLookup`. This cache only ever short-circuits the PPT *search*
+step; live per-condition pricing is fetched fresh on every single
+`/api/price` call regardless of an identify-side cache hit.
+
+**Client-side auto-retry**: `/api/identify`'s rate-limited response now
+carries `rateLimited`/`retryAfter`/`isDailyLimit` as real top-level JSON
+fields (previously only baked into the English `reason` string).
+`extension/content.js`'s `identifyCard()` was split into
+`identifyCard()` (captures the frame) + `identifyAttempt(imageBase64,
+isRetry)` (the actual request+render logic) so a rate-limited response
+can call itself again once, automatically, reusing the SAME already-
+captured frame rather than a fresh video capture (the rate limit hits
+AFTER Gemini already read the card, so resending the same image keeps
+the retry about the same physical card). Never auto-retries
+`isDailyLimit` (an hour+ wait, not a short cooldown) and never retries
+more than once (`isRetry` guard). Shows a live "Rate limited — retrying
+in Ns…" countdown via `waitWithRetryCountdown()` during the wait.
+
+**Verified locally, not yet deployed**: `node --check` passes on all 3
+touched files. A mocked-fetch test driving the real `handler()` (no
+real network calls) confirmed: a fresh lookup hits PPT once; an
+identical-key repeat hits the cache (PPT call count unchanged) and
+correctly refreshes `stampType` from the new read; a DIFFERENT
+`cardNumber` for the same name correctly triggers a fresh PPT call and
+returns the right (different) candidate, not a stale cross-card hit;
+repeating that second read hits the cache too; every numberless read
+bypasses the cache entirely. A second test confirmed the rate-limited
+response's new `rateLimited`/`retryAfter`/`isDailyLimit` fields are
+correct, and that a rate-limited result is never cached (a subsequent
+identical call still hits PPT for real). A third test extracted the
+actual `waitWithRetryCountdown` function source from `content.js`
+(not a hand-copied duplicate) and drove it with fake timers: correct
+ceiling rounding, decrements once per second, never displays 0 or a
+negative number, and always calls `clearInterval` (no leaked timer).
+**Not done**: a full jsdom/click-driven integration test of
+`identifyAttempt`'s retry trigger and recursive call — this is a small,
+well-contained additive change (one conditional + a guarded recursive
+call), verified by the tests above plus direct code review, not by a
+full browser-driven simulation; flagging this precisely rather than
+overclaiming "tested" the way test #88's write-up was later found to
+read more broadly than what was actually observed.
+
+`sha1 135f8791c009748837cc6afac32565aacd7d90f6` on the current
+`api/identify.js` — noted here for the pre-deploy hash-verify step,
+per the standing "Before you deploy" checklist. **Waiting on explicit
+go-ahead to deploy and to `git push`**, per this project's own
+standing convention (build/test freely, always ask before deploying or
+pushing) and the user's own explicit instruction this round.
+
 ## When to ask before acting
 
 - **Free rein, no need to ask**: local file edits, local git commits,
