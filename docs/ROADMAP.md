@@ -48,6 +48,15 @@ background/continuous-scanning latency-hiding approach still described
 as the real path to a *reliably* met 1-3s target. That decision is
 still not made.
 
+**Update, 2026-09-13**: background/continuous scanning ("auto-id") is
+now explicitly paused, not just undecided — it would multiply PPT call
+volume against the same per-minute limit the 2026-09-12 caching +
+auto-retry fix was just built to address (see CLAUDE.md's "Current
+priority" and `docs/test-cases.md`'s PPT rate-limit research), and
+building it before that fix is proven under real live-stream traffic
+would be premature. Revisit once real-world results from that fix are
+in.
+
 ---
 
 ## Phase 1 — Raw ungraded cards, English + Japanese (IN PROGRESS — current priority)

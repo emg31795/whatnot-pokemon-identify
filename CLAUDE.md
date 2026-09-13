@@ -70,7 +70,32 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
-**Immediate next step (updated 2026-09-06)**: the Gemini 3.5 Flash-Lite
+**Immediate next step (updated 2026-09-13, current)**: the PPT
+per-minute rate-limit fix — a 30s `lookupCardPPT()` cache via Vercel's
+Runtime Cache, plus a client-side auto-retry on a rate-limited
+response — is **DEPLOYED, PUSHED, AND LIVE-CONFIRMED**
+(`dpl_2JPYhSbmSig1Tkvrs4ew4R68mVvS`, 2026-09-12; see the dedicated
+"Recent / in-flight work" entry below for the full trace: sha1-verified
+before deploy, a real end-to-end scan, and the cache hit confirmed
+decisively via a live `[lookup] PPT CACHE HIT` log line, not just a
+latency drop). **What matters now is watching real live-stream
+scanning** — the deploy's own verification was two manual scans of the
+same image seconds apart, not a representative session, so it hasn't
+yet been stress-tested against real, varied, back-to-back scanning.
+**Per explicit instruction: auto-id (the background/continuous-
+scanning latency-hiding option described in `docs/ROADMAP.md`'s
+Definition of Done) stays paused, not started, until this fix's
+real-world results are in** — continuous scanning would multiply PPT
+call volume, and building it on top of a rate-limit fix that hasn't
+been proven under real conditions would be premature. No action needed
+unless live scanning surfaces a problem (429s still occurring despite
+the cache, a stale/cross-card cached result, the auto-retry not firing
+or not helping) — see `docs/test-cases.md`'s "Research: PPT per-minute
+rate limit hit during normal single-click scanning" for the full
+numbers and design rationale.
+
+**Immediate next step (updated 2026-09-06, historical — see above for
+current)**: the Gemini 3.5 Flash-Lite
 promotion is live and fully verified end-to-end (tests #80-84,
 `docs/test-cases.md`) — `GEMINI_MODEL` now defaults to
 `gemini-3.5-flash-lite` in production
