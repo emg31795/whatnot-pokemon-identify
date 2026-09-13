@@ -4717,6 +4717,136 @@ automation tool can reach `chrome://extensions`). **Not yet confirmed
 live** — needs a real reload plus a live rescan to confirm the fix
 holds on an actual Whatnot stream, not just the local harness above.
 
+## Test #92 — Clefairy Base Set (Shadowless) systematic bias: two stacked bugs found and fixed (2026-09-13)
+
+**User report**: a live scan of Clefairy Base Set showed Read: High /
+Match: High matched to "Base Set (Shadowless)" — but Shadowless is a
+specific, uncommon early WotC print run (no printed drop-shadow on the
+picture-frame border, undetectable from a video frame by design — see
+the 2026-08-28 Shadowless-dropdown feature, which deliberately never
+added a Gemini-detected signal for it). The extension appeared to
+default to Shadowless far more often than real vintage pulls actually
+are, and the variant dropdown had no clearly non-Shadowless option to
+switch to.
+
+**Investigated before any code change**, per standing convention. Real
+Vercel logs for the exact scan (requestId `1b5d2ba6`) showed: page 1
+(30 candidates for "Clefairy") never contained `5/102`; the page-2
+fallback fired and re-scored 53 total candidates; the log line read
+`best= {name: 'Clefairy', number: '005/102', setName: 'Base Set
+(Shadowless)'} bestScore= 33 tieCount= 1`. A live query against PPT's
+own `/api/v2/cards` endpoint (same params `fetchPokemonPriceTracker`
+uses) confirmed the raw pool genuinely contains BOTH `Clefairy | Base
+Set | 005/102 | tcgPlayerId=42393` and `Clefairy | Base Set
+(Shadowless) | 005/102 | tcgPlayerId=107001` — identical hp (40),
+identical attacks — a real, unbreakable tie given today's scoring
+signals.
+
+**Bug 1, confirmed real root cause**: `candidateDedupKey()`
+(`api/identify.js`) keyed only on `name|number`, not `setName` — so the
+Shadowless/non-Shadowless pair collapsed to the same dedup key, and
+`pickBestCandidate`'s `tieCount` reported 1 instead of the true 2. This
+suppressed the `tieCount >= 2` ambiguous-match warning (a direct
+violation of this project's own "say so when the data doesn't support
+a confident answer" design principle), and `best` became whichever of
+the two PPT's own API happened to list first — confirmed Shadowless-
+first for this card in the live query, explaining the *systematic*
+(not random) bias the user observed.
+
+**Bug 2, a second, independent bug found during the same investigation**:
+`pickDefaultVariantKey()` receives `primaryPrinting` untagged straight
+from PPT (e.g. `"1st Edition Holofoil"`), but by the time it runs, the
+WINNING candidate's own live TCGplayer variant keys have already been
+suffix-tagged (`"1st Edition Holofoil (Shadowless)"`) by
+`buildLiveVariantsForCandidate`. The untagged/tagged mismatch meant the
+intended match always failed, silently falling through to a generic
+preference list that matched the merged-in SIBLING's own untagged
+`"Holofoil"` key instead. Net effect: the panel's header named the
+Shadowless printing, but the price pre-selected as default was actually
+the non-Shadowless sibling's — a genuine "matched" ≠ "priced" mismatch
+independent of Bug 1.
+
+**Fix**: `candidateDedupKey()` now includes the Shadowless-normalized
+set name in its key. `pickDefaultVariantKey()` now takes an optional
+`tag` param and tries the tagged form of `primaryPrinting` first (both
+`api/identify.js`; the new param threaded through from `api/price.js`).
+A third, small scoped addition: `ambiguousNoteText()`'s generic message
+("...the card number is the only thing that tells them apart, and it
+wasn't legible this scan") is factually wrong for a Shadowless tie
+specifically (the number WAS legible and matched both candidates
+exactly) — added `shadowlessAmbiguousNoteText()` plus
+`isShadowlessVsPlainTie()` to detect the narrow case (exactly 2 distinct
+tied candidates, opposite Shadowless status, same underlying set name)
+and use the accurate message only then; every other kind of tie keeps
+the original generic text unchanged. `pickBestCandidate` now also
+returns `tiedCandidates` (the actual tied candidate objects) so this
+detection doesn't need to re-run scoring.
+
+**Regression check against the original 2026-08-27 case, as explicitly
+requested before deploying**: reproduced the literal-duplicate-row
+shape that `candidateDedupKey()` was originally built for (Shaymin V —
+two rows, identical `setName`, name differing only by a trailing
+`"- number"` suffix) through the real `candidateDedupKey`/
+`pickBestCandidate` functions — still correctly collapses to
+`tieCount=1`, confirming the fix only starts counting rows as distinct
+when the set name genuinely differs.
+
+**Verified locally before deploy**: three local test scripts, all
+against the real (not reimplemented) functions —
+(1) `candidateDedupKey`/`pickBestCandidate` on both the regression case
+and the real Clefairy data (pulled live from PPT) — confirms
+`tieCount=1` for the old case, `tieCount=2` for the new one;
+(2) `pickDefaultVariantKey` — confirms the old wrong-default behavior
+reproduces without a `tag`, and resolves correctly with one;
+(3) a full `lookupCardPPT` run with the real Clefairy PPT data mocked
+in — confirms `matchConfidence: "Low"`, the new Shadowless-specific
+`ambiguousNote`, and that `pricingLookup` (tag/siblingTcgPlayerId/
+siblingTag) is byte-identical to before, i.e. the sibling-merge feature
+itself is untouched.
+
+**Deploy incident, honestly disclosed**: the first two `deploy_to_vercel`
+attempts for this fix each accidentally sent a truncated `api/identify.js`
+(the first just the file's header comment with no code at all — no
+`module.exports`; the second included a stray `module.exports = null`)
+— both went to production and were auto-aliased to
+`whatnot-pokemon-identify.vercel.app` before being caught. **Real,
+checked impact**: `get_runtime_errors`/`get_runtime_logs` for the
+incident window show exactly one `500` in the entire window
+(`"No exports found in module... Node.js process exited with exit
+status: 1"`, 19:36:26 UTC, `dep=dpl_Dfdb9LZy2rg1EfctCC9R9SoYyk2a`) — and
+it was this session's OWN diagnostic `GET` check, not real user traffic;
+no other request hit either broken deployment before the correct one
+went live roughly 2 minutes later. Third attempt deployed the complete,
+correct content (verified via the standard chunked-read + diff/shasum
+checklist beforehand — caught and fixed the same historically-
+documented diacritic-regex transcription corruption on the first pass,
+non-generatively spliced from source, then re-verified clean) and also
+happened to include `api/flag.js`, which the *previous* (2026-09-13 UI-
+decluttering) deploy had omitted — confirmed via a live `curl` before
+this deploy that `/api/flag` was a real, live 404 as a result. This
+deploy fixes that too, incidentally.
+
+**Confirmed live on the corrected deployment**
+(`dpl_AAhzqnDG9GLDfCTTAQVGNX13ouc1`, `READY`, aliased correctly,
+`aliasError: null`): `GET /api/identify` returns the correct
+`normalizeDiacriticTest`; `POST {}` returns the real `400`; `POST
+/api/flag` returns `200 {"ok":true}` (confirming the flag-endpoint gap
+is closed). A real ordinary scan (Pikachu XY95, no Shadowless variant)
+matched correctly, High confidence, no warning, `total ms=1683` —
+confirming no regression to the common path. **A real live scan of the
+exact Clefairy Base Set (Shadowless) product photo** (tcgPlayerId
+107001, fetched from TCGplayer's own public CDN) returned
+`matchConfidence: "Low"` and the new Shadowless-specific `ambiguousNote`
+— the fix firing correctly on live production, not just in local tests.
+A follow-up `POST /api/price` with that response's real `pricingLookup`
+returned `priceVariantUsed: "1st Edition Holofoil (Shadowless)"` —
+correctly matching the winning (Shadowless) candidate's own tagged
+printing, no longer silently defaulting to the sibling's untagged
+`"Holofoil"` — with all three real variants still present in the
+dropdown (`"Unlimited Holofoil (Shadowless)"`, `"1st Edition Holofoil
+(Shadowless)"`, `"Holofoil"`), so the manual-correction path is
+unchanged for anyone who needs to switch it.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

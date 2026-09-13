@@ -1120,12 +1120,38 @@ function isShadowlessSetName(setName) {
   return /\(shadowless\)/i.test(String(setName || ""));
 }
 
+// FIX (2026-09-13, live scan — Clefairy Base Set vs. Base Set (Shadowless),
+// both 005/102): this key used to be `name|number` only — no `setName` at
+// all — so a plain "Base Set" candidate and its "Base Set (Shadowless)"
+// sibling (same number/hp/attack, PPT models them as two entirely separate
+// rows, see the Shadowless-dropdown FIX above) collapsed to the SAME dedup
+// key and were counted as ONE distinct candidate in pickBestCandidate's
+// tieCount, even when both genuinely tied at the top score. Confirmed via
+// real logs (tieCount=1 on this exact scan) plus a live PPT query
+// reproducing the same two rows: nothing in scoreCandidate can currently
+// tell Shadowless apart from non-Shadowless (by design — see the
+// Shadowless-dropdown FIX, which deliberately avoided adding a new
+// Gemini-detected signal), so this is a genuine, unresolvable tie given
+// today's signals — but the collapsed tieCount suppressed the ambiguous-
+// match warning that should have disclosed exactly that, and `best` ended
+// up being whichever of the two PPT's own API happened to list first
+// (confirmed Shadowless-first for this card), producing a systematic bias
+// rather than an honest coin-flip disclosure.
+// Now includes the Shadowless-normalized set name so these two are counted
+// as genuinely distinct. Deliberately safe against the ORIGINAL case this
+// function was built for (2026-08-27, Shaymin V / Cramorant V literal
+// duplicate rows — same setName, name differing only by a trailing
+// "- number" suffix): those still share an identical setName, so adding it
+// to the key changes nothing for that case — verified via a synthetic
+// unit check mirroring that exact shape before deploying this fix.
 function candidateDedupKey(candidate) {
   const baseName = String(candidate.name || "")
     .replace(/\s*-\s*\S+\/\S+\s*$/, "")
     .trim()
     .toLowerCase();
-  return `${baseName}|${candidate.number}`;
+  const baseSetName = stripShadowlessSuffix(candidate.setName);
+  const shadowless = isShadowlessSetName(candidate.setName) ? "shadowless" : "not-shadowless";
+  return `${baseName}|${candidate.number}|${baseSetName}|${shadowless}`;
 }
 
 function pickBestCandidate(candidates, read, logPrefix) {
@@ -1163,7 +1189,13 @@ function pickBestCandidate(candidates, read, logPrefix) {
   }
 
   const bestDetail = pickPool.length ? pickPool[0].detail : null;
-  return { best, bestScore, tieCount, bestDetail };
+  // ADDED (2026-09-13, scoped Shadowless-tie message): the plain candidate
+  // objects tied at bestScore, so a caller that already knows tieCount >= 2
+  // can inspect WHICH candidates are actually tied (e.g. to tell a
+  // Shadowless/non-Shadowless tie apart from any other kind of tie) without
+  // re-running scoreCandidate over the whole pool a second time.
+  const tiedCandidates = topScorers.map((s) => s.candidate);
+  return { best, bestScore, tieCount, bestDetail, tiedCandidates };
 }
 
 function confidenceForScore(score) {
@@ -1174,6 +1206,40 @@ function confidenceForScore(score) {
 
 function ambiguousNoteText() {
   return "Multiple different printings of this card share identical HP, attack, and type — the card number is the only thing that tells them apart, and it wasn't legible this scan. This is our best guess only; verify the exact set/number on the physical card before trusting this match or price.";
+}
+
+// ADDED (2026-09-13, live scan — Clefairy Base Set vs. Base Set
+// (Shadowless), see the candidateDedupKey FIX above): ambiguousNoteText()
+// above says "...the card number is the only thing that tells them apart,
+// and it wasn't legible this scan" — actively wrong for a Shadowless/
+// non-Shadowless tie specifically, since the number IS legible and DID
+// match both candidates exactly; what's unresolvable is the print-run
+// distinction itself (Shadowless has no drop-shadow on the picture-frame
+// border — a physical detail this tool deliberately doesn't try to detect,
+// see the Shadowless-dropdown FIX). Scoped narrowly: only used when the tie
+// is EXACTLY a 2-way Shadowless/non-Shadowless pair of the same underlying
+// printing (same number, same set name once the suffix is stripped); every
+// other kind of tie (3+ way, or a 2-way tie that isn't a Shadowless pair)
+// keeps using the generic ambiguousNoteText() unchanged.
+function shadowlessAmbiguousNoteText() {
+  return "This printing exists in two different print runs — Shadowless and standard/Unlimited — that share an identical card number, HP, and attack, and there's no visual signal this tool checks for that tells them apart from a video frame (Shadowless is identified by the ABSENCE of a drop-shadow on the picture-frame border, a physical detail on the card itself). Both printings' prices are available in the dropdown below — pick whichever matches the physical card before trusting this price.";
+}
+
+function isShadowlessVsPlainTie(tiedCandidates) {
+  if (!Array.isArray(tiedCandidates)) return false;
+  const distinct = [];
+  const seen = new Set();
+  for (const c of tiedCandidates) {
+    const key = candidateDedupKey(c);
+    if (!seen.has(key)) {
+      seen.add(key);
+      distinct.push(c);
+    }
+  }
+  if (distinct.length !== 2) return false;
+  const [a, b] = distinct;
+  const baseSetName = stripShadowlessSuffix(a.setName);
+  return !!baseSetName && isShadowlessSetName(a.setName) !== isShadowlessSetName(b.setName) && baseSetName === stripShadowlessSuffix(b.setName);
 }
 
 // ---------------------------------------------------------------------------
@@ -1589,7 +1655,19 @@ async function buildLiveVariantsForCandidate(candidate, tag) {
 }
 
 // Picks which variant is pre-selected in the dropdown.
-function pickDefaultVariantKey(priceVariants, read, primaryPrinting) {
+// FIX (2026-09-13, live scan — Clefairy Base Set (Shadowless)): added the
+// `tag` param. `primaryPrinting` always comes straight from PPT untagged
+// (e.g. "1st Edition Holofoil"), but by the time this function runs, the
+// WINNING candidate's own live-variant keys have already been suffix-
+// tagged by buildLiveVariantsForCandidate (e.g. "1st Edition Holofoil
+// (Shadowless)") whenever a tag applies. Matching untagged primaryPrinting
+// against those tagged keys always failed, so the match silently fell
+// through to the generic preference list below — which, on this exact
+// scan, matched the merged-in SIBLING's own untagged key ("Holofoil")
+// instead. Net effect: the panel's header named the Shadowless printing,
+// but the price pre-selected as default was actually the sibling's
+// (opposite Shadowless status). Now tries the tagged form first.
+function pickDefaultVariantKey(priceVariants, read, primaryPrinting, tag) {
   const keys = Object.keys(priceVariants);
   if (!keys.length) return null;
 
@@ -1608,8 +1686,14 @@ function pickDefaultVariantKey(priceVariants, read, primaryPrinting) {
   const lowerToActual = {};
   for (const k of keys) lowerToActual[k.toLowerCase()] = k;
 
-  if (primaryPrinting && lowerToActual[String(primaryPrinting).toLowerCase()]) {
-    return lowerToActual[String(primaryPrinting).toLowerCase()];
+  if (primaryPrinting) {
+    if (tag) {
+      const taggedKey = `${String(primaryPrinting).toLowerCase()} (${String(tag).toLowerCase()})`;
+      if (lowerToActual[taggedKey]) return lowerToActual[taggedKey];
+    }
+    if (lowerToActual[String(primaryPrinting).toLowerCase()]) {
+      return lowerToActual[String(primaryPrinting).toLowerCase()];
+    }
   }
 
   const is1st = String(read.stampType || "").toLowerCase() === "1st edition";
@@ -1787,7 +1871,7 @@ async function lookupCardPPT(read, requestId) {
   let candidates = filtered.map(normalizePptCard);
   console.log(`[requestId=${requestId}]`, "[lookup] scored candidates=", JSON.stringify(candidates.map((c) => ({ name: c.name, number: c.number, hp: c.hp, subtypes: c.subtypes, rarity: c.rarity, hasVariants: !!c._rawVariants }))).slice(0, 3000));
 
-  let { best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, `[lookup][requestId=${requestId}]`);
+  let { best, bestScore, tieCount, bestDetail, tiedCandidates } = pickBestCandidate(candidates, read, `[lookup][requestId=${requestId}]`);
 
   // FIX (2026-08-27, live test — the SAME Squirtle rescanned again right
   // after the earlier "cardNumber" fix, which turned out to be a no-op —
@@ -1843,7 +1927,7 @@ async function lookupCardPPT(read, requestId) {
         filtered = filtered.concat(page2Filtered);
         candidates = filtered.map(normalizePptCard);
         console.log(`[requestId=${requestId}]`, "[lookup] re-scoring with page 1 + page 2 merged, total candidates=", candidates.length);
-        ({ best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, `[lookup:page1+2][requestId=${requestId}]`));
+        ({ best, bestScore, tieCount, bestDetail, tiedCandidates } = pickBestCandidate(candidates, read, `[lookup:page1+2][requestId=${requestId}]`));
       }
     }
   }
@@ -1895,7 +1979,7 @@ async function lookupCardPPT(read, requestId) {
           filtered = filtered.concat(combinedFiltered);
           candidates = filtered.map(normalizePptCard);
           console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search surfaced the missing number — re-scoring, total candidates=", candidates.length);
-          ({ best, bestScore, tieCount, bestDetail } = pickBestCandidate(candidates, read, `[lookup:combined][requestId=${requestId}]`));
+          ({ best, bestScore, tieCount, bestDetail, tiedCandidates } = pickBestCandidate(candidates, read, `[lookup:combined][requestId=${requestId}]`));
         } else {
           console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search returned results but still no exact number match — keeping prior best");
         }
@@ -1963,8 +2047,12 @@ async function lookupCardPPT(read, requestId) {
 
   if (!ambiguousNote && tieCount >= 2) {
     matchConfidence = "Low";
-    ambiguousNote = ambiguousNoteText();
-    console.log(`[requestId=${requestId}]`, `[lookup] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}`);
+    const shadowlessTie = isShadowlessVsPlainTie(tiedCandidates);
+    ambiguousNote = shadowlessTie ? shadowlessAmbiguousNoteText() : ambiguousNoteText();
+    console.log(
+      `[requestId=${requestId}]`,
+      `[lookup] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}${shadowlessTie ? " (Shadowless vs. non-Shadowless pair)" : ""}`
+    );
   }
 
   // FIX (2026-08-27, live test — Mewtwo/SVP 052): a "weak" number match

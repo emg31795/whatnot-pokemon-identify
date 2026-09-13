@@ -70,6 +70,17 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
+**Update, 2026-09-13, later same day**: fixed a real, user-reported bug
+where a Base Set (Shadowless) tie was silently miscounted as
+unambiguous, producing a systematic bias toward Shadowless with no
+non-Shadowless dropdown option surfaced clearly — see the dedicated
+"Recent / in-flight work" entry below (and test #92,
+`docs/test-cases.md`) for the full root-cause trace, the two stacked
+bugs found and fixed, and an honestly-disclosed deploy incident (two
+truncated-file deploy attempts this session, caught with zero real
+user impact before the correct one went live). Deployed and
+live-confirmed; not yet pushed to GitHub.
+
 **Immediate next step (updated 2026-09-13, current)**: the PPT
 per-minute rate-limit fix — a 30s `lookupCardPPT()` cache via Vercel's
 Runtime Cache, plus a client-side auto-retry on a rate-limited
@@ -1353,6 +1364,79 @@ checklist before reporting something as finished:
   they do not auto-reload (caused real confusion in test #43).
 
 ## Recent / in-flight work
+
+- **Clefairy Base Set (Shadowless) systematic-bias fix — BUILT, DEPLOYED,
+  AND LIVE-CONFIRMED, 2026-09-13** (commit pending, this session — not
+  yet pushed). User-reported bug (a live scan defaulted to "Base Set
+  (Shadowless)" far more often than real pulls actually are Shadowless,
+  with no clear non-Shadowless dropdown option) traced to real root
+  cause via logs + a live PPT API query, per standing convention, before
+  any code change — full trace in test #92, `docs/test-cases.md`.
+
+  **Two stacked bugs, both in `api/identify.js`**: (1)
+  `candidateDedupKey()` keyed only on `name|number`, not `setName` — so
+  a real Shadowless/non-Shadowless candidate pair (confirmed via a live
+  PPT query: both `Clefairy | Base Set | 005/102` and `Clefairy | Base
+  Set (Shadowless) | 005/102` genuinely exist, identical hp/attacks)
+  collapsed to the same dedup key, `pickBestCandidate`'s `tieCount`
+  undercounted 2 as 1, and the ambiguous-match warning that should have
+  fired never did — `best` became whichever PPT's own API happened to
+  list first (confirmed Shadowless-first for this card), producing a
+  systematic bias rather than an honest tie disclosure. Fixed by
+  including the Shadowless-normalized set name in the dedup key.
+  (2) A second, independent bug found in the same investigation:
+  `pickDefaultVariantKey()` compared PPT's untagged `primaryPrinting`
+  against the winning candidate's own ALREADY-TAGGED live-variant keys
+  (`buildLiveVariantsForCandidate` suffixes Shadowless-tagged variants
+  before this ever runs), so the match always failed and silently fell
+  through to the merged-in SIBLING's untagged key — the panel's header
+  named the Shadowless printing but the pre-selected default price was
+  actually the non-Shadowless sibling's. Fixed by trying the tagged form
+  of `primaryPrinting` first; `api/price.js`'s call site now threads
+  `tag` through.
+
+  A third, small scoped addition: the generic ambiguous-tie message
+  ("...it wasn't legible this scan") is factually wrong for this specific
+  case (the number WAS legible) — added `shadowlessAmbiguousNoteText()`,
+  used only when the tie is narrowly confirmed as an exact 2-way
+  Shadowless/non-Shadowless pair (`isShadowlessVsPlainTie()`); every
+  other tie keeps the original message.
+
+  **Regression-checked against the ORIGINAL 2026-08-27 case this dedup
+  key was built for** (Shaymin V literal-duplicate rows, same `setName`)
+  before deploying, per explicit instruction — still correctly collapses
+  to `tieCount=1`; the fix only starts counting rows as distinct when the
+  set name genuinely differs. Verified locally via 3 test scripts against
+  the real (not reimplemented) functions, including a full `lookupCardPPT`
+  run with real Clefairy PPT data mocked in.
+
+  **Deploy incident, honestly disclosed**: the first two deploy attempts
+  each accidentally sent a truncated `api/identify.js` to production
+  (auto-aliased to the real domain before being caught) — a serious,
+  self-inflicted mistake during this session. **Real, checked impact**:
+  `get_runtime_errors`/logs for the incident window show exactly one
+  `500` in the whole window, and it was this session's OWN diagnostic
+  `GET` check catching the problem, not real user traffic — no other
+  request hit either broken deployment in the ~2 minutes before the
+  correct one went live. Third attempt deployed the complete, correct
+  content (chunked-read + diff/shasum checklist followed — caught and
+  non-generatively fixed the same historically-documented diacritic-
+  regex transcription corruption on the first pass) and incidentally
+  also restored `api/flag.js`, which the *previous* (2026-09-13 UI-
+  decluttering) deploy had omitted — confirmed via a live curl
+  beforehand that `/api/flag` was a real, live 404.
+
+  **Confirmed live on `dpl_AAhzqnDG9GLDfCTTAQVGNX13ouc1`** (`READY`,
+  aliased, `aliasError: null`): GET/POST checks pass; `/api/flag` back to
+  `200`; an ordinary scan (Pikachu XY95) unaffected (High confidence,
+  no warning, 1683ms); **a real live scan of the actual Clefairy Base
+  Set (Shadowless) product photo** (tcgPlayerId 107001) returned
+  `matchConfidence: "Low"` with the new Shadowless-specific warning, and
+  a follow-up `/api/price` call correctly defaulted to
+  `"1st Edition Holofoil (Shadowless)"` (previously would have silently
+  defaulted to the sibling's untagged `"Holofoil"`) — both fixes
+  confirmed against real production traffic, not just local tests. See
+  test #92 in `docs/test-cases.md` for the complete trace.
 
 - **Live PPT-429 incident investigation + Identify-button race fix —
   BUILT, VERIFIED LOCALLY, COMMITTED, AND PUSHED, 2026-09-13** (commit

@@ -81,7 +81,11 @@ module.exports = async function handler(req, res) {
     priceVariants = null;
   }
 
-  const priceVariantUsed = priceVariants ? pickDefaultVariantKey(priceVariants, { stampType }, primaryPrinting) : null;
+  // FIX (2026-09-13, see identify.js's pickDefaultVariantKey comment):
+  // pass `tag` through so a tagged best-candidate printing (e.g.
+  // Shadowless) is matched against its own tagged keys first, instead of
+  // silently falling through to a merged-in sibling's untagged key.
+  const priceVariantUsed = priceVariants ? pickDefaultVariantKey(priceVariants, { stampType }, primaryPrinting, tag) : null;
   const chosenVariant = priceVariantUsed && priceVariants ? priceVariants[priceVariantUsed] : null;
 
   let noPriceNote = null;
