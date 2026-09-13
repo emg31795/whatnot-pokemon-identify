@@ -4486,6 +4486,57 @@ verification, and the "not yet observed" caveats (TTL expiry behavior,
 a real live 429 exercising the client auto-retry) logged in CLAUDE.md's
 "Current priority" section. Pushed to GitHub (`d355c0c..e76ed9b`).
 
+## Test #89 — First real user-flagged scan since the PPT cache/auto-retry deploy: wrong card shown (Dewgong, Master Ball Pattern vs. a different real printing) — confirmed NOT a cache bug; the cache correctly declined to engage at all (2026-09-13)
+
+**Trigger**: the user flagged a scan ~10s after it happened
+(`requestId=3ede388a-85ff-49ae-b90f-0ea6fab72d96`), showing "Dewgong
+(Master Ball Pattern)", SV2a: Pokemon Card 151, Read: Medium, Match:
+Low, with the standard ambiguous-tie warning — flagged because the
+card image/printing shown was wrong. Given this is the first real
+live-traffic scan flagged since yesterday's PPT-cache deploy, checked
+real logs immediately rather than assuming either "the cache did this"
+or "this is just normal ambiguity" — per this project's own standing
+rule not to characterize a panel's behavior from a screenshot alone.
+
+**Real root cause, confirmed via logs — not the cache.** Gemini's read:
+`cardName="Dewgong"`, `hp="130"`, **`cardNumber=null`** — the card
+number wasn't legible this scan (the legacy-model shadow test's
+independent read explicitly says why: "Card number and attack names
+are obscured by glare and fingers"). Per yesterday's cache design
+(`pptCacheKey()` in `api/identify.js`), **a numberless read is
+deliberately excluded from the cache entirely, on both the read and
+write side** — and the log confirms this worked exactly as intended:
+no `[lookup] PPT CACHE HIT` line anywhere, and instead a genuine fresh
+`[lookup] search= Dewgong language= Japanese raw candidate count= 21`
+call fired. The cache played no role in this scan at all.
+
+With no card number to disambiguate, `hp=130` was the only signal left
+— and two real, different SV2a printings both have HP 130: "Dewgong
+(Master Ball Pattern)" (087/165) and a separate "Dewgong - 084/080"
+(Art Rare). Both scored identically (`bestScore=6`), `tieCount=2`, and
+`pickBestCandidate` picked the first of the tied pair — the wrong one,
+as it turned out. This is the exact same "AMBIGUOUS MATCH" tie-break
+class this project has hit and documented many times before (Baxcalibur,
+Mewtwo SVP 052, etc.), not a new failure mode: the response correctly
+showed `matchConfidence: "Low"` and the standard explicit warning
+("...the card number is the only thing that tells them apart, and it
+wasn't legible this scan... verify the exact set/number before
+trusting this match or price") — an honest disclosure, not a
+confidently-wrong answer. The user's own instinct that this was "wrong"
+is correct (it did pick the wrong one of two real candidates), but the
+*system* behaved as designed by disclosing exactly that risk up front,
+and the cache is fully cleared of any involvement.
+
+**No code changed.** This isn't a new bug to fix — it's the same
+long-standing card-number-illegible tie-break limitation, now newly
+confirmed to coexist correctly with the cache (i.e., the cache's
+"skip caching when there's no number to key on" design decision from
+yesterday is doing exactly the job it was built for: failing toward
+"spend the PPT credits and get an honest low-confidence tie" rather
+than toward "silently serve a cross-contaminated cached result").
+First real data point suggesting the deploy itself is stable under
+live traffic; continue watching per CLAUDE.md's "Current priority".
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
