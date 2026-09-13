@@ -78,8 +78,10 @@ non-Shadowless dropdown option surfaced clearly — see the dedicated
 `docs/test-cases.md`) for the full root-cause trace, the two stacked
 bugs found and fixed, and an honestly-disclosed deploy incident (two
 truncated-file deploy attempts this session, caught with zero real
-user impact before the correct one went live). Deployed and
-live-confirmed; not yet pushed to GitHub.
+user impact before the correct one went live). **Deployed, live-
+confirmed, committed, and pushed to GitHub** (commit `62c9569`,
+`3d38eb6..62c9569`) — fully closed out, nothing further needed here
+unless a future scan surfaces a new edge case.
 
 **Immediate next step (updated 2026-09-13, current)**: the PPT
 per-minute rate-limit fix — a 30s `lookupCardPPT()` cache via Vercel's
@@ -1366,8 +1368,12 @@ checklist before reporting something as finished:
 ## Recent / in-flight work
 
 - **Clefairy Base Set (Shadowless) systematic-bias fix — BUILT, DEPLOYED,
-  AND LIVE-CONFIRMED, 2026-09-13** (commit pending, this session — not
-  yet pushed). User-reported bug (a live scan defaulted to "Base Set
+  LIVE-CONFIRMED, COMMITTED, AND PUSHED, 2026-09-13** (commit `62c9569`,
+  pushed to GitHub `3d38eb6..62c9569`; no further deploy needed —
+  production has been running this exact code since the fix went live
+  earlier in the session, confirmed via a real live scan against the
+  actual deployed endpoint). User-reported bug (a live scan defaulted
+  to "Base Set
   (Shadowless)" far more often than real pulls actually are Shadowless,
   with no clear non-Shadowless dropdown option) traced to real root
   cause via logs + a live PPT API query, per standing convention, before
