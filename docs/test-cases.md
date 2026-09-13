@@ -4707,10 +4707,15 @@ produced `a950f490` in production. The button re-enabled correctly once
 the full chain (including the retry) completed, and the retry's
 successful result rendered normally.
 
-**Not yet deployed** — code changed and verified locally only; needs
-the standard deploy checklist (this is a `content.js`/`content.css`-only
-change, lower risk than an `api/` deploy, but still needs the user's
-go-ahead to push/reload).
+**Committed and pushed to GitHub** (commit `241178a`,
+`98a0b83..241178a`), per explicit go-ahead. Extension-only change
+(`content.js`/`content.css`, no `api/` files touched), so there is no
+Vercel deployment step here — it takes effect once the unpacked
+extension is reloaded in `chrome://extensions`, a manual step only the
+user can do (see CLAUDE.md's "Known gotchas" — no available browser-
+automation tool can reach `chrome://extensions`). **Not yet confirmed
+live** — needs a real reload plus a live rescan to confirm the fix
+holds on an actual Whatnot stream, not just the local harness above.
 
 ## Related docs
 

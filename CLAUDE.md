@@ -1355,8 +1355,19 @@ checklist before reporting something as finished:
 ## Recent / in-flight work
 
 - **Live PPT-429 incident investigation + Identify-button race fix —
-  BUILT AND VERIFIED LOCALLY, 2026-09-13. NOT YET DEPLOYED.** User
-  flagged two real 429s from the 2026-09-12 PPT-cache/auto-retry deploy
+  BUILT, VERIFIED LOCALLY, COMMITTED, AND PUSHED, 2026-09-13** (commit
+  `241178a`, pushed to GitHub `98a0b83..241178a`). Extension-only change
+  (`extension/content.js`/`content.css`) — no `api/` files touched, so
+  there is no Vercel deployment for this one; it takes effect once the
+  unpacked extension is reloaded in `chrome://extensions` (a manual step
+  only the user can do — see the 2026-09-10 toolbar-icon investigation's
+  "tooling gaps" note for why no available tool can do this instead).
+  **Not yet confirmed live** — needs a real reload + a live rescan to
+  confirm the button correctly disables/re-enables on an actual Whatnot
+  stream, not just the local harness below.
+
+  The user flagged two real 429s from the 2026-09-12 PPT-cache/auto-retry
+  deploy
   with a specific suspicion (a second request arrived faster than the
   first's own `retryAfter`, with a meaningfully different Gemini read —
   looked like a manual rescan racing the retry). Investigation (full
@@ -1377,8 +1388,7 @@ checklist before reporting something as finished:
   a mocked rate-limited-then-success `fetch` — confirmed a click attempted
   during the countdown produces zero additional fetch calls (exactly 2
   fetches total occurred, matching the mocked retryAfter), and the button
-  correctly re-enables once the full chain completes. Needs the standard
-  deploy checklist and a go-ahead before shipping.
+  correctly re-enables once the full chain completes.
 
 - **UI decluttering + a new liquidity metric (active listing count) —
   BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-13.** Four changes, per
