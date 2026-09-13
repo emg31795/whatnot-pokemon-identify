@@ -2098,6 +2098,17 @@ async function lookupCardPPT(read, requestId) {
       siblingTag: siblingIsShadowless ? "Shadowless" : null,
       stampType: read.stampType,
       primaryPrinting: best.prices?.primaryPrinting ?? null,
+      // ADDED 2026-09-13 (liquidity metric): PPT's raw `prices.listings`
+      // for the matched candidate — confirmed live (real PPT API queries
+      // across ~30 varied cards, including Japanese and low-value promos)
+      // to be populated on essentially every real candidate, never the
+      // dead-signal case attackName/subtype were before their own fixes.
+      // This is a per-card figure from PPT's primaryPrinting record, not
+      // tracked per print-variant, so it's shown as-is regardless of which
+      // variant the dropdown later selects in api/price.js — an accepted
+      // approximation for a supplementary liquidity signal, not the
+      // authoritative price itself.
+      listingCount: best.prices?.listings ?? null,
     },
     _tcgSearchName: tcgSearchName,
   };

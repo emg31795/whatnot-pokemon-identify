@@ -724,9 +724,21 @@
   // but the price shown was actually the 1st Edition figure). Both the
   // badge and this line are driven from the SAME variant object, on both
   // initial render and every dropdown change, so they can't disagree.
-  const marketPriceLine = (variant) =>
+  // ADDED 2026-09-13 (liquidity metric): `listingCount` is PPT's own
+  // active-listings count for the matched card (see pricingLookup.listingCount
+  // in api/identify.js / api/price.js) — a real, currently-live TCGplayer
+  // listing count, not an estimate. It's a per-card figure from PPT's
+  // primaryPrinting data, not tracked per print-variant, so it doesn't
+  // change when the dropdown below switches variants — an acceptable
+  // approximation for a supplementary liquidity signal, not the
+  // authoritative price itself.
+  const marketPriceLine = (variant, listingCount) =>
     `Market${variant && variant.label ? " (" + escapeHtml(variant.label) + ")" : ""}: ${
       variant && variant.basePrice != null ? "$" + variant.basePrice.toFixed(2) : "—"
+    }${
+      listingCount != null
+        ? ` <span class="wnpk-listing-count">· ${listingCount} listing${listingCount === 1 ? "" : "s"}</span>`
+        : ""
     }`;
 
   // ADDED 2026-09-10 (identify/pricing decoupling, see CLAUDE.md /
@@ -765,7 +777,7 @@
     // matches what they're actually holding, no rescan needed.
     const variantPicker = priceData.priceVariants
       ? `
-        <div class="wnpk-cond-label">PRINT VARIANT <span class="wnpk-estimate-note">(AI's best guess — switch if it looks wrong)</span></div>
+        <div class="wnpk-cond-label">PRINT VARIANT</div>
         <select id="wnpk-variant-select" class="wnpk-variant-select">${Object.entries(priceData.priceVariants)
           .map(
             ([key, v]) =>
@@ -778,18 +790,18 @@
       : "";
 
     const initialVariant = priceData.priceVariants ? priceData.priceVariants[priceData.priceVariantUsed] : null;
-    const initialEstimatedMap = initialVariant ? initialVariant.estimated : priceData.conditionPricesEstimated;
-    const initialPartial = initialVariant ? initialVariant.partial : priceData.conditionPricesPartial;
 
     section.innerHTML = `
       ${pricingWarnings}
       <div class="wnpk-market-price" id="wnpk-market-price">
-        ${initialVariant ? marketPriceLine(initialVariant) : marketPriceLine({ basePrice: priceData.marketPrice })}
+        ${
+          initialVariant
+            ? marketPriceLine(initialVariant, priceData.listingCount)
+            : marketPriceLine({ basePrice: priceData.marketPrice }, priceData.listingCount)
+        }
       </div>
       ${variantPicker}
-      <div class="wnpk-cond-label" id="wnpk-cond-label">
-        CONDITION PRICES <span class="wnpk-estimate-note" id="wnpk-cond-note">${conditionLabelNote(initialEstimatedMap, initialPartial)}</span>
-      </div>
+      <div class="wnpk-cond-label" id="wnpk-cond-label">CONDITION PRICES</div>
       <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(priceData.conditionPrices)}</div>
     `;
 
@@ -798,9 +810,8 @@
       select.addEventListener("change", () => {
         const variant = priceData.priceVariants[select.value];
         if (!variant) return;
-        $("#wnpk-market-price").textContent = marketPriceLine(variant);
+        $("#wnpk-market-price").innerHTML = marketPriceLine(variant, priceData.listingCount);
         $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions);
-        $("#wnpk-cond-note").textContent = conditionLabelNote(variant.estimated, variant.partial);
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
       });
@@ -857,6 +868,18 @@
           ? `<div class="wnpk-lang-badge" style="margin-bottom:6px;">${escapeHtml(data.stampType)} stamp</div>`
           : ""
       }
+    `;
+    // MOVED 2026-09-13 (UI decluttering): the confidence-disclosure
+    // warnings (generic Low-confidence, ambiguousNote, stampNote) used to
+    // render right here, right after the confidence badges — meaning a
+    // clean High-confidence scan (where none of these fire) looked the
+    // same as one that did, but a scan WITH a warning forced scrolling
+    // past it to reach the price. These are genuine confidence
+    // disclosures, not to be buried or shrunk — moved lower in the visual
+    // order (below the price/condition section, still at full visibility)
+    // rather than removed or de-emphasized. See the three render branches
+    // below for where this now gets inserted.
+    const confidenceWarnings = `
       ${
         data.matchConfidence === "Low" && !data.ambiguousNote
           ? `<div class="wnpk-warning">⚠ Low-confidence match — verify this is really the right card before relying on the price.</div>`
@@ -928,6 +951,7 @@
           FROM EBAY SOLD COMPS ${nearbyRows ? "<span class=\"wnpk-estimate-note\">(nearby grades)</span>" : ""}
         </div>
         ${nearbyRows ? `<div class="wnpk-cond-list">${nearbyRows}</div>` : ""}
+        ${confidenceWarnings}
         ${footer}
       `;
       return;
@@ -949,6 +973,7 @@
           RAW CONDITION PRICES <span class="wnpk-estimate-note">${conditionLabelNote(data.conditionPricesEstimated, data.conditionPricesPartial)} — not graded value</span>
         </div>
         <div class="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices)}</div>
+        ${confidenceWarnings}
         ${footer}
       `;
       return;
@@ -970,6 +995,7 @@
       <div id="wnpk-price-section">
         <div class="wnpk-cond-label">Loading price…</div>
       </div>
+      ${confidenceWarnings}
       ${footer}
     `;
   }

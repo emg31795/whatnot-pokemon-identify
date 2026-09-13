@@ -4537,6 +4537,90 @@ than toward "silently serve a cross-contaminated cached result").
 First real data point suggesting the deploy itself is stable under
 live traffic; continue watching per CLAUDE.md's "Current priority".
 
+## Test #90 — First real cache-hit-rate data point: a full ~34-minute live-scanning session against the PPT cache/auto-retry deploy — 0/82 cache hits, 0 rate-limit incidents, clean errors, latency on target (2026-09-13)
+
+**Trigger**: a requested review of a real ~30-minute live-scanning
+session against `dpl_2JPYhSbmSig1Tkvrs4ew4R68mVvS` (the 2026-09-12 PPT
+cache + client-side auto-retry deploy). Pulled real Vercel runtime logs
+(not `[timing]`-filtered — per the standing rule, used
+`[legacy-model-shadow-test]`, which fires unconditionally on every
+request) for the full available window and reconstructed every scan.
+Real window: **14:20:00–14:53:59 UTC, 82 unique `/api/identify`
+requests** (each request's log lines appear twice in the raw Vercel
+pull — a known duplicate-delivery artifact, de-duplicated by
+`requestId` before counting anything below).
+
+**1. Cache: 0/82 hits — but a real, non-buggy reason, not a red flag.**
+Zero `[lookup] PPT CACHE HIT` lines anywhere in the window. Checked
+every case where the same species name recurred close together (Dewgong
+×4, Mega Clefable ex ×2, Iron Valiant/ex ×4 within 11s, Bulbasaur ×2,
+Chikorita ×2) to see whether the cache *should* have fired and didn't:
+in every single case, either (a) the read had **no legible
+`cardNumber`** (Dewgong, Mega Clefable ex — by design, a numberless
+read skips the cache entirely on both read and write, exactly the
+2026-09-12 design decision working as intended), or (b) each repeat had
+a **different** `cardNumber` (Iron Valiant `157/182` / `154/182` /
+`228/182` / `187/182`; Bulbasaur `166/165` / `143/132`; Chikorita
+`8/18` / `001/025`) — genuinely different specific printings shown back
+to back on stream, correctly given different cache keys, not a miss.
+**No instance in this session had two scans share the exact same
+`cardName`+`cardNumber`+`language` inside the 30s TTL** — the cache had
+zero real opportunity to fire, which is a different (and more benign)
+finding than "the cache doesn't work." It does mean this session's
+scanning pattern (near-continuous single clicks across many different
+cards) doesn't resemble the back-to-back-rescan-of-one-card cadence
+that originally motivated the fix (the 3-scans-in-7-seconds 429
+cluster) — real cache-hit-rate evidence is still pending a session that
+actually re-scans the same physical card. No sign of stale/wrong cached
+data, since the cache never engaged.
+
+**2. Rate limits: 0/82 — a real improvement, but not attributable to
+the cache specifically this session.** Zero `RATE LIMITED by
+PokemonPriceTracker` lines, zero `rateLimited:true` responses, across
+the whole window — including a real 5-scans-in-23-seconds burst
+(14:42:53–14:43:16, four different Iron Valiant/ex printings plus
+Garbodor) that would be the closest analog to the original incident's
+density. Since the cache never hit (see above), this can't be credited
+to cache-driven credit savings this time — more likely explained by
+real call volume staying under budget: only 26/82 requests (32%, in
+line with the original 33-36% estimate) needed the page-2 →
+combined-search rescue chain, and the account's confirmed 60-units/60s
+budget at 3 units/`limit=30` call comfortably covers even the densest
+burst observed. Genuinely good news, but the cache's own credit-saving
+role is still unconfirmed pending a session with real rescan clusters.
+
+**3. Client-side auto-retry: not exercised.** Zero rate-limited
+responses this session means the new `identifyAttempt(isRetry)` retry
+path was never triggered by real traffic — still unconfirmed under a
+live 429, same as noted at deploy time.
+
+**4. Accuracy/errors: clean.** `get_runtime_errors` returned zero
+errors for the full available window. All 82/82 Gemini calls
+succeeded (0 timeouts, 0 `Gemini error 5xx`), so the Haiku fallback was
+never invoked (not needed, not a failure of it). 5/82 (6%) came back
+`found:false`/Low-confidence with an honest reason (`"Only the back of
+a Pokémon card is visible..."`, `"heavily obscured by glare..."`,
+`"too blurry and out of focus..."`) — legitimate image-quality misses,
+exactly the intended honest-uncertainty behavior, not bugs. Exactly 1
+scan was user-flagged this session (`requestId=3ede388a...`) — this is
+the same scan already fully investigated and logged above as **Test
+#89**, confirmed to be the known number-illegible tie-break limitation,
+not a new issue and not cache-related.
+
+**5. Latency: on target.** 76/82 requests logged a `timingMs.total`
+(the 5 `found:false` blur/back-of-card cases plus 1 other skip lookup
+timing). **Median 1854ms, range 1450-3368ms, 96% (73/76) inside the
+1-3s target** — only 3 outliers landed just over 3s (3182ms, 3218ms,
+3368ms), consistent with the spot checks taken at deploy time.
+
+**No code changed — review only, nothing actionable surfaced.** The
+one real open question (does the cache actually save credits at
+realistic re-scan cadence?) remains unanswered by this session
+specifically because this session didn't naturally reproduce the
+back-to-back-same-card pattern the fix targets — worth another casual
+check next time a session includes genuine rapid rescans of one
+physical card.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

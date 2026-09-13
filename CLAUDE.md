@@ -94,6 +94,24 @@ or not helping) — see `docs/test-cases.md`'s "Research: PPT per-minute
 rate limit hit during normal single-click scanning" for the full
 numbers and design rationale.
 
+**Update, 2026-09-13**: first full-session real-world review, a ~34-
+minute live-scanning window (82 scans), logged as test #90 in
+`docs/test-cases.md`. Clean across the board — 0 rate-limit incidents
+(vs. the pre-fix 3-scans-in-7-seconds cluster), 0 Gemini/Haiku
+failures, `get_runtime_errors` clean, latency 96% inside the 1-3s
+target (median 1854ms) — but **the cache itself never got a chance to
+fire (0/82 hits)**, because this session never happened to re-scan the
+exact same physical card (same name+number+language) within the 30s
+TTL; every apparent repeat was either a numberless read (correctly
+skipped by design) or a genuinely different printing. So the "does the
+cache actually save credits at realistic re-scan cadence" question is
+still open — this session just didn't exercise it, and the 0-429
+result can't yet be credited to the cache specifically (call volume
+alone stayed under budget this time). The client-side auto-retry is
+likewise still unexercised (no real 429 to trigger it). Nothing
+actionable, no code changed — worth another casual check next time a
+session includes genuine back-to-back rescans of one physical card.
+
 **Immediate next step (updated 2026-09-06, historical — see above for
 current)**: the Gemini 3.5 Flash-Lite
 promotion is live and fully verified end-to-end (tests #80-84,
@@ -1335,6 +1353,137 @@ checklist before reporting something as finished:
   they do not auto-reload (caused real confusion in test #43).
 
 ## Recent / in-flight work
+
+- **UI decluttering + a new liquidity metric (active listing count) —
+  BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-13.** Four changes, per
+  explicit user request:
+  1. The ambiguous-match/stamp/low-confidence warning box (`extension/
+     content.js`'s `renderResult`) moved from right after the Read/Match
+     confidence badges down to below the price/condition section, above
+     the TCGPlayer link — same full-visibility `.wnpk-warning` styling,
+     just lower in the visual order (a clean High-confidence scan no
+     longer forces scrolling past a box that isn't even there). Extracted
+     into a `confidenceWarnings` template string, inserted at the bottom
+     of all three render branches (graded-with-price, graded-fallback,
+     plain raw card).
+  2. Removed the "CONDITION PRICES" subtext ("real-time data from
+     TCGplayer — some conditions have no market data yet") from the raw-
+     card price section — table and "—" for missing data unchanged. The
+     `RAW CONDITION PRICES` subtext in the separate graded-slab-fallback
+     branch was deliberately left alone (different heading, different
+     purpose — it also carries the "— not graded value" caveat).
+  3. Removed the "PRINT VARIANT" subtext ("AI's best guess — switch if it
+     looks wrong") — dropdown itself unchanged.
+  4. Added a liquidity metric: active listing count shown inline next to
+     Market price (e.g. "$0.21 · 12 listings"). Checked before building,
+     not assumed: PPT's raw `prices.listings` field (confirmed live via
+     direct `.env.local`-authenticated API queries — a real search
+     response inspection, not a docs read) survives into
+     `normalizePptCard`'s `prices` field but was previously dropped
+     everywhere after that — `lookupCardPPT`'s final `pricingLookup`
+     object only ever forwarded `prices.primaryPrinting`. Coverage
+     checked live across ~30 real candidates (Charizard/Eevee/Slowpoke/
+     AZ/Absol/Blastoise searches, English and Japanese, common and
+     sparse promos): `listings` was populated and non-null on every
+     single one (sometimes as low as 1-2 for obscure prints, but never
+     missing) — good enough coverage to ship. Added
+     `pricingLookup.listingCount` in `api/identify.js` (from
+     `best.prices?.listings`), threaded through `api/price.js`'s response
+     unchanged (no extra fetch — already computed at match time), and
+     rendered in `extension/content.js`'s `marketPriceLine` next to the
+     price, muted styling (`.wnpk-listing-count`, `extension/
+     content.css`). This is a per-card figure from PPT's primaryPrinting
+     record, not tracked per print-variant, so it doesn't change when the
+     dropdown switches variants — an accepted approximation for a
+     supplementary signal, not the price itself.
+
+  **Verified locally before deploy**: `node --check` passes on all three
+  touched JS files. A mocked-fetch test driving the real `handler()` for
+  both `/api/identify` and `/api/price` (no real network calls, no real
+  card-matching reimplementation) confirmed `pricingLookup.listingCount`
+  comes back correctly from a matched candidate, threads through
+  `/api/price`'s response unchanged, and confirmed no stale pricing
+  fields leaked back onto `/api/identify`'s response (a regression check
+  against the 2026-09-10 identify/pricing decoupling, since this touched
+  the same `pricingLookup` object).
+
+  **Deploy checklist followed in full**, given this file's documented
+  history of transcription corruption: `api/identify.js` (2547 lines)
+  was read in 4 ordered chunks, each written to its own scratch file and
+  diff-verified byte-for-byte against the real source before assembling.
+  This caught the SAME recurring diacritic-regex transcription
+  corruption documented repeatedly elsewhere in this file (`̀-ͯ`
+  came out as literal Unicode combining characters) on the very first
+  attempt — fixed non-generatively by splicing the exact correct line
+  from source via a Python script (never by retyping), then re-verified.
+  The final assembled file matched the real source byte-for-byte
+  (`sha1 52784f9aa6deed43fbeb5a261a00fccedcac938b`, confirmed via `diff`
+  and `shasum`) before deploying. `api/price.js` (no unicode/regex
+  fragility) was transcribed and diff-verified in one pass
+  (`sha1 26f60fe9010810de1d34e25fee77ce07a9493d80`). Deployed via the
+  Vercel MCP tools: `dpl_GJWGBCCRrdswVamyQariLUprQwFe`, target
+  production, `READY`, aliased correctly to
+  `whatnot-pokemon-identify.vercel.app` (`aliasError: null`); build log
+  confirms "Downloading 4 deployment files".
+
+  **Real end-to-end scan, live** (a real Pikachu XY95 promo photo fetched
+  from TCGplayer's own public CDN): `GET /api/identify` returned
+  `normalizeDiacriticTest: "pokemon collector"` (diacritic regex deployed
+  intact); `POST {}` returned the real `400 {"error":"Missing
+  imageBase64"}`; a real scan returned `found:true`, matched the exact
+  same card (`tcgPlayerId:"114004"`), High confidence,
+  `timingMs.total: 1940`ms (inside the 1-3s target), and
+  **`pricingLookup.listingCount: 53`** — matching the real PPT
+  `prices.listings` value for this exact card, independently confirmed
+  via a direct PPT API query minutes earlier. A follow-up `POST
+  /api/price` with that `pricingLookup` returned real live TCGplayer
+  pricing (NM $195.78, full 5-tier coverage) with **`listingCount: 53`
+  threaded through unchanged**, confirming the whole plumbing end-to-end.
+  `get_runtime_errors` (15m) showed exactly one error group, a real PPT
+  per-minute rate limit on an unrelated "Dragonair" search, stamped
+  `lastDeployment=dpl_2JPYhSbmSig1Tkvrs4ew4R68mVvS` — the PRIOR
+  deployment, predating this one — so zero errors attributable to this
+  deploy.
+
+  **Visual UI confirmation — real Whatnot page attempt hit a known,
+  documented tooling limit; closed out via a harness against the real,
+  unmodified frontend files instead.** Loaded a real live Whatnot
+  Pokémon stream (danshu_tcg) in the user's own Chrome (the actual
+  installed extension, confirmed genuinely present and functioning) and
+  ran a real Identify-Card scan against a real card being held up on
+  stream (a Japanese Rayquaza) — this round-trip worked end-to-end, but
+  showed the OLD pre-this-session UI (warning box still above the price
+  section, old "PRINT VARIANT"/"CONDITION PRICES" subtext still present)
+  because the user's loaded-unpacked extension hasn't been manually
+  reloaded in `chrome://extensions` since this session's `content.js`
+  edit — this project's own documented gotcha ("Chrome extensions
+  require a manual reload after any file change"). Could not reload it
+  myself: `chrome://extensions` is not reachable by either available
+  browser-automation tool (a real, previously-documented limitation in
+  this file — see the 2026-09-10 toolbar-icon investigation's "tooling
+  gaps" note). Rather than leave this unverified, built a faithful
+  harness instead: the real, byte-identical (mechanically `cp`'d, not
+  retyped) `extension/content.js`/`content.css` served locally, with
+  only `chrome.storage`/`chrome.runtime` stubbed (APIs a plain webpage
+  can't access) and `fetch` mocked to return realistic
+  `/api/identify`+`/api/price` response shapes carrying an
+  `ambiguousNote`, two price variants, and `listingCount: 27`. Clicking
+  the real "Identify Card" button in this harness ran the actual
+  unmodified `renderResult`/`renderPriceSection` code and confirmed all
+  three UI changes visually and correctly: the ambiguous-match warning
+  box renders below the condition-price table, right above the
+  TCGPlayer link; the "CONDITION PRICES" and "PRINT VARIANT" headings
+  have no subtext under them; and "Market (Holofoil): $112.06 · 27
+  listings" renders inline, with the listing count correctly persisting
+  (still "27 listings") after switching the print-variant dropdown to
+  "Unlimited" and the price updating to $89.99. This is real evidence
+  the exact shipped frontend code renders correctly — not a mental trace
+  of the template strings — though it's a mocked-backend harness, not an
+  observed live-stream render with the real extension. **Follow-up
+  needed, not urgent**: next time the extension is reloaded in Chrome
+  for any reason, a quick live rescan would upgrade this from
+  "harness-confirmed" to "observed live," but the harness result is a
+  faithful, real-code-execution stand-in in the meantime.
 
 - **Extension toolbar-icon UX fix — BUILT, COMMITTED, AND CORE BEHAVIOR
   LIVE-CONFIRMED (2026-09-07)**, commits `ae98dfe`/`961eb0a`. Root

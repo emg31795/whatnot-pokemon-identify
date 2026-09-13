@@ -245,6 +245,12 @@
   margin: 6px 0;
 }
 
+.wnpk-listing-count {
+  font-weight: 400;
+  font-size: 11px;
+  color: #a3a4ab;
+}
+
 .wnpk-confidence-row {
   display: flex;
   justify-content: space-between;

@@ -53,7 +53,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const { tcgPlayerId, tag, siblingTcgPlayerId, siblingTag, stampType, primaryPrinting } = pricingLookup;
+  const { tcgPlayerId, tag, siblingTcgPlayerId, siblingTag, stampType, primaryPrinting, listingCount } = pricingLookup;
 
   // Same shape as the block this replaced in lookupCardPPT
   // (api/identify.js) — every dollar figure from here on is either
@@ -109,6 +109,10 @@ module.exports = async function handler(req, res) {
     // set.
     pricingError,
     noPriceNote,
+    // ADDED 2026-09-13 (liquidity metric): passed straight through from
+    // identify.js's pricingLookup — no extra fetch needed, PPT's own
+    // listings count was already computed at match time.
+    listingCount: listingCount ?? null,
     requestId,
   });
 };
