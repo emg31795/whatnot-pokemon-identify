@@ -1354,6 +1354,32 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Live PPT-429 incident investigation + Identify-button race fix —
+  BUILT AND VERIFIED LOCALLY, 2026-09-13. NOT YET DEPLOYED.** User
+  flagged two real 429s from the 2026-09-12 PPT-cache/auto-retry deploy
+  with a specific suspicion (a second request arrived faster than the
+  first's own `retryAfter`, with a meaningfully different Gemini read —
+  looked like a manual rescan racing the retry). Investigation (full
+  writeup: test #91, `docs/test-cases.md`) pulled the real request
+  sequence and found **the retry logic itself was working correctly for
+  both requests** (same frame reused, correct wait, single retry each) —
+  the suspected "too fast" request was actually a second, independent
+  original scan with its own shorter `retryAfter`, not a retry of the
+  first at all. The real gap found: a THIRD call landed in the same
+  ~1-second window as both legitimate retries, matching neither's
+  re-read pattern — the "Identify Card" button had no disabled state
+  during an in-flight request or retry countdown, so a manual click
+  could fire an overlapping, independent identify chain. **Fixed**:
+  `identifyCard()` now disables `#wnpk-identify-btn` for its full
+  duration (through any retry wait), re-enabling in a `finally`
+  regardless of outcome; `content.css` adds the `:disabled` styling.
+  Verified via a harness driving the real content.js/content.css against
+  a mocked rate-limited-then-success `fetch` — confirmed a click attempted
+  during the countdown produces zero additional fetch calls (exactly 2
+  fetches total occurred, matching the mocked retryAfter), and the button
+  correctly re-enables once the full chain completes. Needs the standard
+  deploy checklist and a go-ahead before shipping.
+
 - **UI decluttering + a new liquidity metric (active listing count) —
   BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-13.** Four changes, per
   explicit user request:

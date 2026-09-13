@@ -219,8 +219,17 @@
   cursor: pointer;
 }
 
-#wnpk-identify-btn:hover {
+#wnpk-identify-btn:hover:not(:disabled) {
   filter: brightness(1.05);
+}
+
+/* FIX (2026-09-13, live incident — see CLAUDE.md/docs/test-cases.md):
+   disabled while a request or an auto-retry countdown is in flight, so a
+   click can't fire a second, overlapping identify chain — see the
+   identifyCard() comment in content.js for the full incident. */
+#wnpk-identify-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .wnpk-card-name {

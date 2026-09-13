@@ -4621,6 +4621,97 @@ back-to-back-same-card pattern the fix targets — worth another casual
 check next time a session includes genuine rapid rescans of one
 physical card.
 
+## Test #91 — First live PPT 429s since the cache/auto-retry deploy: retry logic confirmed working correctly; real gap found and fixed (button not disabled during in-flight request/retry, letting a manual click race the retry) (2026-09-13)
+
+**Trigger**: user flagged two real 429s in production
+(`dpl_GJWGBCCRrdswVamyQariLUprQwFe`, the 2026-09-12 PPT-cache/auto-retry
+deploy) — `requestId=0d49e219...` at 18:25:53 UTC (`retryAfter=9`,
+read `cardName="Venusaur-EX"`) and `requestId=7f0f02d0...` at 18:25:58
+UTC (`retryAfter=4`, read `cardName="Venusaur EX"`) — with a specific,
+well-reasoned suspicion: the second request arrived only 5s after the
+first, faster than the first's own 9s `retryAfter`, and the two Gemini
+reads differed meaningfully (different `cardNumber`, different `reason`
+text) — a pattern that looks more like a manual re-scan than the
+auto-retry reusing one captured frame.
+
+**Pulled the full real request sequence** for the window (18:25:47-
+18:26:16 UTC, via `get_runtime_logs`) and found **7 total
+`/api/identify` calls**, 5 of them for the same physical Venusaur EX
+card:
+
+| Time | requestId | Gemini read | Outcome |
+|---|---|---|---|
+| 18:25:53 | `0d49e219` | `"Venusaur-EX"` (hyphen), `1/108` | 429, retryAfter=9 |
+| 18:25:58 | `7f0f02d0` | `"Venusaur EX"` (space), `null` | 429, retryAfter=4 |
+| 18:26:04 | `39fa3f5f` | `"Venusaur-EX"` (hyphen), `1/108` | succeeded |
+| 18:26:05 | `ad50fed4` | `"Venusaur EX"` (space), `null` | succeeded (3-way tie) |
+| 18:26:05 | `a950f490` | `"Venusaur"` (no "EX"), `1/108` | succeeded |
+
+**Real finding: the user's specific suspicion was wrong, but for an
+interesting reason** — `7f0f02d0` was never the retry of `0d49e219` at
+all. It's a second, independent original scan (a separate manual click,
+5s after the first) that itself *also* got rate-limited, with its own
+shorter `retryAfter=4s` reflecting a smaller remaining-credit deficit at
+that moment. Once each original is paired with its actual retry by
+matching Gemini's read style (which stayed internally consistent within
+each resent-frame pair — same exact hyphenation/cardNumber — but varied
+across the two physical framings):
+- `0d49e219` (9s wait, sent :53) → `39fa3f5f` at :04 — **~11s later**,
+  matching time-to-receive-429 (~2s) + the 9s wait almost exactly.
+  Identical cardName spelling and cardNumber.
+- `7f0f02d0` (4s wait, sent :58) → `ad50fed4` at :05 — **~7s later**,
+  matching ~1.5-2s + the 4s wait. Identical cardName spelling and
+  cardNumber (both null).
+
+Both 429 bodies also shared the identical `resetsAt:
+2026-09-13T18:26:04.543Z`, and both retries landed right at/after that
+reset — exactly why both succeeded on the retry. **Conclusion: the
+retry logic fired for both requests and behaved correctly** — same
+frame reused, waited close to the server-specified `retryAfter`, fired
+exactly once each, no runaway retry loop. Also re-checked the real 429
+response shape against the mocked test used when this was built (see
+the 2026-09-12 "PPT per-minute rate-limit fix" entry above) — field for
+field identical (`found`, `rateLimited`, `retryAfter`, `isDailyLimit`),
+so there was never a shape mismatch to cause a silent no-fire.
+
+**The real, separate gap**: `a950f490` (18:26:05) is a third call
+landing in the same ~1-second window as both retries, reading yet a
+third distinct variant ("Venusaur" alone, no "EX" suffix) that matches
+neither retry's expected re-read pattern — almost certainly an
+independent manual re-click that fired while two retry countdowns were
+already silently in flight. Root cause: `identifyCard()`/the "Identify
+Card" button had no disabled state during either an in-flight request
+or an active retry countdown, so nothing stopped a click from spawning
+a brand-new, overlapping identify chain. Didn't cause further harm this
+time (PPT's window had already reset), but in a worse case it could add
+extra credit spend and even spawn its own independent retry chain on
+top of one already recovering.
+
+**Fixed, same day, per explicit go-ahead**: `extension/content.js`'s
+`identifyCard()` now disables `#wnpk-identify-btn` for its full
+duration — including through any retry wait, since `identifyAttempt`'s
+retry recursion is still awaited inside the same call — re-enabling in
+a `finally` block regardless of outcome. `extension/content.css` adds
+`#wnpk-identify-btn:disabled` (dimmed, default cursor) and scopes the
+existing hover rule to `:not(:disabled)`.
+
+**Verified locally** with a harness driving the real, unmodified
+`content.js`/`content.css` against a mocked rate-limited-then-success
+`fetch` (2s `retryAfter`, for a fast test): the button correctly went
+`disabled` immediately on click, stayed disabled through the full
+countdown, and a second click attempted 500ms into the wait produced
+**zero** additional fetch calls (confirmed via a call counter — exactly
+2 fetches total occurred, ~2000ms apart, matching the mocked
+`retryAfter`) — directly reproducing and closing the exact race that
+produced `a950f490` in production. The button re-enabled correctly once
+the full chain (including the retry) completed, and the retry's
+successful result rendered normally.
+
+**Not yet deployed** — code changed and verified locally only; needs
+the standard deploy checklist (this is a `content.js`/`content.css`-only
+change, lower risk than an `api/` deploy, but still needs the user's
+go-ahead to push/reload).
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

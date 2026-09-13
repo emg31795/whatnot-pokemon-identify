@@ -496,13 +496,37 @@
     });
   }
 
+  // FIX (2026-09-13, live incident investigation — see CLAUDE.md/
+  // docs/test-cases.md): a real production rate-limit burst showed 3
+  // separate /api/identify calls landing within ~1 second of each other
+  // (two legitimate client-side auto-retries firing back-to-back, plus a
+  // 3rd independent call that didn't match either retry's re-read
+  // pattern). The retry mechanism itself was confirmed working correctly
+  // (same frame reused, correct wait, single retry each) — the real gap
+  // was that nothing stopped a manual click on "Identify Card" from
+  // firing a brand-new, independent identifyAttempt() while an earlier
+  // request OR an active retry countdown was still in flight. Disabling
+  // the button for the full duration of identifyCard() — including
+  // through any retry wait, since identifyAttempt's retry recursion is
+  // still awaited inside this same call — closes that gap: a click
+  // during an in-flight request or countdown now does nothing instead of
+  // spawning a second, overlapping identify chain (extra PPT credit
+  // spend, and in a worse case a second independent retry chain on top
+  // of one already recovering).
+  const identifyBtn = $("#wnpk-identify-btn");
+
   async function identifyCard() {
     const imageBase64 = captureFrame();
     if (!imageBase64) {
       setStatus("Couldn't find the stream video — is a stream playing?");
       return;
     }
-    await identifyAttempt(imageBase64, false);
+    identifyBtn.disabled = true;
+    try {
+      await identifyAttempt(imageBase64, false);
+    } finally {
+      identifyBtn.disabled = false;
+    }
   }
 
   // ADDED (2026-09-12, client-side auto-retry — see docs/test-cases.md
