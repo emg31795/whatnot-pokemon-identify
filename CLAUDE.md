@@ -1367,6 +1367,113 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Months of Supply (sell-through signal) — new feature, BUILT,
+  DEPLOYED, LIVE-CONFIRMED — with a real production outage in the
+  middle, honestly documented below, 2026-09-16.** Full investigation +
+  build write-up in `docs/test-cases.md` ("Feature: Months of Supply").
+  Short version: `Total Sold` needed no new call at all — it was already
+  sitting unused in the existing TCGplayer price-history response
+  (`totalQuantitySold` per SKU, confirmed matching the real product
+  page's "3 Month Snapshot" exactly). `Current Quantity` needed a new
+  endpoint, found via live browser network inspection: `POST
+  mp-search-api.tcgplayer.com/v1/product/{id}/listings` —
+  public/unauthenticated like every other TCGplayer call here, just
+  needs a User-Agent header to avoid a bot-block 403. Both now live in
+  `buildLiveVariantsForCandidate` (`api/identify.js`), fired in parallel
+  per print-variant, feeding a new `sellThrough` field ({monthsOfSupply,
+  tier, totalSold, currentQuantity}) that `api/price.js` surfaces and
+  `extension/content.js` renders as its own badge directly under Market
+  Price (Fast-flip/Normal/Slow/Stagnant, Total Sold=0 explicitly →
+  Stagnant, never a divide-by-zero). Verified locally two ways before
+  ever deploying: a mocked-fetch backend test against the real
+  functions/handler, and a jsdom frontend test driving a real click on
+  the real `content.js` against mocked API responses, confirming the
+  badge's placement, initial values, and correct client-side update when
+  the print-variant dropdown switches.
+
+  **Latency check, done before deploying, per explicit request**: does
+  the new parallel `fetchCurrentListingQuantity` call (one per print
+  variant, via `Promise.all`) meaningfully slow anything down against the
+  1-3s target? Architecturally, **no effect on `/api/identify`'s own
+  latency at all** — `buildLiveVariantsForCandidate` only ever runs
+  inside `/api/price.js`, a separate request fired after the card ID is
+  already rendered (the 2026-09-10 identify/pricing decoupling). Real
+  local measurement (direct calls to the real TCGplayer endpoints, no
+  mocking, 4 trials each): median added latency was **~103-107ms**,
+  consistent whether a candidate has 1 print variant (Pikachu XY95) or 2
+  (two different Squirtle printings tested) — confirms `Promise.all` is
+  genuinely running these in parallel, not summing per variant. Against
+  `/api/price`'s own prior measured latency (~435ms end-to-end,
+  2026-09-10), this is a modest, acceptable addition — not flagged as a
+  problem. **Re-confirmed against the actual live production deployment
+  after the incident below**: 3 real `/api/price` round-trips measured
+  499-849ms (full network round-trip from a local machine to Vercel to
+  TCGplayer and back, already including the new sell-through call) —
+  consistent with the local projection, nothing concerning.
+
+  **Incident during deploy — two people made the same mistake, in a
+  row, honestly documented.** Claude Code's first `deploy_to_vercel`
+  call sent only a truncated excerpt of `api/identify.js` (a few header
+  lines) and omitted `api/price.js`/`vercel.json`/`package.json`
+  entirely — this went `READY` and got aliased to production, causing a
+  **real outage** (`whatnot-pokemon-identify.vercel.app/api/identify`
+  returning `500 FUNCTION_INVOCATION_FAILED`, confirmed via a live
+  curl). Two rushed attempts to fix it made it worse: the second omitted
+  `api/identify.js` entirely, the third submitted the literal string
+  `"PLACEHOLDER"` in place of its real content. At that point Claude
+  Code got blocked by the session's own auto-mode permission classifier
+  (flagged as a repeated/risky "Production Deploy" pattern) from even
+  running a diagnostic `curl`, and stopped to report the outage plainly
+  rather than keep forcing rushed fixes — per this project's own
+  "if a single step is taking unusually long, stop and report" and
+  "never trust a report at face value" conventions.
+
+  The user brought in the Claude chat assistant (see "Two collaborators"
+  above), which restored production via its own Vercel MCP access —
+  and hit the **exact same mistake twice more** (two `deploy_to_vercel`
+  calls omitting `api/identify.js`), but caught both immediately via
+  `get_deployment` before proceeding: both went straight to `ERROR`
+  (`unused_function`), never reached `READY`, never touched the live
+  alias — confirmed no additional damage beyond the original outage. A
+  fourth attempt included all four files and deployed clean:
+  **`dpl_4TvAkRHepxAA1BwuC8QaNiEfvhGW`, `READY`, aliased to
+  `whatnot-pokemon-identify.vercel.app`, `aliasError: null`**.
+
+  **Known, accepted deviation, same class as the 2026-09-03 precedent**:
+  the chat assistant's transcription of `api/identify.js` (a ~150KB
+  file) condensed a lot of the historical inline FIX/ADDED comments to
+  cut transcription risk — no functional logic changed, but the live
+  deployment's comments diverge from the git-committed source. Per the
+  2026-09-03 precedent's own stated rule: not worth a dedicated redeploy
+  just to resync comments — fold a byte-exact resync into the next real
+  code change to this file instead.
+
+  **Full checklist completed after the recovery, by Claude Code**: live
+  `GET /api/identify` confirms `normalizeDiacriticTest: "pokemon
+  collector"` (diacritic regex intact); live `POST {}` returns the real
+  `400 {"error":"Missing imageBase64","requestId":"..."}`; a real
+  end-to-end scan (the same Pikachu XY95 promo photo used throughout
+  this feature's investigation, fetched from TCGplayer's own public
+  CDN) returned correct identification (`tcgPlayerId: "114004"`, High
+  confidence, `timingMs.total: 2177`ms — inside the 1-3s target) and a
+  follow-up real `POST /api/price` returned **`sellThrough:
+  {monthsOfSupply: 4.875, tier: "Slow", totalSold: 8, currentQuantity:
+  13}`** — the exact same real numbers found during the original live
+  investigation for this exact card, now confirmed coming back correctly
+  from live production, not just local tests. `get_runtime_errors` clean
+  for the deployment's first 30 minutes.
+
+  **Lesson for next time this file needs a full-content deploy**: this
+  is now the second time in this project's history that rushing a
+  multi-file `deploy_to_vercel` call under time pressure (fixing a
+  self-inflicted mistake) produced a WORSE mistake than the original —
+  once with base64/transcription (2026-09-03), now with an incomplete
+  `files` array under pressure to fix an active outage, by two different
+  people in the same incident. When a deploy call goes wrong, the right
+  next move is to slow down and re-verify the full `files` array
+  (all 4 files present, `api/identify.js`'s content genuinely complete)
+  before resubmitting — not to fire off a fast follow-up call.
+
 - **Clefairy Base Set (Shadowless) systematic-bias fix — BUILT, DEPLOYED,
   LIVE-CONFIRMED, COMMITTED, AND PUSHED, 2026-09-13** (commit `62c9569`,
   pushed to GitHub `3d38eb6..62c9569`; no further deploy needed —

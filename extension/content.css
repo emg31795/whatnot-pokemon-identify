@@ -260,6 +260,52 @@
   color: #a3a4ab;
 }
 
+/* ADDED 2026-09-16 (Months of Supply — sell-through signal): deliberately
+   its own small badge, separate from .wnpk-market-price, per explicit
+   instruction not to fold profit and sell-through into one score. Empty
+   #wnpk-sell-through (no badge) collapses to zero height when the lookup
+   failed, so it never leaves a visible gap. */
+#wnpk-sell-through {
+  margin: 2px 0 6px;
+}
+
+.wnpk-sell-through {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.wnpk-sell-through-detail {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+.wnpk-sell-fast {
+  background: #0f2a1a;
+  color: #7ee0a3;
+  border: 1px solid #1a6b3f;
+}
+
+.wnpk-sell-normal {
+  background: #10233a;
+  color: #7ec8ff;
+  border: 1px solid #2a4a63;
+}
+
+.wnpk-sell-slow {
+  background: #3a2a12;
+  color: #ffc266;
+  border: 1px solid #6b4a1a;
+}
+
+.wnpk-sell-stagnant {
+  background: #3a1414;
+  color: #ff8a8a;
+  border: 1px solid #7a2323;
+}
+
 .wnpk-confidence-row {
   display: flex;
   justify-content: space-between;

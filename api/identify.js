@@ -1489,6 +1489,14 @@ const CONDITION_NAME_TO_TIER = {
   Damaged: "DMG",
 };
 
+// ADDED (2026-09-16, Months of Supply): the reverse of the map above —
+// needed to turn a tier code back into the full condition name TCGplayer's
+// mp-search-api listings endpoint expects (see fetchCurrentListingQuantity
+// below).
+const TIER_TO_CONDITION_NAME = Object.fromEntries(
+  Object.entries(CONDITION_NAME_TO_TIER).map(([full, tier]) => [tier, full])
+);
+
 // ---------------------------------------------------------------------------
 // Live TCGplayer per-condition pricing (2026-08-30)
 // ---------------------------------------------------------------------------
@@ -1604,31 +1612,169 @@ function buildLivePriceVariantsFromTCGPlayer(historyResult) {
     const label = String(sku.variant || "").trim();
     if (!label) continue;
     if (!byVariant[label]) byVariant[label] = {};
-    byVariant[label][tier] = Math.round(price * 100) / 100;
+    // ADDED (2026-09-16, Months of Supply): this same TCGplayer response
+    // already carries each SKU's own `totalQuantitySold` — its real
+    // 3-month rolling sales count (this fetch already requests
+    // range=quarter). Confirmed live against the actual product page's
+    // "3 Month Snapshot -> Total Sold" figure for this exact card: it
+    // matched exactly, for two different conditions, on the first try
+    // (see docs/test-cases.md). No second call needed for this half of
+    // the sell-through metric.
+    const sold = Number(sku.totalQuantitySold);
+    byVariant[label][tier] = {
+      price: Math.round(price * 100) / 100,
+      sold: Number.isFinite(sold) ? sold : null,
+    };
   }
 
   const variants = {};
-  for (const [label, conditions] of Object.entries(byVariant)) {
-    const presentTiers = CONDITION_TIERS.filter((t) => conditions[t] != null);
+  for (const [label, byTier] of Object.entries(byVariant)) {
+    const presentTiers = CONDITION_TIERS.filter((t) => byTier[t] != null);
     if (!presentTiers.length) continue;
     // Prefer NM as the headline "Market" price shown above the table
     // (matches how every other part of this tool has always defined
     // "market price"); if TCGplayer's data happens not to include NM for
     // this printing, fall back to whichever tier IS present, preferring
     // the best-condition one available.
-    const basePrice = conditions.NM != null
-      ? conditions.NM
-      : conditions[presentTiers[0]];
+    const basePriceTier = byTier.NM != null ? "NM" : presentTiers[0];
+    const conditions = {};
+    for (const t of presentTiers) conditions[t] = byTier[t].price;
     variants[label] = {
       label,
       printEdition: label,
-      basePrice,
+      basePrice: byTier[basePriceTier].price,
+      // ADDED (2026-09-16, Months of Supply): which tier basePrice
+      // actually came from, and that tier's own totalQuantitySold — kept
+      // only long enough for buildLiveVariantsForCandidate below to pair
+      // it with a matching Current Quantity lookup, then deleted before
+      // the variant object goes out in the API response.
+      basePriceTier,
+      basePriceTierSold: byTier[basePriceTier].sold,
       conditions,
       estimated: { NM: false, LP: false, MP: false, HP: false, DMG: false },
       partial: presentTiers.length < CONDITION_TIERS.length,
     };
   }
   return Object.keys(variants).length ? variants : null;
+}
+
+// ---------------------------------------------------------------------------
+// Months of Supply — sell-through signal (2026-09-16)
+// ---------------------------------------------------------------------------
+// Feature request: alongside Market Price, show whether a card will
+// actually sell in reasonable time, not just whether it's profitable —
+// "Months of Supply" = Current Quantity / (Total Sold / 3), same formula
+// TCGplayer's own product page implies with its "3 Month Snapshot"
+// widget (Total Sold + Current Quantity).
+//
+// Step 1 investigation (per explicit instruction, before writing any
+// scoring/display code) confirmed both real data points live, via a
+// live tcgplayer.com product page (Pikachu, XY Promos, tcgPlayerId
+// 114004) with real browser network inspection — same technique already
+// used to find the price-history endpoint above and to reverse-engineer
+// pallet.trade itself:
+//
+// - "Total Sold" needs NO new call at all — it's already sitting unused
+//   in the EXACT response fetchTCGPlayerPriceHistory already fetches
+//   above (`range=quarter` = the same 3-month window): each SKU carries
+//   its own real `totalQuantitySold`. Confirmed exactly matching the
+//   live page's own "3 Month Snapshot -> Total Sold" figure for two
+//   different conditions (Near Mint: 8=8, Lightly Played: 10=10).
+//
+// - "Current Quantity" is NOT in that response, and NOT in PPT's own
+//   payload either (checked first, per instruction — PPT's `prices`
+//   object has `listings`/`sellers` but those are aggregated across the
+//   WHOLE product, not per condition+printing, and don't match the
+//   per-SKU figure the real page shows). Found via live network
+//   inspection of the product page itself: a second, separate public
+//   endpoint, `https://mp-search-api.tcgplayer.com/v1/product/{id}/listings`
+//   (POST), which is what actually powers the page's "Current Quantity"/
+//   "Current Sellers" figures. Confirmed unauthenticated and CORS-open
+//   like every other TCGplayer call in this file (a plain curl, no
+//   cookies/session, works) — the one real difference is it 403s with no
+//   User-Agent header at all (a basic bot-block, not real auth; adding
+//   any normal browser UA fixes it, confirmed live). Summing its
+//   `quantity` aggregation bucket (value * count) matched the live
+//   page's "Current Quantity" exactly for two different conditions
+//   (Near Mint: 13=13, Lightly Played: 28=28).
+//
+// Both calls are scoped to the SAME (condition, printing) pair the
+// Market Price/basePrice already represents, so the badge shown under
+// Market Price is never comparing numbers from two different SKUs.
+const TCGPLAYER_LISTINGS_TIMEOUT_MS = 2500;
+
+function sumListingQuantity(aggregations) {
+  const buckets = aggregations && Array.isArray(aggregations.quantity) ? aggregations.quantity : [];
+  let total = 0;
+  for (const b of buckets) {
+    const value = Number(b && b.value);
+    const count = Number(b && b.count);
+    if (Number.isFinite(value) && Number.isFinite(count)) total += value * count;
+  }
+  return total;
+}
+
+async function fetchCurrentListingQuantity(tcgPlayerId, conditionName, printing) {
+  const url = `https://mp-search-api.tcgplayer.com/v1/product/${tcgPlayerId}/listings?mpfev=5555`;
+  const body = JSON.stringify({
+    filters: {
+      term: { condition: [conditionName], printing: [printing], language: [], sellerStatus: "Live" },
+      range: { quantity: { gte: 1 } },
+      exclude: { channelExclusion: 0 },
+    },
+    context: { shippingCountry: "US", cart: { packages: {} } },
+    // size:0 — we only need the aggregation buckets, not the actual
+    // listing rows, so this stays a small/fast request.
+    aggregations: ["seller-key"],
+    size: 0,
+  });
+  const resp = await fetchWithTimeout(
+    url,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/plain, */*",
+        // Required — see the header comment above. Every other TCGplayer
+        // call in this file works fine with no UA at all; this endpoint
+        // specifically 403s without one.
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+      body,
+    },
+    TCGPLAYER_LISTINGS_TIMEOUT_MS
+  );
+  if (!resp.ok) {
+    throw new Error(`TCGplayer listings endpoint returned HTTP ${resp.status} for productId=${tcgPlayerId}`);
+  }
+  const json = await resp.json();
+  const result = json && Array.isArray(json.results) ? json.results[0] : null;
+  if (!result) {
+    throw new Error(`TCGplayer listings endpoint returned no result for productId=${tcgPlayerId}`);
+  }
+  return sumListingQuantity(result.aggregations);
+}
+
+// Boundaries per explicit spec: Fast-flip <1, Normal [1,3), Slow [3,6),
+// Stagnant >=6. Total Sold = 0 is a real edge case (division by zero) —
+// classified explicitly as Stagnant rather than left blank, since zero
+// sales in 3 months is the clearest "this will sit in inventory" signal
+// there is.
+function classifySellThroughTier(monthsOfSupply) {
+  if (monthsOfSupply == null) return "Stagnant";
+  if (monthsOfSupply < 1) return "Fast-flip";
+  if (monthsOfSupply < 3) return "Normal";
+  if (monthsOfSupply < 6) return "Slow";
+  return "Stagnant";
+}
+
+function computeSellThrough(currentQuantity, totalSold) {
+  if (currentQuantity == null || totalSold == null) return null;
+  if (totalSold === 0) {
+    return { monthsOfSupply: null, tier: "Stagnant", totalSold: 0, currentQuantity };
+  }
+  const monthsOfSupply = currentQuantity / (totalSold / 3);
+  return { monthsOfSupply, tier: classifySellThroughTier(monthsOfSupply), totalSold, currentQuantity };
 }
 
 // Fetches + builds live price variants for one candidate (identified by
@@ -1645,6 +1791,31 @@ async function buildLiveVariantsForCandidate(candidate, tag) {
   if (!variants) {
     throw new Error(`TCGplayer has no live condition-price data at all for productId=${candidate.tcgPlayerId} (${candidate.name}).`);
   }
+
+  // ADDED (2026-09-16, Months of Supply): one Current-Quantity lookup per
+  // variant/printing, run in parallel, scoped to whichever tier basePrice
+  // itself came from (see buildLivePriceVariantsFromTCGPlayer above) so
+  // the badge always pairs with the exact same SKU as the price shown
+  // next to it. Best-effort only, per explicit scope — this is a
+  // supplementary signal, not the price itself, so a failure here is
+  // logged and leaves sellThrough null (the badge just doesn't render)
+  // rather than failing the whole pricing response the way a real price
+  // failure does.
+  await Promise.all(
+    Object.values(variants).map(async (v) => {
+      try {
+        const conditionName = TIER_TO_CONDITION_NAME[v.basePriceTier];
+        const currentQuantity = await fetchCurrentListingQuantity(candidate.tcgPlayerId, conditionName, v.label);
+        v.sellThrough = computeSellThrough(currentQuantity, v.basePriceTierSold);
+      } catch (e) {
+        console.error(`[sell-through] failed for tcgPlayerId=${candidate.tcgPlayerId} variant=${v.label}:`, e && e.message);
+        v.sellThrough = null;
+      }
+      delete v.basePriceTier;
+      delete v.basePriceTierSold;
+    })
+  );
+
   if (!tag) return variants;
   const tagged = {};
   for (const [k, v] of Object.entries(variants)) {

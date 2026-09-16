@@ -4847,6 +4847,185 @@ dropdown (`"Unlimited Holofoil (Shadowless)"`, `"1st Edition Holofoil
 (Shadowless)"`, `"Holofoil"`), so the manual-correction path is
 unchanged for anyone who needs to switch it.
 
+## Feature: Months of Supply (sell-through signal) — investigation + build, verified locally, not yet deployed (2026-09-16)
+
+New feature request, not a bug fix: a sell-through signal next to Market
+Price so a card's profitability can be weighed against whether it will
+actually sell in reasonable time or sit in inventory. Formula given:
+`Months of Supply = Current Quantity / (Total Sold / 3)`, tiers
+Fast-flip (<1) / Normal ([1,3)) / Slow ([3,6)) / Stagnant (≥6), with
+Total Sold = 0 explicitly classified as Stagnant rather than left blank.
+
+**Step 1 — investigation, before writing any scoring/display code, per
+explicit instruction.** Checked in the specified order, against real
+data, not assumed:
+
+1. **PPT's own raw candidate payload** (a real `search=Pikachu` query
+   against the live PPT API, `.env.local`-authenticated): `prices` has
+   `market`, `low`, `sellers` (42), `listings` (53, already used for the
+   2026-09-13 `listingCount` liquidity feature), `recentSales` (0,
+   despite the card genuinely having real recent sales — this field
+   looks unreliable/stale, not used), `primaryPrinting`, per-condition
+   breakdowns. **No total-sold or 3-month sales-count field anywhere.**
+   Ruled out.
+2. **Our existing TCGplayer price-history endpoint**
+   (`infinite-api.tcgplayer.com/price/history/{tcgPlayerId}/detailed?range=quarter`,
+   already called by `fetchTCGPlayerPriceHistory` for every price
+   lookup): each SKU in the raw response already carries its own
+   `totalQuantitySold` — a real 3-month rolling sales count (the
+   `range=quarter` window is exactly 3 months, confirmed by the bucket
+   date range: `2026-06-21` to `2026-09-16`). This was being fetched on
+   every single price lookup already and simply discarded downstream.
+   **Confirmed via live browser comparison against the actual product
+   page** (`tcgplayer.com/product/114004`, Pikachu XY Promos): the
+   page's own "3 Month Snapshot → Total Sold" figure matched
+   `totalQuantitySold` exactly for two different conditions checked
+   (Near Mint: 8 = 8, Lightly Played: 10 = 10). **This is "Total Sold" —
+   confirmed, no new external call needed.**
+3. **Current Quantity was NOT in either of the above** — required a
+   real network-inspection pass against the live product page (same
+   technique used to find the price-history endpoint originally and to
+   reverse-engineer pallet.trade itself). Found the real endpoint that
+   powers the page's own "Current Quantity"/"Current Sellers" figures:
+   `POST https://mp-search-api.tcgplayer.com/v1/product/{tcgPlayerId}/listings`,
+   with a JSON body scoping `filters.term.condition`/`printing`. With
+   `size:0` and `aggregations:["seller-key"]`, the response returns a
+   `quantity` aggregation bucket (`[{value, count}, ...]`) whose
+   `sum(value*count)` is Current Quantity, and a `sellerKey` array whose
+   length is Current Sellers. **Confirmed exactly matching the live
+   page** for two different conditions (Near Mint: 13 = 13, Lightly
+   Played: 28 = 28) — verified via a fetch-wrapper injected into the
+   real page (not guessed from the UI alone), which also captured the
+   exact real POST body TCGplayer's own frontend sends.
+   **Public/unauthenticated/CORS-open, confirmed via plain `curl`** — no
+   cookies or session needed, same as every other TCGplayer call in this
+   file. The one real difference: this endpoint 403s a request with no
+   `User-Agent` header at all (confirmed by testing with and without
+   one) — a basic bot-block, not real authentication; any normal browser
+   UA string fixes it.
+
+**Answer for where the code goes**: both calls now live in
+`buildLiveVariantsForCandidate` (`api/identify.js`), the same function
+that already fetches live per-condition pricing — NOT in `identify.js`'s
+candidate-scoring path. This is a per-print-variant/condition signal,
+computed at the same time and for the same chosen printing as the price
+itself, so it belongs with the live TCGplayer fetch, matching the
+2026-09-10 identify/pricing decoupling's own architecture (this function
+is already `api/price.js`-only, called via `require`).
+
+**Built.** `buildLivePriceVariantsFromTCGPlayer` now also captures each
+SKU's `totalQuantitySold` alongside its price, and records which tier
+(`NM`, or the first present tier as fallback) `basePrice` actually came
+from. `buildLiveVariantsForCandidate` then fires one
+`fetchCurrentListingQuantity` call per variant/printing, in parallel via
+`Promise.all`, scoped to that SAME (condition, printing) pair — so the
+badge shown under Market Price is never comparing numbers from a
+different SKU than the price itself. `computeSellThrough`/
+`classifySellThroughTier` apply the formula and tier boundaries exactly
+as specified, with the Total-Sold-0 edge case returning
+`{monthsOfSupply: null, tier: "Stagnant", ...}` explicitly rather than
+dividing by zero. **Best-effort only, per explicit scope**: a failure in
+the new listings call is caught per-variant, logged
+(`[sell-through] failed for tcgPlayerId=... variant=...`), and leaves
+`sellThrough: null` for that variant — it never blocks or breaks the
+existing price response the way a genuine price failure does (unlike
+`pricingError`, there's no loud warning for a missing sell-through
+badge; it just doesn't render, matching the "supplementary signal, not
+the price itself" framing in the request). `api/price.js` surfaces
+`sellThrough` as a new top-level field (mirroring how `marketPrice`/
+`conditionPrices` already extract from the chosen variant) so
+`content.js` doesn't need to dig into `priceVariants` for the initial
+render.
+
+`extension/content.js`: a new `#wnpk-sell-through` badge renders
+directly under `#wnpk-market-price` (matches the requested placement,
+verified in DOM order — see the frontend test below), showing the tier
+name plus a short detail (`"4.9 mo supply"`, or `"0 sold in 3mo"` for
+the Stagnant/zero-sold case), colored per tier (green/blue/amber/red,
+matching this project's existing warning/error color language). Reads
+`sellThrough` from the SAME variant object as `basePrice`/`conditions`,
+so switching the print-variant dropdown updates the badge exactly the
+way it already updates the price — no new fetch on dropdown change, same
+as every other per-variant field. Deliberately kept as its own separate
+element from Market Price, per explicit instruction not to combine
+profit and sell-through into one score. No standalone Current-Quantity/
+Current-Sellers display was built, and no "assumes competitive pricing"
+warning UI — both explicitly out of scope per the request.
+
+**Verified locally, two ways, before any deploy:**
+
+1. **Backend** — a mocked-fetch test driving the real (unmodified)
+   `buildLiveVariantsForCandidate` and the real `api/price.js` handler
+   (no real network calls, no reimplementation): confirmed correct
+   `monthsOfSupply`/tier for a normal case (sold=8, qty=13 → 4.875 →
+   "Slow", matching the live-verified real numbers above exactly); the
+   Total-Sold=0 edge case correctly returns `Stagnant` with
+   `monthsOfSupply: null` (no divide-by-zero); a forced failure of the
+   new listings call leaves `sellThrough: null` while the price data
+   (`basePrice`, `conditions`) stays completely unaffected; the internal
+   `basePriceTier`/`basePriceTierSold` scratch fields are correctly
+   stripped before the variant object is returned; a Fast-flip case
+   (sold=30, qty=5 → 0.5) classifies correctly; and the full
+   `api/price.js` HTTP handler response carries the correct top-level
+   `sellThrough` alongside unchanged `marketPrice`/`conditionPrices`/
+   `listingCount`.
+2. **Frontend** — a jsdom harness (jsdom installed only in a scratch
+   directory, not a project dependency, same pattern as test #88) drove
+   a real click on the real, unmodified `extension/content.js`'s
+   "Identify Card" button against mocked `/api/identify` + `/api/price`
+   responses (canvas/video calls stubbed to no-ops, since jsdom has no
+   real 2D canvas backend — not a simulation of the render logic
+   itself). Confirmed: the sell-through badge renders with the correct
+   tier and detail text ("Slow · 4.9 mo supply") for the initially
+   selected variant; DOM order places `#wnpk-sell-through` directly
+   after `#wnpk-market-price` and before the print-variant picker,
+   matching the requested placement; and switching the variant dropdown
+   to a second mocked printing (Fast-flip, 0.4 months) correctly updates
+   both the market price AND the sell-through badge together,
+   client-side, with no new fetch — exactly the existing dropdown
+   pattern.
+
+**Latency check (done before deploying, per explicit request)**: the new
+per-variant `fetchCurrentListingQuantity` call runs in parallel via
+`Promise.all`, only inside `buildLiveVariantsForCandidate` — which only
+ever executes from `/api/price.js`, never `/api/identify.js`'s own
+response path, so the 1-3s identify target is architecturally
+unaffected. Real local measurement against the live TCGplayer endpoints
+(no mocking, 4 trials each, for both a 1-print-variant card and two
+different 2-print-variant cards): median added latency **~103-107ms**,
+the same regardless of variant count — confirms the parallelism is
+real, not summing per variant. Against `/api/price`'s own prior
+measured ~435ms end-to-end (2026-09-10), this is a modest, acceptable
+addition, not flagged as a concern.
+
+**DEPLOYED AND LIVE-CONFIRMED, 2026-09-16 — after a real production
+outage in the middle of deploying, honestly documented in CLAUDE.md's
+"Recent / in-flight work" entry for this feature** (both Claude Code
+and, separately, the Claude chat assistant sent an incomplete `files`
+array to `deploy_to_vercel` under time pressure while trying to fix the
+prior mistake — full blow-by-blow, including which attempts reached
+`READY`/the live alias and which were caught by `get_deployment` first,
+is in CLAUDE.md, not duplicated here). Final good deployment:
+`dpl_4TvAkRHepxAA1BwuC8QaNiEfvhGW`, `READY`, aliased to
+`whatnot-pokemon-identify.vercel.app`, `aliasError: null`.
+
+**Full checklist confirmed after recovery**: live `GET /api/identify`
+returns `normalizeDiacriticTest: "pokemon collector"`; live `POST {}`
+returns the real `400 {"error":"Missing imageBase64"}`; a real
+end-to-end scan (the same Pikachu XY95 photo used throughout this
+feature's investigation) returned correct identification
+(`tcgPlayerId: "114004"`, High confidence, `timingMs.total: 2177`ms,
+inside the 1-3s target) and a real `POST /api/price` returned
+`sellThrough: {monthsOfSupply: 4.875, tier: "Slow", totalSold: 8,
+currentQuantity: 13}` — the exact same real numbers this feature's
+original live investigation found for this exact card, now confirmed
+from live production rather than local tests. `get_runtime_errors`
+clean for the deployment's first 30 minutes. Three live `/api/price`
+round-trips against this deployment measured 499-849ms end-to-end
+(full network round trip, already including the new sell-through
+call) — consistent with the pre-deploy local projection above, nothing
+concerning.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

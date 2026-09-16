@@ -107,6 +107,12 @@ module.exports = async function handler(req, res) {
     // this differently from full 5-condition coverage without implying
     // any missing tier was guessed.
     conditionPricesPartial: chosenVariant ? !!chosenVariant.partial : false,
+    // ADDED 2026-09-16 (Months of Supply): already computed per-variant
+    // inside buildLiveVariantsForCandidate (api/identify.js) — this is
+    // just the chosen variant's copy, same pattern as marketPrice/
+    // conditionPrices above. null whenever the sell-through lookup
+    // failed or a variant simply has no chosen printing yet.
+    sellThrough: chosenVariant ? chosenVariant.sellThrough : null,
     // Loud, explicit failure — set only when live TCGplayer pricing
     // could not be fetched at all. Never paired with a fabricated
     // marketPrice/conditionPrices — those stay null whenever this is

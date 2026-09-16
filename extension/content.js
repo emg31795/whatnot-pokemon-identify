@@ -765,6 +765,29 @@
         : ""
     }`;
 
+  // ADDED 2026-09-16 (Months of Supply — sell-through signal): a separate
+  // badge from Market Price on purpose, per explicit instruction — a card
+  // can be high-profit-but-stagnant or low-profit-but-fast-flip, and
+  // folding this into one score would hide exactly that distinction.
+  // `sellThrough` comes from the SAME variant object as basePrice/
+  // conditions (see buildLiveVariantsForCandidate in api/identify.js), so
+  // switching the print-variant dropdown below updates this the same way
+  // it already updates the price. Renders nothing when the lookup failed
+  // (best-effort supplementary signal, never blocks/replaces the price).
+  const SELL_THROUGH_TIER_CLASS = {
+    "Fast-flip": "wnpk-sell-fast",
+    Normal: "wnpk-sell-normal",
+    Slow: "wnpk-sell-slow",
+    Stagnant: "wnpk-sell-stagnant",
+  };
+  function sellThroughBadgeHtml(sellThrough) {
+    if (!sellThrough || !sellThrough.tier) return "";
+    const cls = SELL_THROUGH_TIER_CLASS[sellThrough.tier] || "";
+    const mos = sellThrough.monthsOfSupply;
+    const detail = mos != null ? `${mos.toFixed(1)} mo supply` : "0 sold in 3mo";
+    return `<div class="wnpk-sell-through ${cls}">${escapeHtml(sellThrough.tier)} <span class="wnpk-sell-through-detail">· ${escapeHtml(detail)}</span></div>`;
+  }
+
   // ADDED 2026-09-10 (identify/pricing decoupling, see CLAUDE.md /
   // docs/test-cases.md test #88): fills in the price section of an
   // already-rendered raw-card panel once the separate /api/price call
@@ -824,6 +847,7 @@
             : marketPriceLine({ basePrice: priceData.marketPrice }, priceData.listingCount)
         }
       </div>
+      <div id="wnpk-sell-through">${sellThroughBadgeHtml(initialVariant ? initialVariant.sellThrough : priceData.sellThrough)}</div>
       ${variantPicker}
       <div class="wnpk-cond-label" id="wnpk-cond-label">CONDITION PRICES</div>
       <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(priceData.conditionPrices)}</div>
@@ -835,6 +859,7 @@
         const variant = priceData.priceVariants[select.value];
         if (!variant) return;
         $("#wnpk-market-price").innerHTML = marketPriceLine(variant, priceData.listingCount);
+        $("#wnpk-sell-through").innerHTML = sellThroughBadgeHtml(variant.sellThrough);
         $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions);
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
