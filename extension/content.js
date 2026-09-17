@@ -684,7 +684,7 @@
         // resolves is fine too — see the flag-button setup above, which
         // never gates on pricing.
         Object.assign(lastResultData, priceData);
-        renderPriceSection(priceData);
+        renderPriceSection(priceData, identifyData);
       })
       .catch((e) => {
         console.warn("[wnpk] price fetch failed:", e);
@@ -788,6 +788,39 @@
     return `<div class="wnpk-sell-through ${cls}">${escapeHtml(sellThrough.tier)} <span class="wnpk-sell-through-detail">· ${escapeHtml(detail)}</span></div>`;
   }
 
+  // FIX (2026-09-17, user-reported bug — live Chansey Base Set
+  // (Shadowless) scan): the header's set name used to be fixed forever
+  // at `data.setName` (the WINNING candidate's name at match time),
+  // completely unaffected by the print-variant dropdown below it — so
+  // when a Shadowless/non-Shadowless tie's price dropdown was used
+  // exactly as intended (the code's own "real safety net" for a wrong
+  // Shadowless guess, see api/identify.js's isShadowlessVsPlainTie
+  // comment) to switch to the OTHER printing's price, the header kept
+  // naming the printing that was no longer selected. Real logs
+  // confirmed this scan's `pickDefaultVariantKey` had correctly found
+  // the tagged default (the price dropdown's own "(detected)" label was
+  // accurate) — the bug was purely that nothing updated the header once
+  // the user picked a different option.
+  //
+  // Scoped narrowly to the one case this project's dropdown-merging
+  // logic ever actually produces two differently-tagged candidates for
+  // (a Shadowless/non-Shadowless pair, see the sibling-merge comment in
+  // lookupCardPPT) — `identifyData.pricingLookup.siblingSetName` is a
+  // real field already on the sibling candidate (added alongside this
+  // fix), not a guess or a regex reconstruction of the tag suffix.
+  // Returns `data.setName` unchanged whenever there's no sibling at all
+  // (every ordinary, non-ambiguous scan).
+  function setNameForVariantKey(key, identifyData) {
+    const pl = identifyData && identifyData.pricingLookup;
+    const bestSetName = identifyData && identifyData.setName;
+    if (!pl || !pl.siblingSetName || (!pl.tag && !pl.siblingTag)) return bestSetName;
+    const activeTag = pl.tag || pl.siblingTag;
+    const keyIsTaggedSide = String(key || "").toLowerCase().endsWith(` (${String(activeTag).toLowerCase()})`);
+    const taggedSideIsBest = !!pl.tag;
+    const keyIsBest = keyIsTaggedSide ? taggedSideIsBest : !taggedSideIsBest;
+    return keyIsBest ? bestSetName : pl.siblingSetName;
+  }
+
   // ADDED 2026-09-10 (identify/pricing decoupling, see CLAUDE.md /
   // docs/test-cases.md test #88): fills in the price section of an
   // already-rendered raw-card panel once the separate /api/price call
@@ -795,7 +828,14 @@
   // never touches the header/warnings/image/scroll position of the panel
   // that's already on screen, per explicit instruction not to re-render
   // the whole panel here.
-  function renderPriceSection(priceData) {
+  //
+  // `identifyData` (ADDED 2026-09-17, see setNameForVariantKey above) is
+  // the original /api/identify response this pricing call is for — only
+  // used to keep the header's set name in sync with whichever print
+  // variant is currently selected; optional so the error-fallback call
+  // site below (which has no variants/dropdown to sync at all) doesn't
+  // need to pass anything new.
+  function renderPriceSection(priceData, identifyData) {
     const section = $("#wnpk-price-section");
     if (!section) return; // panel has since moved on to a different scan/state
 
@@ -853,6 +893,15 @@
       <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(priceData.conditionPrices)}</div>
     `;
 
+    // FIX (2026-09-17, see setNameForVariantKey above): keep the header's
+    // set name in sync with whichever variant is actually selected,
+    // starting from the default the same way the price/condition table
+    // already do.
+    const setNameEl = $("#wnpk-set-name");
+    if (setNameEl && identifyData) {
+      setNameEl.textContent = setNameForVariantKey(priceData.priceVariantUsed, identifyData);
+    }
+
     if (priceData.priceVariants) {
       const select = $("#wnpk-variant-select");
       select.addEventListener("change", () => {
@@ -863,6 +912,9 @@
         $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions);
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
+        if (setNameEl && identifyData) {
+          setNameEl.textContent = setNameForVariantKey(select.value, identifyData);
+        }
       });
     }
   }
@@ -895,7 +947,7 @@
       <div class="wnpk-card-name">${escapeHtml(data.cardName)}${
         data.cardLanguage === "Japanese" ? ' <span class="wnpk-lang-badge">JP</span>' : ""
       }</div>
-      <div class="wnpk-set-name">${escapeHtml(data.setName || "")}</div>
+      <div class="wnpk-set-name" id="wnpk-set-name">${escapeHtml(data.setName || "")}</div>
       ${
         data.cardImageUrl
           ? `<img class="wnpk-card-img" src="${data.cardImageUrl}" />`

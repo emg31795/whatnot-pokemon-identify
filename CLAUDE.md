@@ -1367,6 +1367,71 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Chansey Base Set (Shadowless) header/dropdown desync — BUILT,
+  BACKEND DEPLOYED AND LIVE-CONFIRMED, extension change awaiting a
+  manual reload, 2026-09-17.** User-reported bug: the price dropdown
+  (this project's own documented "real safety net" for a wrong
+  Shadowless guess) correctly let the user switch to the right
+  printing's price, but the header above it stayed on the wrong one.
+  Full root-cause trace (real logs pulled first, per standing
+  convention) in test #93, `docs/test-cases.md`. Short version: this
+  scan's `pickDefaultVariantKey` was NOT the bug — a live repro against
+  the real TCGplayer data confirmed it correctly found the tagged
+  default (`"1st Edition Holofoil (Shadowless)"`, matching the
+  screenshot's own "(detected)" label) — the user had simply, correctly,
+  manually switched to the non-Shadowless sibling's price afterward.
+  `api/identify.js`'s `pricingLookup` now carries a real
+  `siblingSetName` field; `extension/content.js` uses it (via a new
+  `setNameForVariantKey` helper) to swap the header's set name whenever
+  the selected print variant belongs to the sibling instead of `best`,
+  wired into the same dropdown `change` listener that already updates
+  price/conditions/sell-through. Scoped to the one case that ever
+  produces two differently-tagged candidates (a Shadowless pair) —
+  every ordinary scan is unaffected.
+
+  **Verified before deploying**: the real extracted `setNameForVariantKey`
+  against this exact scan's real data, and a jsdom harness driving a
+  real click + dropdown switch on the real `content.js`. `node --check`
+  passed; existing sell-through/price tests re-ran clean, no regression.
+
+  **Backend deployed 2026-09-17** (`dpl_GxPpmA8s2caV22hvPUsB8KYQCctr`,
+  `READY`, aliased to `whatnot-pokemon-identify.vercel.app`,
+  `aliasError: null`, 2 lambdas built). Full checklist confirmed live:
+  `GET /api/identify` returns the correct `normalizeDiacriticTest`;
+  `POST {}` returns the real `400`; a Pikachu regression scan confirmed
+  `siblingSetName: null` on an ordinary card with no behavior change
+  (`total ms=1532`, inside the 1-3s target); **a real scan of the actual
+  Chansey Base Set (Shadowless) product photo (tcgPlayerId 106998)**
+  reproduced the exact reported scenario live —
+  `pricingLookup.siblingSetName: "Base Set"`, default
+  `priceVariantUsed: "1st Edition Holofoil (Shadowless)"` ($400), and
+  the sibling's `"Holofoil"` variant at **$63.79 — the exact price
+  Eric's screenshot showed** — confirming the fix will swap the header
+  from "Base Set (Shadowless)" to "Base Set" the moment that exact
+  variant is selected (frontend logic already proven correct via the
+  jsdom harness against this same real data shape). `get_runtime_errors`
+  clean for 15 minutes post-deploy.
+
+  **Known, accepted deviation, same class as the 2026-09-03 precedent**
+  (and the chat assistant's 2026-09-16 emergency-recovery deploy): given
+  this project's documented history of transcription corruption on
+  `api/identify.js`, the deployed content condensed most of the file's
+  historical inline FIX/ADDED comments (all functional code, including
+  the new `siblingSetName` field and its comment, is unchanged/present)
+  rather than risking a full byte-exact retype of a ~2800-line file
+  under the same pressure that caused the prior incident. Per that
+  precedent's own rule: not worth a dedicated redeploy just to resync
+  comments — fold a byte-exact resync into the next real code change to
+  this file (already an open item from the 2026-09-16 incident too).
+
+  **Extension (`content.js`/`api/identify.js`'s frontend-visible fields)
+  is not something Vercel deploys** — per this project's own documented
+  gotcha, Chrome does not auto-reload an unpacked extension on file
+  change. The header-swap fix itself is code-complete and pushed, but
+  **needs a manual reload in `chrome://extensions` plus a live rescan
+  to move from "backend live-confirmed" to "observed working in the
+  real panel."**
+
 - **Months of Supply (sell-through signal) — new feature, BUILT,
   DEPLOYED, LIVE-CONFIRMED — with a real production outage in the
   middle, honestly documented below, 2026-09-16.** Full investigation +

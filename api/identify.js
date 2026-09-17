@@ -2355,6 +2355,19 @@ async function lookupCardPPT(read, requestId) {
       tag: bestIsShadowless ? "Shadowless" : null,
       siblingTcgPlayerId: shadowlessSibling ? shadowlessSibling.tcgPlayerId || null : null,
       siblingTag: siblingIsShadowless ? "Shadowless" : null,
+      // ADDED (2026-09-17, live scan — Chansey Base Set (Shadowless),
+      // user-reported bug): the header (cardName/setName) is fixed at
+      // render time from `best` and never updates when the user picks a
+      // different print-variant from the price dropdown — so switching
+      // to the sibling's (opposite-Shadowless) price left the header
+      // still naming the WRONG print run, even though the price itself
+      // was correctly updated. `siblingSetName` (a real field already on
+      // the sibling candidate, not derived/guessed) lets the extension
+      // swap the displayed set name to match whichever side of the
+      // Shadowless/non-Shadowless pair is actually selected. Null
+      // whenever there's no sibling at all (the ordinary, non-ambiguous
+      // case), matching every other sibling-* field here.
+      siblingSetName: shadowlessSibling ? shadowlessSibling.setName || null : null,
       stampType: read.stampType,
       primaryPrinting: best.prices?.primaryPrinting ?? null,
       // ADDED 2026-09-13 (liquidity metric): PPT's raw `prices.listings`

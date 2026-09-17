@@ -5026,6 +5026,135 @@ round-trips against this deployment measured 499-849ms end-to-end
 call) — consistent with the pre-deploy local projection above, nothing
 concerning.
 
+## Test #93 — Chansey Base Set (Shadowless): the price dropdown's "real safety net" fixed the price but not the header, plus confirming `pickDefaultVariantKey` itself is NOT the bug here (2026-09-17)
+
+User-reported bug, with two specific things to check per explicit
+instruction, rather than guessing from the screenshot alone. Real
+production logs pulled first via `get_runtime_logs` (query="Chansey",
+`requestId=471cf641-552d-4ce7-b133-a78fb55a2e11`), not assumed from the
+two screenshots.
+
+**Ground truth from real logs**: Gemini read `cardName="Chansey"`,
+`cardNumber="3/102"`, `hp="120"`, `setName="Base Set"`, High confidence.
+Page 1 (30 candidates) had no `3/102` match, triggering the page-2
+fallback; page 1+2 merged (32 candidates) produced `best = {name:
+"Chansey", number: "003/102", setName: "Base Set (Shadowless)"}`,
+`bestScore=33`, `tieCount=2`, and the log line confirms `[lookup]
+AMBIGUOUS MATCH: 2 distinct candidates tied at score 33 (Shadowless vs.
+non-Shadowless pair)` — the `isShadowlessVsPlainTie` safety net from
+test #92 fired exactly as designed, forcing `matchConfidence: "Low"`
+and the Shadowless-specific `ambiguousNote`, matching the screenshot's
+"Match: Low" badge.
+
+**Question 2 (checked first, since it could have invalidated the price
+shown): did `pickDefaultVariantKey` actually find the correctly-tagged
+key, or silently fall through to the sibling's untagged one?** A live
+PPT query found the real candidate pair: `best` = Chansey, Base Set
+(Shadowless), 003/102, **tcgPlayerId 106998**, `prices.primaryPrinting
+= "1st Edition Holofoil"`; sibling = Chansey, Base Set, 003/102,
+**tcgPlayerId 42371**, `prices.primaryPrinting = "Holofoil"`. Ran the
+REAL, unmodified `buildLiveVariantsForCandidate`/`pickDefaultVariantKey`
+against the live TCGplayer data for both real tcgPlayerIds (no
+mocking): `pickDefaultVariantKey` correctly resolved to **`"1st Edition
+Holofoil (Shadowless)"`** (basePrice $400) — the tagged key, not the
+sibling's untagged one. This exactly matches the screenshot's own
+"(detected)" label sitting next to that same option. **Conclusion:
+`pickDefaultVariantKey` is not the bug here — the default price WAS
+reliably paired with the claimed (Shadowless) identity.** What the
+screenshots actually show is Eric having ALREADY manually switched the
+dropdown to the untagged `Holofoil` option ($63.79, the sibling's
+price) — using the dropdown exactly as intended, because the physical
+card is genuinely plain Base Set, not Shadowless.
+
+**Question 1, the real bug**: `cardName`/`setName` are read once from
+`best` at render time (`renderResult` in `content.js`) and were never
+touched again — so once Eric correctly used the price dropdown to
+switch to the non-Shadowless printing, the price updated ($63.79,
+correct) but the header above it kept reading "Base Set (Shadowless)"
+(wrong, for the now-selected printing). The dropdown is this project's
+own documented "real safety net" for a wrong Shadowless guess (see
+`isShadowlessVsPlainTie`'s comment in `api/identify.js`) — but it was
+only ever wired to fix the number shown, not the label describing what
+that number is for, which is the part actually being read as "wrong."
+
+**Fixed**: `api/identify.js`'s `pricingLookup` now includes
+`siblingSetName` (a real field straight off the sibling candidate
+object, `shadowlessSibling.setName` — not derived or guessed via
+regex). `extension/content.js` adds `setNameForVariantKey(key,
+identifyData)`, which decides whether a given price-variant key belongs
+to `best` (show `data.setName` as originally identified) or the sibling
+(show `siblingSetName` instead) by checking whether the key ends with
+whichever side's tag suffix is active (`tag` or `siblingTag` —
+symmetric, not hardcoded to assume `best` is always the Shadowless
+one). The header's `<div class="wnpk-set-name">` now has an id and is
+updated both on `renderPriceSection`'s initial render and inside the
+existing print-variant dropdown's `change` listener, right alongside
+the price/condition-table/sell-through updates that already happen
+there — same mechanism, same trigger, no new fetch. Scoped narrowly to
+the one case this project's own sibling-merge logic ever produces two
+differently-tagged candidates for (a Shadowless/non-Shadowless pair);
+returns `data.setName` unchanged for every ordinary, non-ambiguous scan
+(no sibling at all).
+
+**Verified two ways, using real data from this exact scan, before
+deploying**:
+1. Extracted the real `setNameForVariantKey` function straight out of
+   `content.js` (not reimplemented) and ran it against the exact real
+   values from this scan's logs/PPT query: switching to `"1st Edition
+   Holofoil (Shadowless)"`/`"Unlimited Holofoil (Shadowless)"` both
+   correctly return `"Base Set (Shadowless)"`; switching to the real
+   sibling key `"Holofoil"` correctly returns `"Base Set"` — the exact
+   fix Eric's report asked for. Also checked the symmetric opposite
+   direction (best untagged, sibling tagged) and the ordinary
+   no-sibling case, both correct.
+2. A jsdom harness drove a real click on the real, unmodified
+   `content.js` against mocked `/api/identify`/`/api/price` responses
+   built from this scan's real data (real tcgPlayerIds, real tag/
+   siblingTag/siblingSetName values): initial header reads "Base Set
+   (Shadowless)" (matching the detected default); selecting `Holofoil`
+   from the dropdown — Eric's exact action — updates the header to
+   "Base Set" while the market price correctly shows $63.79; switching
+   back to a Shadowless-tagged option swaps the header back too (not a
+   one-way patch). Also re-ran the existing sell-through/price-handler
+   backend tests unchanged to confirm no regression from the
+   `siblingSetName` field addition.
+
+`node --check` passes on both touched files. No wrong money was ever
+shown here (the price itself was always correct for whichever printing
+was selected; only the label was stale).
+
+**Backend deployed and live-confirmed, 2026-09-17**
+(`dpl_GxPpmA8s2caV22hvPUsB8KYQCctr`, `READY`, aliased to
+`whatnot-pokemon-identify.vercel.app`, `aliasError: null`). Checklist:
+live `GET` returns the correct `normalizeDiacriticTest`; live `POST {}`
+returns the real `400`; a Pikachu regression scan confirms
+`siblingSetName: null` and no behavior change for an ordinary card
+(`total ms=1532`, inside the 1-3s target). **A real scan of the actual
+Chansey Base Set (Shadowless) product photo** (fetched from
+TCGplayer's own public CDN, tcgPlayerId 106998) reproduced this exact
+bug's scenario live: `pricingLookup.siblingSetName: "Base Set"`,
+default `priceVariantUsed: "1st Edition Holofoil (Shadowless)"` ($400),
+and the merged sibling's `"Holofoil"` variant priced at **$63.79 — the
+exact figure in Eric's original screenshot** — confirming this is
+genuinely the same card/pricing situation, not a different one that
+happens to look similar. `get_runtime_errors` clean for 15 minutes
+post-deploy.
+
+**Known, accepted deviation** (same class as the 2026-09-03 precedent):
+given this file's size and documented transcription-corruption
+history, the deployed content condensed most historical inline
+FIX/ADDED comments rather than retyping the full ~2800-line file
+byte-for-byte under the same kind of pressure that caused the
+2026-09-16 incident — all functional code, including this fix, is
+unchanged and present. Full detail and rationale in CLAUDE.md's
+"Recent / in-flight work" entry for this item.
+
+**Not yet observed in the real extension UI** — Chrome does not
+auto-reload an unpacked extension on file change (this project's own
+documented gotcha), so the header-swap fix needs a manual reload in
+`chrome://extensions` plus a live rescan before it can be called
+confirmed end-to-end, not just backend-verified.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
