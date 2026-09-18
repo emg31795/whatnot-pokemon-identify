@@ -1367,6 +1367,54 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Sell-through tier rebuilt on raw sales velocity (replaces Months of
+  Supply) — BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-17**
+  (`dpl_9247De5JKpxzy8RAcWFCiRE58Jsx`, `READY`, aliased to
+  `whatnot-pokemon-identify.vercel.app`, `aliasError: null`). Per
+  Eric's explicit request: Months of Supply (Current Quantity ÷ (Total
+  Sold ÷ 3)) used TCGplayer's own listing count as a stand-in for
+  competing supply, but the real selling venue is eBay — TCGplayer's
+  listing glut doesn't reflect real eBay competition, while Total Sold
+  (demand) transfers across platforms reasonably. Tier is now
+  classified directly off raw monthly pace (Total Sold ÷ 3) alone:
+  Stagnant <5/mo, Slow 5-49/mo, Normal 50-599/mo, Fast-flip 600+/mo (0
+  sold lands in Stagnant with no special case). The entire
+  mp-search-api Current-Quantity fetch (`fetchCurrentListingQuantity`
+  and friends) is removed — confirmed via grep it was used nowhere
+  else (`listingCount` is a separate, PPT-sourced field) — dropping a
+  network round-trip and failure point from every `/api/price` call.
+  Badge now shows raw pace ("142/mo", one decimal below 50/mo) instead
+  of "X.X mo supply"; tooltip shows "Total Sold (3mo): N · Pace: X/mo"
+  in place of the old Total Sold/Current Quantity/Months of Supply
+  trio. Suggested Max Bid's formula/margin table and the `(Bid: —)`
+  dash behavior are untouched.
+
+  **Real transcription mistake caught this deploy**: the first attempt
+  (`dpl_7zzoxvBDrV23kZgtAdyWg4j1UjMJ`) hand-retyped `package.json` and
+  got it wrong (dropped `"private": true`, altered the description
+  text) — non-functional but caught via a direct `diff` against source
+  immediately after, and fixed with a second, diff-verified-correct
+  deploy. `api/identify.js` was comment-stripped proactively from the
+  start this time (per the lesson from the prior deploy) and
+  line-by-line diff-verified against source before ever deploying.
+
+  **Live-confirmed**: real end-to-end scan (Pikachu XY95) returned
+  correct ID and a `/api/price` call returned `sellThrough:
+  {monthlyPace: 2.6667, tier: "Stagnant", totalSold: 8}` — no
+  `currentQuantity`/`monthsOfSupply` anywhere — with
+  `conditionsSuggestedBid.NM` matching the hand-verified formula. Real
+  runtime logs for this scan and an incidental second organic scan
+  show `/api/price` logging only `[tcgplayer-price] productId=...
+  skus=N` — no `mp-search-api` line — confirming the removed fetch is
+  genuinely gone from the live code path. `get_runtime_errors` clean
+  for 15 minutes post-deploy. Full trace, including the boundary
+  hand-calc and mocked-fetch/jsdom test verification, in
+  `docs/test-cases.md`'s "Feature: sell-through tier rebuilt on raw
+  sales velocity" section. **Not yet observed in the real extension
+  UI** (backend-verified via curl only so far) — worth a reload + live
+  rescan next time the extension is touched. **Not yet pushed to
+  GitHub** — pending go-ahead.
+
 - **Suggested Max Bid — replaces the raw break-even figure as the
   primary inline number, liquidity-adjusted by Months-of-Supply tier —
   BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-17**

@@ -827,17 +827,43 @@
   // Renders no tooltip at all when there's nothing to show (undefined
   // `breakEven`, e.g. the graded-slab fallback branch, which doesn't call
   // this with a second argument).
+  // CHANGED (2026-09-17): tier basis moved from Months of Supply
+  // (Current Quantity / (Total Sold / 3)) to raw monthly sales pace
+  // (Total Sold / 3) alone — see api/identify.js's computeSellThrough
+  // comment for why (TCGplayer's own supply figure doesn't reflect real
+  // competition on eBay, the actual selling venue). `sellThrough` no
+  // longer carries monthsOfSupply/currentQuantity at all, just
+  // {monthlyPace, tier, totalSold}.
+  //
+  // Formatting judgment call: a low-volume card (e.g. 1.3/mo) is more
+  // informative with a decimal than rounded to "1/mo", but a high-volume
+  // one (e.g. 612/mo) shouldn't show a meaningless "612.0/mo" — so paces
+  // under 50/month (i.e. within the Stagnant/Slow tiers, where a
+  // fraction of a sale a month is a real distinction) keep one decimal,
+  // and paces at/above 50/month (Normal/Fast-flip) round to a whole
+  // number.
+  function formatMonthlyPace(pace) {
+    return pace < 50 ? pace.toFixed(1) : String(Math.round(pace));
+  }
+
   function sellThroughBadgeHtml(sellThrough, breakEven) {
     if (!sellThrough || !sellThrough.tier) return "";
     const cls = SELL_THROUGH_TIER_CLASS[sellThrough.tier] || "";
-    const mos = sellThrough.monthsOfSupply;
-    const detail = mos != null ? `${mos.toFixed(1)} mo supply` : "0 sold in 3mo";
+    const pace = sellThrough.monthlyPace;
+    const detail = `${formatMonthlyPace(pace)}/mo`;
     const beParts = breakEven
       ? CONDITION_ORDER.filter((t) => breakEven[t] != null).map(
           (t) => `${t} ${breakEven[t] < 0 ? "-$" + Math.abs(breakEven[t]).toFixed(2) : "$" + breakEven[t].toFixed(2)}`
         )
       : [];
-    const titleAttr = beParts.length ? ` title="Break-even (zero-profit floor): ${escapeHtml(beParts.join(" · "))}"` : "";
+    // CHANGED (2026-09-17): tooltip's underlying-numbers section now
+    // shows Total Sold + monthly pace (the two inputs the tier is
+    // actually computed from) in place of the old Total Sold/Current
+    // Quantity/Months of Supply trio — Current Quantity no longer exists
+    // for this feature at all.
+    const salesLine = `Total Sold (3mo): ${sellThrough.totalSold} · Pace: ${formatMonthlyPace(pace)}/mo`;
+    const titleParts = [salesLine, beParts.length ? `Break-even (zero-profit floor): ${beParts.join(" · ")}` : ""].filter(Boolean);
+    const titleAttr = titleParts.length ? ` title="${escapeHtml(titleParts.join(" — "))}"` : "";
     return `<div class="wnpk-sell-through ${cls}"${titleAttr}>${escapeHtml(sellThrough.tier)} <span class="wnpk-sell-through-detail">· ${escapeHtml(detail)}</span></div>`;
   }
 

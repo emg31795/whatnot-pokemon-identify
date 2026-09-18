@@ -5478,6 +5478,107 @@ stale request.
 
 Pushed to GitHub (`143192f..a2c1d79`, `main`).
 
+## Feature: sell-through tier rebuilt on raw sales velocity (2026-09-17)
+
+**Change, per Eric's explicit request**: Months of Supply (Current
+Quantity ÷ (Total Sold ÷ 3)) replaced with a tier classified directly
+off raw monthly sales pace (Total Sold ÷ 3) alone. Rationale: the
+actual selling venue is eBay, not TCGplayer — TCGplayer's own listing
+glut doesn't reflect real competition on eBay, while Total Sold
+(demand) transfers across platforms reasonably. New tiers: Stagnant
+<5/mo, Slow 5-49/mo, Normal 50-599/mo, Fast-flip 600+/mo (Total Sold=0
+lands in Stagnant with no special case, since 0÷3=0 is already <5).
+
+**Removed entirely**: the mp-search-api Current-Quantity fetch
+(`fetchCurrentListingQuantity`, `sumListingQuantity`,
+`TCGPLAYER_LISTINGS_TIMEOUT_MS`, `TIER_TO_CONDITION_NAME`) —confirmed
+via grep it was used nowhere else (`listingCount` is a separate,
+unrelated field sourced from PPT's own match-time data, not this
+endpoint). This also drops a network round-trip and a failure point
+from every `/api/price` call; `buildLiveVariantsForCandidate`'s
+per-variant loop is no longer async/parallel-fetched for this, just
+synchronous math off `basePriceTierSold` (already on the variant from
+the existing price-history fetch).
+
+Badge detail text changed from "1.0 mo supply" to a raw pace figure
+(e.g. "142/mo"), one decimal below 50/month, whole number at/above (a
+formatting judgment call — low-volume paces are more informative with
+a decimal, high-volume ones don't need one). The badge's tooltip now
+leads with "Total Sold (3mo): N · Pace: X/mo" in place of the old
+Total Sold/Current Quantity/Months of Supply trio, still followed by
+the unchanged break-even figures.
+
+**Everything else deliberately untouched**: Suggested Max Bid's
+formula/margin table (Fast-flip 15%, Normal 30%, Slow 50%, Stagnant
+100%), the `(Bid: —)` dash behavior, raw BE still computed and shown
+in the tooltip.
+
+**Verified before deploying**: boundary hand-calc at all 6 spec edges
+(4.9→Stagnant, 5.0→Slow, 49.9→Slow, 50.0→Normal, 599.9→Normal,
+600.0→Fast-flip) matched exactly. A mocked-fetch test against the real
+`buildLiveVariantsForCandidate` (not a reimplementation) confirmed the
+same 7 cases end-to-end, confirmed the mp-search-api endpoint is never
+called, confirmed `conditionsSuggestedBid` still computes correctly
+(regression check), and confirmed no stray `currentQuantity`/
+`monthsOfSupply` field survives in the response shape. A jsdom test
+drove a real click on the real `content.js` against mocked
+`/api/identify` + `/api/price` responses and confirmed both the "X/mo"
+badge formatting (a 142.33 pace → "142/mo"; a 1.33 pace → "1.3/mo") and
+the new tooltip wording render correctly, with the old wording gone.
+
+**Deploy checklist followed in full, comment-stripping used
+proactively from the start** (per the explicit lesson from the
+Suggested Max Bid deploy): `api/identify.js` (2827 lines, ~152KB) was
+mechanically stripped of comments via the `strip-comments` npm package
+before ever attempting a deploy — cut to ~62KB, same line count, and a
+line-by-line script confirmed every non-blank stripped line matched
+the real source byte-for-byte (zero code-line diffs) before deploying.
+The full sell-through test suite was re-run against the stripped file
+and passed identically, and the diacritic regex was confirmed intact
+via a direct function call before deploying.
+
+**Real transcription mistake caught and fixed on this deploy**: the
+first deploy attempt (`dpl_7zzoxvBDrV23kZgtAdyWg4j1UjMJ`) retyped
+`package.json` by hand and got it wrong in two ways — dropped
+`"private": true` and altered the `description` text — caught
+immediately afterward via a direct `diff` against the real source
+(a discipline adopted specifically because this mistake happened,
+not before). Non-functional (package.json metadata isn't read by the
+running handler) but a real, if harmless, violation of "deploy exactly
+what's committed, byte-verified." Fixed with a second deploy
+(`dpl_9247De5JKpxzy8RAcWFCiRE58Jsx`) using a diff-verified-correct
+`package.json`; `api/price.js`, `api/flag.js`, and `vercel.json` were
+also independently diff-verified byte-exact against source on this
+same pass (all three matched on the first attempt).
+
+**Confirmed live on `dpl_9247De5JKpxzy8RAcWFCiRE58Jsx`**, `READY`,
+aliased to `whatnot-pokemon-identify.vercel.app`, `aliasError: null`.
+`GET /api/identify` returns `normalizeDiacriticTest: "pokemon
+collector"` (diacritic regex intact); `POST {}` returns the real `400
+{"error":"Missing imageBase64"}`. A real end-to-end scan (the same
+Pikachu XY95 promo photo used throughout this project) returned
+correct identification (`tcgPlayerId: "114004"`, High confidence,
+`timingMs.total: 1840`ms — inside the 1-3s target) and a follow-up
+`/api/price` call returned **`sellThrough: {monthlyPace: 2.6667, tier:
+"Stagnant", totalSold: 8}`** — no `currentQuantity`/`monthsOfSupply`
+anywhere in the shape — with `conditionsSuggestedBid.NM: 81.82`
+matching the hand-verified formula (BE $163.64 ÷ 2.0 Stagnant margin =
+$81.82). Real runtime logs for both this scan and an incidental second
+organic-looking scan (Regigigas VSTAR, Japanese) show the `/api/price`
+calls logging only `[tcgplayer-price] productId=... skus=N` — no
+`mp-search-api` line anywhere — directly confirming the Current-
+Quantity fetch is gone from the live code path, not just from the
+diff. `[haiku-shadow-test]`/`[legacy-model-shadow-test]` both fired
+normally on the real scans, confirming unrelated features are
+unaffected. `get_runtime_errors` clean for the 15 minutes following
+deploy.
+
+**Not yet observed**: the badge rendering live in the actual extension
+UI (only backend-verified via curl so far, same gap pattern as prior
+features before their own follow-up screenshot confirmation) — worth a
+reload + live rescan next time the extension is touched. Not pushed to
+GitHub yet — pending go-ahead.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
