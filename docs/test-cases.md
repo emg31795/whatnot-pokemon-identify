@@ -5428,12 +5428,53 @@ functional code (including the new `REQUIRED_MARGIN_BY_TIER`/
 verified against the git-committed source. Not worth a dedicated
 redeploy just to resync comments.
 
-**Not yet observed in the real extension UI** — needs a manual reload
-in `chrome://extensions` plus a live rescan to move from
-"backend live-confirmed" to "observed working in the real panel," same
-gap as every other extension-side change in this project.
-
 Pushed to GitHub (`1d393ca..cc93964`, `main`).
+
+**Observed working in the real extension UI, 2026-09-17, same day**:
+user reloaded the extension and sent a real screenshot of a live scan
+(Geodude, Expedition, Reverse Holofoil, Read: High, Match: High, "none
+stamp" note, "Stagnant · 9.0 mo supply" sell-through badge) showing the
+new label and values rendering correctly: `LP $13.79 (Bid: $5.31)`,
+`MP $15.00 (Bid: $5.83)`, `HP $8.14 (Bid: $2.91)`,
+`DMG $5.58 (Bid: $1.80)`, with NM correctly showing "—" (TCGplayer had
+no live data for that tier on this printing — a normal, unrelated
+missing-price case, not a Bid-specific gap). No trace of the old "BE:"
+label anywhere in the panel.
+
+Hand-verified all four visible tiers against the real formula
+(Stagnant tier → 100% required margin → suggested bid = BE ÷ 2, using
+the exact double-rounding the code performs — BE rounded to cents
+first, then divided and rounded again):
+- LP $13.79: fee = 0.1325×13.79+0.40 = 2.227175, shipping (<$20) =
+  0.955, BE = 13.79−2.227175−0.955 = 10.607825 → **$10.61**; bid =
+  10.61÷2 = 5.305 → **$5.31** — exact match.
+- MP $15.00: fee = 0.1325×15+0.40 = 2.3875, shipping = 0.955, BE =
+  15−2.3875−0.955 = 11.6575 → **$11.66**; bid = 11.66÷2 = 5.83 —
+  exact match.
+- HP $8.14: fee = 0.1325×8.14+0.30 = 1.37855, shipping = 0.955, BE =
+  8.14−1.37855−0.955 = 5.80645 → **$5.81**; bid = 5.81÷2 = 2.905 →
+  **$2.91** — exact match.
+- DMG $5.58: fee = 0.1325×5.58+0.30 = 1.03935, shipping = 0.955, BE =
+  5.58−1.03935−0.955 = 3.58565 → **$3.59**; bid = 3.59÷2 = 1.795 →
+  **$1.80** — exact match.
+
+All four ran through a script, not just by-hand arithmetic, confirming
+no transcription slip in the verification itself. This closes the one
+remaining open item from the deploy — the feature is now confirmed
+working end-to-end in the real panel, not just backend-verified via
+curl.
+
+**Independently corroborated via real Vercel logs pulled the same
+session** (not just the one screenshot, per this project's own
+"verify, don't just trust a report" convention): `get_runtime_logs`
+over the preceding ~10 minutes showed multiple genuine
+`POST /api/identify 200` + `POST /api/price 200` pairs (Geodude,
+Glaceon EX, Meloetta, and others — real varying card reads consistent
+with genuine live scanning, not a repeated synthetic test), every one
+stamped `dep=dpl_4W1wRrbgM3UoXgP2Gb2GRgEg5rNM` (the deployment carrying
+this feature), zero errors. Confirms the screenshot reflects real,
+ongoing production traffic on the new deployment, not an isolated or
+stale request.
 
 ## Related docs
 

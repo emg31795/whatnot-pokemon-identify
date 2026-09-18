@@ -1395,10 +1395,29 @@ checklist before reporting something as finished:
   historically-documented diacritic-regex corruption once, but this
   time it was caught via a local Bash diff against the already-verified
   stripped file BEFORE any deploy call, not after. `get_runtime_errors`
-  clean for 20 minutes post-deploy. **Not yet observed in the real
-  extension UI** — needs a manual reload in `chrome://extensions` plus
-  a live rescan, same gap as every other extension-side change. Pushed
-  to GitHub (`1d393ca..cc93964`, `main`).
+  clean for 20 minutes post-deploy. Pushed to GitHub
+  (`1d393ca..cc93964`, `main`).
+
+  **Observed working in the real extension UI, 2026-09-17, same day**:
+  user reloaded the extension and sent a real screenshot of a live scan
+  (Geodude, Expedition, Reverse Holofoil, Match: High, "Stagnant · 9.0
+  mo supply" sell-through badge) showing `LP $13.79 (Bid: $5.31)`,
+  `MP $15.00 (Bid: $5.83)`, `HP $8.14 (Bid: $2.91)`,
+  `DMG $5.58 (Bid: $1.80)` — the "BE:" label is gone, replaced by
+  "Bid:" as designed; NM correctly shows "—" (no live TCGplayer data
+  for that tier on this printing, unrelated to this feature). Hand-
+  verified all four against the real Stagnant-tier formula (100%
+  margin, so suggested bid = BE ÷ 2): e.g. LP $13.79 → fee =
+  0.1325×13.79+0.40 = 2.227175, shipping (<$20) = 0.955, BE = 13.79 −
+  2.227175 − 0.955 = 10.607825 → rounds to $10.61, suggested bid =
+  10.61 ÷ 2 = 5.305 → rounds to **$5.31**, exact match; the other three
+  tiers (MP, HP, DMG) all matched exactly too. This closes the one
+  remaining open item — the feature is now confirmed end-to-end, not
+  just backend-verified. Independently corroborated via real Vercel
+  logs pulled the same session: multiple genuine `/api/identify` +
+  `/api/price` pairs in the preceding ~7 minutes, all `200`, all
+  `dep=dpl_4W1wRrbgM3UoXgP2Gb2GRgEg5rNM`, zero errors — real scanning
+  traffic on the new deployment, not just the one screenshot.
 
 - **Break-even max bid — new feature, BUILT, DEPLOYED, AND
   LIVE-CONFIRMED, 2026-09-17** (`dpl_G19142TXQjXShVC1XzdgCSbQrHDn`,
