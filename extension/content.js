@@ -717,30 +717,47 @@
   // `estimatedMap` is kept only for shape compatibility with the backend
   // response (always all-false when prices are present) — no "*" marking
   // is needed since nothing shown is ever a guess.
-  // ADDED 2026-09-17 (break-even max bid): `breakEven` is the SAME shape
-  // as `conditions` ({NM,LP,MP,HP,DMG} -> number, see
-  // api/identify.js's computeBreakEvenMaxBid) rendered inline on the same
-  // row as its condition's price — per explicit instruction, this is
-  // NOT a new row, to keep the narrow side panel compact. A negative
-  // break-even (fees + shipping exceed the sale price itself) is shown
-  // as the real signed number, not clamped to $0 — the wnpk-be-negative
-  // class makes it visually unambiguous ("don't bid on this condition at
-  // any price") without hiding the actual math. Missing/undefined
-  // `breakEven` (e.g. the graded-slab fallback branch, which has no
-  // pricingLookup-derived data at all) just omits the "(BE: ...)" suffix,
-  // same graceful-degradation pattern as a missing price already uses.
-  function conditionRowsHtml(conditions, breakEven) {
+  // CHANGED 2026-09-17 (suggested max bid): the primary inline figure on
+  // each condition row is now a liquidity-margin-adjusted suggested max
+  // bid (`suggestedBid`, SAME shape as `conditions` —
+  // {NM,LP,MP,HP,DMG} -> number|null, see api/identify.js's
+  // computeSuggestedBid), not the raw zero-profit break-even anymore —
+  // raw BE is still computed server-side but moved into the sell-through
+  // badge's tooltip (see sellThroughBadgeHtml below), a hover away rather
+  // than competing for attention mid-auction. Still rendered inline on
+  // the same row as its condition's price (per the original explicit
+  // instruction, not a new row, to keep the narrow side panel compact)
+  // and still uses the "BE:"-era `.wnpk-be`/`.wnpk-be-negative` classes
+  // (label text changed to "Bid:", styling unchanged) — a negative
+  // suggested bid is exactly as real and exactly as worth flagging in
+  // red as a negative BE was, since it's BE divided by a positive margin
+  // factor and therefore keeps the same sign.
+  //
+  // Two distinct "no number" cases, deliberately NOT collapsed into one:
+  // - `suggestedBid` param itself is undefined (e.g. the graded-slab
+  //   fallback branch below, which has no pricingLookup-derived data at
+  //   all) -> omit the suffix entirely, same graceful-degradation this
+  //   row always had.
+  // - `suggestedBid` param IS an object but this tier's value is null
+  //   (the variant's sellThrough/tier lookup failed or is missing this
+  //   scan) -> show an explicit "(Bid: —)" rather than silently doing
+  //   nothing or falling back to a different number under the same
+  //   label, per explicit instruction.
+  function conditionRowsHtml(conditions, suggestedBid) {
     return CONDITION_ORDER.map((tier) => {
       const price = conditions ? conditions[tier] : null;
-      const be = price != null && breakEven ? breakEven[tier] : null;
-      const beHtml =
-        be != null
-          ? ` <span class="wnpk-be${be < 0 ? " wnpk-be-negative" : ""}">(BE: ${
-              be < 0 ? "-$" + Math.abs(be).toFixed(2) : "$" + be.toFixed(2)
-            })</span>`
-          : "";
+      let bidHtml = "";
+      if (price != null && suggestedBid) {
+        const bid = suggestedBid[tier];
+        bidHtml =
+          bid != null
+            ? ` <span class="wnpk-be${bid < 0 ? " wnpk-be-negative" : ""}">(Bid: ${
+                bid < 0 ? "-$" + Math.abs(bid).toFixed(2) : "$" + bid.toFixed(2)
+              })</span>`
+            : ` <span class="wnpk-be">(Bid: —)</span>`;
+      }
       return `<div class="wnpk-cond-row"><span>${tier}</span><span>${
-        price != null ? "$" + price.toFixed(2) + beHtml : "—"
+        price != null ? "$" + price.toFixed(2) + bidHtml : "—"
       }</span></div>`;
     }).join("");
   }
@@ -799,12 +816,29 @@
     Slow: "wnpk-sell-slow",
     Stagnant: "wnpk-sell-stagnant",
   };
-  function sellThroughBadgeHtml(sellThrough) {
+  // ADDED 2026-09-17 (suggested max bid): `breakEven` ({NM,LP,MP,HP,DMG}
+  // -> number, see api/identify.js's computeBreakEvenMaxBid) is the raw
+  // zero-profit-floor figure that used to be the primary inline number on
+  // each condition row — now that the row shows a liquidity-adjusted
+  // suggested bid instead, the raw BE is kept available but moved here,
+  // into this badge's own native `title` tooltip (a hover away, not
+  // competing for attention mid-auction), the one existing element that
+  // already surfaces this variant's supporting pricing-liquidity detail.
+  // Renders no tooltip at all when there's nothing to show (undefined
+  // `breakEven`, e.g. the graded-slab fallback branch, which doesn't call
+  // this with a second argument).
+  function sellThroughBadgeHtml(sellThrough, breakEven) {
     if (!sellThrough || !sellThrough.tier) return "";
     const cls = SELL_THROUGH_TIER_CLASS[sellThrough.tier] || "";
     const mos = sellThrough.monthsOfSupply;
     const detail = mos != null ? `${mos.toFixed(1)} mo supply` : "0 sold in 3mo";
-    return `<div class="wnpk-sell-through ${cls}">${escapeHtml(sellThrough.tier)} <span class="wnpk-sell-through-detail">· ${escapeHtml(detail)}</span></div>`;
+    const beParts = breakEven
+      ? CONDITION_ORDER.filter((t) => breakEven[t] != null).map(
+          (t) => `${t} ${breakEven[t] < 0 ? "-$" + Math.abs(breakEven[t]).toFixed(2) : "$" + breakEven[t].toFixed(2)}`
+        )
+      : [];
+    const titleAttr = beParts.length ? ` title="Break-even (zero-profit floor): ${escapeHtml(beParts.join(" · "))}"` : "";
+    return `<div class="wnpk-sell-through ${cls}"${titleAttr}>${escapeHtml(sellThrough.tier)} <span class="wnpk-sell-through-detail">· ${escapeHtml(detail)}</span></div>`;
   }
 
   // FIX (2026-09-17, user-reported bug — live Chansey Base Set
@@ -906,10 +940,13 @@
             : marketPriceLine({ basePrice: priceData.marketPrice }, priceData.listingCount)
         }
       </div>
-      <div id="wnpk-sell-through">${sellThroughBadgeHtml(initialVariant ? initialVariant.sellThrough : priceData.sellThrough)}</div>
+      <div id="wnpk-sell-through">${sellThroughBadgeHtml(
+        initialVariant ? initialVariant.sellThrough : priceData.sellThrough,
+        initialVariant ? initialVariant.conditionsBreakEven : priceData.conditionsBreakEven
+      )}</div>
       ${variantPicker}
       <div class="wnpk-cond-label" id="wnpk-cond-label">CONDITION PRICES</div>
-      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(priceData.conditionPrices, priceData.conditionsBreakEven)}</div>
+      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(priceData.conditionPrices, priceData.conditionsSuggestedBid)}</div>
     `;
 
     // FIX (2026-09-17, see setNameForVariantKey above): keep the header's
@@ -927,8 +964,8 @@
         const variant = priceData.priceVariants[select.value];
         if (!variant) return;
         $("#wnpk-market-price").innerHTML = marketPriceLine(variant, priceData.listingCount);
-        $("#wnpk-sell-through").innerHTML = sellThroughBadgeHtml(variant.sellThrough);
-        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions, variant.conditionsBreakEven);
+        $("#wnpk-sell-through").innerHTML = sellThroughBadgeHtml(variant.sellThrough, variant.conditionsBreakEven);
+        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions, variant.conditionsSuggestedBid);
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
         if (setNameEl && identifyData) {

@@ -1825,6 +1825,42 @@ function computeSellThrough(currentQuantity, totalSold) {
   return { monthsOfSupply, tier: classifySellThroughTier(monthsOfSupply), totalSold, currentQuantity };
 }
 
+// ---------------------------------------------------------------------------
+// Suggested max bid — liquidity-adjusted break-even (2026-09-17)
+// ---------------------------------------------------------------------------
+// Feature request: the raw break-even (computeBreakEvenMaxBid above) is a
+// zero-profit floor — it says nothing about how long a card sits in
+// inventory before it actually resells. Suggested Max Bid divides BE by
+// (1 + required margin), where the required margin comes from the SAME
+// per-variant Months-of-Supply liquidity tier already computed alongside
+// Market Price (see computeSellThrough above) — the tier is a property of
+// the printing, not the individual condition, so every condition tier on
+// one variant shares the same required margin; only the BE (and therefore
+// the sale price) each divides varies per condition.
+//
+// Required margin by tier, per explicit spec — no special-case blocking
+// for Stagnant, it still produces a real (steeply discounted) number:
+//   Fast-flip: 15%   Normal: 30%   Slow: 50%   Stagnant: 100%
+//
+// Hand-verified against the spec's own examples before wiring into the
+// real per-condition loop below:
+//   Slow:      21.19 / 1.50 = 14.126666.. -> $14.13 (spec's own example, match)
+//   Stagnant:  21.19 / 2.00 = 10.595      -> $10.60 (spec's own example, match)
+//   Fast-flip: 21.19 / 1.15 = 18.426086.. -> $18.43
+const REQUIRED_MARGIN_BY_TIER = {
+  "Fast-flip": 0.15,
+  Normal: 0.3,
+  Slow: 0.5,
+  Stagnant: 1.0,
+};
+
+function computeSuggestedBid(breakEven, tier) {
+  if (breakEven == null || !Number.isFinite(breakEven)) return null;
+  const margin = tier != null ? REQUIRED_MARGIN_BY_TIER[tier] : null;
+  if (margin == null) return null;
+  return Math.round((breakEven / (1 + margin)) * 100) / 100;
+}
+
 // Fetches + builds live price variants for one candidate (identified by
 // its own tcgPlayerId), optionally relabeling every variant key with a
 // suffix tag (used for merging in a Shadowless sibling's prices — see the
@@ -1858,6 +1894,23 @@ async function buildLiveVariantsForCandidate(candidate, tag) {
       } catch (e) {
         console.error(`[sell-through] failed for tcgPlayerId=${candidate.tcgPlayerId} variant=${v.label}:`, e && e.message);
         v.sellThrough = null;
+      }
+      // ADDED (2026-09-17, suggested max bid): computed HERE, not inside
+      // buildLivePriceVariantsFromTCGPlayer above alongside
+      // conditionsBreakEven, because the required margin depends on
+      // v.sellThrough.tier — which isn't known until the Current-Quantity
+      // lookup directly above this resolves (or fails). Per condition,
+      // divides THAT condition's own conditionsBreakEven by the variant's
+      // single liquidity tier (tier is per-variant, sale price/BE is
+      // per-condition — same relationship conditionsBreakEven already has
+      // to conditions). A missing/failed tier (v.sellThrough null) makes
+      // computeSuggestedBid return null for every condition here — the
+      // frontend is what turns that into an explicit "(Bid: —)" rather
+      // than silently falling back to showing raw BE under the same label.
+      const suggestedBidTier = v.sellThrough ? v.sellThrough.tier : null;
+      v.conditionsSuggestedBid = {};
+      for (const t of Object.keys(v.conditionsBreakEven)) {
+        v.conditionsSuggestedBid[t] = computeSuggestedBid(v.conditionsBreakEven[t], suggestedBidTier);
       }
       delete v.basePriceTier;
       delete v.basePriceTierSold;

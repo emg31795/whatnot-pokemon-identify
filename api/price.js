@@ -104,6 +104,13 @@ module.exports = async function handler(req, res) {
     // right alongside conditions — pure math off the same numbers, no new
     // fetch, no added latency.
     conditionsBreakEven: chosenVariant ? chosenVariant.conditionsBreakEven : null,
+    // ADDED 2026-09-17 (suggested max bid): margin-adjusted BE, computed
+    // per-condition in buildLiveVariantsForCandidate (api/identify.js)
+    // once that variant's sellThrough tier is known — see the comment on
+    // computeSuggestedBid there for the formula/margin table. This is the
+    // PRIMARY number the extension panel shows inline now; conditionsBreakEven
+    // above is kept only as a secondary reference figure.
+    conditionsSuggestedBid: chosenVariant ? chosenVariant.conditionsSuggestedBid : null,
     // Kept for frontend/shape compatibility — always all-false now,
     // since every surviving number is genuine live TCGplayer data (see
     // buildLivePriceVariantsFromTCGPlayer in api/identify.js).
