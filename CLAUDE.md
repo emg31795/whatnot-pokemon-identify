@@ -1418,8 +1418,8 @@ checklist before reporting something as finished:
   no "mo supply" text) with all three fully-visible Suggested Bid
   values (NM $1.13, LP $1.07, MP $0.67) hand-verified exact matches
   against the Fast-flip 15%-margin formula. Closes the observation gap
-  — see `docs/test-cases.md` for the full calc. **Not yet pushed to
-  GitHub** — pending go-ahead.
+  — see `docs/test-cases.md` for the full calc. Pushed to GitHub
+  (`51c3199..2367b1a`, `main`).
 
 - **Suggested Max Bid — replaces the raw break-even figure as the
   primary inline number, liquidity-adjusted by Months-of-Supply tier —

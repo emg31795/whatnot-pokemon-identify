@@ -5589,8 +5589,8 @@ fully-visible Suggested Bid values against the real Fast-flip formula
 
 (HP's bid figure was cut off in the screenshot, not independently
 checked.) This is a real, live production scan, not a mock — closes
-the "not yet observed in the real UI" gap from the deploy. Not pushed
-to GitHub yet — pending go-ahead.
+the "not yet observed in the real UI" gap from the deploy. Pushed to
+GitHub (`51c3199..2367b1a`, `main`).
 
 ## Related docs
 
