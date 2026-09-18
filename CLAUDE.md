@@ -1521,11 +1521,15 @@ checklist before reporting something as finished:
   dedicated redeploy just to resync comments — fold a byte-exact resync
   into the next real code change to this file.
 
-  Extension frontend changes (`content.js`/`content.css`) are not
-  something Vercel deploys — per this project's own documented gotcha,
-  they need a manual reload in `chrome://extensions` plus a live rescan
-  before the break-even display can be called "observed working in the
-  real panel," not just backend-verified.
+  **Observed working in the real extension UI, same day**: user reloaded
+  the extension and sent a real screenshot of a live scan (SV11B: Black
+  Bolt, Japanese card, High/High, Holofoil $4.95) showing
+  `NM $4.95 (BE: $3.04)` and `LP $3.33 (BE: $1.63)` rendering correctly
+  inline, no wrapping. Hand-verified both against the formula (NM:
+  4.95−0.955875−0.955=3.039125→$3.04; LP: 3.33−0.741225−0.955=1.633775
+  →$1.63) — exact matches. Closes the "not yet observed" gap; the
+  feature is now confirmed end-to-end, not just backend-verified. See
+  the matching entry in `docs/test-cases.md` for the full trace.
 
   **Lesson for next time this file needs a full-content deploy**: a
   large `api/identify.js` payload can silently fail to transmit as part

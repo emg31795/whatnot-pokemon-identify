@@ -5311,11 +5311,20 @@ mechanically rather than by inspection. The git-committed source (full
 comments) remains the source of truth; not worth a dedicated redeploy
 just to resync comments.
 
-**Not yet observed in the real extension UI** — `content.js`/
-`content.css` changes need a manual reload in `chrome://extensions`
-(Chrome doesn't auto-reload an unpacked extension) plus a live rescan
-before the break-even display is confirmed working in the actual panel,
-not just backend-verified.
+**Observed working in the real extension UI, 2026-09-17, same day**:
+user reloaded the extension and sent a real screenshot of a live scan
+(SV11B: Black Bolt, コビット/Gobbit-line Japanese card, High/High,
+Holofoil $4.95, 30 listings, Normal/1.5 mo supply sell-through badge
+also visible and correctly unaffected) showing the break-even feature
+rendering exactly as designed: `NM $4.95 (BE: $3.04)` and
+`LP $3.33 (BE: $1.63)`, inline on the same row as each price, muted
+styling, no wrapping in the narrow panel. Hand-verified both against the
+formula: NM $4.95 → fee = 0.1325×4.95+0.30 = 0.955875, shipping
+(<$20) = $0.955, maxBid = 4.95−0.955875−0.955 = 3.039125 → **$3.04**,
+exact match. LP $3.33 → fee = 0.1325×3.33+0.30 = 0.741225, shipping =
+$0.955, maxBid = 3.33−0.741225−0.955 = 1.633775 → **$1.63**, exact
+match. This closes the one remaining open item from the deploy — the
+feature is now confirmed working end-to-end, not just backend-verified.
 
 ## Related docs
 
