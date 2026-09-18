@@ -5433,6 +5433,8 @@ in `chrome://extensions` plus a live rescan to move from
 "backend live-confirmed" to "observed working in the real panel," same
 gap as every other extension-side change in this project.
 
+Pushed to GitHub (`1d393ca..cc93964`, `main`).
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

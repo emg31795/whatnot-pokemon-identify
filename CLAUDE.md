@@ -1397,7 +1397,8 @@ checklist before reporting something as finished:
   stripped file BEFORE any deploy call, not after. `get_runtime_errors`
   clean for 20 minutes post-deploy. **Not yet observed in the real
   extension UI** — needs a manual reload in `chrome://extensions` plus
-  a live rescan, same gap as every other extension-side change.
+  a live rescan, same gap as every other extension-side change. Pushed
+  to GitHub (`1d393ca..cc93964`, `main`).
 
 - **Break-even max bid — new feature, BUILT, DEPLOYED, AND
   LIVE-CONFIRMED, 2026-09-17** (`dpl_G19142TXQjXShVC1XzdgCSbQrHDn`,
