@@ -5326,6 +5326,113 @@ $0.955, maxBid = 3.33−0.741225−0.955 = 1.633775 → **$1.63**, exact
 match. This closes the one remaining open item from the deploy — the
 feature is now confirmed working end-to-end, not just backend-verified.
 
+## Feature: Suggested Max Bid — replaces raw break-even as the primary inline figure, liquidity-adjusted by Months-of-Supply tier — BUILT, DEPLOYED, AND LIVE-CONFIRMED (2026-09-17)
+
+Per explicit request: the raw break-even (BE) figure shipped hours
+earlier is a zero-profit floor, but says nothing about how long a card
+sits in inventory before it resells — a Stagnant card tying up capital
+for 6+ months needs a bigger safety margin than a Fast-flip card that
+turns over in under a month. Suggested Max Bid divides BE by
+`(1 + required margin)`, where the margin comes from that printing's
+own Months-of-Supply liquidity tier (already computed once per variant
+alongside Market Price, see the Months of Supply feature above):
+Fast-flip 15%, Normal 30%, Slow 50%, Stagnant 100% — no special-case
+blocking for Stagnant, it still produces a real (steeply discounted)
+number.
+
+**One real deviation from the spec's own wording, flagged before
+building**: the spec described this as a per-tier loop inside
+`buildLivePriceVariantsFromTCGPlayer` (api/identify.js), the same
+function that computes `conditionsBreakEven`. It actually had to be
+computed one function later, inside `buildLiveVariantsForCandidate`,
+because the required margin depends on `sellThrough.tier`, which isn't
+known until the separate Current-Quantity lookup resolves (or fails) —
+that lookup runs strictly after `buildLivePriceVariantsFromTCGPlayer`
+returns. `conditionsBreakEven` itself is untouched, still computed in
+its original spot.
+
+**Missing-tier case**: when `sellThrough` is null (the Current-Quantity
+lookup failed), `computeSuggestedBid` returns null for every condition
+on that variant — the frontend renders this as an explicit
+`(Bid: —)`, never silently falling back to showing raw BE under the
+same label.
+
+**Where raw BE went**: this codebase has no existing expandable/detail
+panel — the sell-through badge only ever showed inline "X.X mo supply"
+text, never a breakdown of Total Sold/Current Quantity as separate
+numbers. Raw BE was moved into that badge's native `title` tooltip
+(hover, `cursor: help` added), e.g. hovering "Slow" shows
+"Break-even (zero-profit floor): NM $21.19 · LP $12.88" — flagged as an
+interpretation of "a click away," not a literal existing element, since
+no such element existed to reuse.
+
+**Verified before deploying, three ways**: (1) a hand-calc script
+matched the spec's own worked examples exactly — Slow: BE $21.19 →
+$14.13; Stagnant: BE $21.19 → $10.60; plus Fast-flip/Normal and a
+negative-BE case (stays negative after dividing by a positive margin
+factor); (2) a mocked-fetch test against the real (unmodified)
+`buildLiveVariantsForCandidate` confirmed a live-shaped Slow-tier
+variant (NM BE $21.19 → suggestedBid $14.13) and the missing-tier case
+(listings fetch fails → `sellThrough: null` → every
+`conditionsSuggestedBid` value null, object still present, not the
+whole field null); a second mocked test against the real `api/price.js`
+handler confirmed the field reaches the actual JSON response with no
+stale fields; (3) a jsdom-backed test running the real, extracted
+`conditionRowsHtml`/`sellThroughBadgeHtml` functions (not
+reimplemented) confirmed the rendered HTML: `(Bid: $14.13)`, the
+negative-bid red/bold class, the explicit `(Bid: —)` placeholder, the
+undefined-param graceful-degradation case (graded-slab fallback branch,
+unchanged), and the tooltip's `NM $21.19 · LP $12.88` content.
+
+**Deploy — comment-stripping used proactively from the start this
+time**, per explicit instruction after the break-even feature's deploy
+earlier the same day needed 4 failed attempts before landing on
+`strip-comments`. `api/identify.js` was mechanically stripped
+(strip-comments npm package) to 65KB before ever attempting a deploy
+call. A manual reconstruction pass (needed to assemble the deploy
+payload) hit the SAME historically-documented diacritic-regex
+corruption on the first attempt — `.replace(/[̀-ͯ]/g, "")`
+came out as literal Unicode combining characters — but this time it was
+caught locally via a Bash diff against the already-verified stripped
+file BEFORE any deploy call was made, not after: `diff` flagged every
+differing line, a script confirmed all of them were comment-only except
+the regex line, and the regex line was fixed non-generatively by
+splicing the exact correct bytes from the verified source (not
+retyping), then re-diffed clean (zero non-comment differences) and
+re-tested against the mocked e2e suite before deploying. The full
+5-file production deploy succeeded on the first attempt:
+`dpl_4W1wRrbgM3UoXgP2Gb2GRgEg5rNM`, `READY`, aliased to
+`whatnot-pokemon-identify.vercel.app`, `aliasError: null`, build log
+confirms "Downloading 5 deployment files", 3 lambdas built.
+
+**Live-confirmed**: `GET /api/identify` returns
+`normalizeDiacriticTest: "pokemon collector"` (diacritic regex deployed
+intact); `POST {}` returns the real `400 {"error":"Missing
+imageBase64",...}`; a real scan (the project's standard Pikachu XY95
+promo ground-truth photo, fetched from TCGplayer's own public CDN)
+returned correct identification (`tcgPlayerId: "114004"`, High
+confidence, `timingMs.total: 2007ms` — inside the 1-3s target); the
+follow-up `/api/price` call returned real live TCGplayer data with
+`sellThrough.tier: "Slow"` and **`conditionsSuggestedBid: {NM: 109.09,
+LP: 55.89, MP: 34.47, HP: 29.25, DMG: 16.4}`** alongside
+`conditionsBreakEven: {NM: 163.64, LP: 83.84, MP: 51.71, HP: 43.88,
+DMG: 24.6}` — hand-verified NM: 163.64 / 1.5 (Slow margin) =
+109.0933... → rounds to $109.09, exact match; all 5 tiers checked and
+correct. `get_runtime_errors` clean for the 20 minutes following
+deploy.
+
+**Known, accepted deviation, same class as prior entries**: the live
+deployed `api/identify.js` has comments mechanically stripped —
+functional code (including the new `REQUIRED_MARGIN_BY_TIER`/
+`computeSuggestedBid`/`conditionsSuggestedBid` lines) is unchanged and
+verified against the git-committed source. Not worth a dedicated
+redeploy just to resync comments.
+
+**Not yet observed in the real extension UI** — needs a manual reload
+in `chrome://extensions` plus a live rescan to move from
+"backend live-confirmed" to "observed working in the real panel," same
+gap as every other extension-side change in this project.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

@@ -1367,6 +1367,38 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Suggested Max Bid — replaces the raw break-even figure as the
+  primary inline number, liquidity-adjusted by Months-of-Supply tier —
+  BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-17**
+  (`dpl_4W1wRrbgM3UoXgP2Gb2GRgEg5rNM`, `READY`, aliased to
+  `whatnot-pokemon-identify.vercel.app`, `aliasError: null`, 3 lambdas
+  built). Per explicit follow-up request the same day as the break-even
+  feature directly below: BE alone doesn't account for how long a card
+  sits in inventory before reselling, so each condition's BE is now
+  divided by `(1 + required margin)`, where the margin comes from that
+  printing's own Months-of-Supply liquidity tier — Fast-flip 15%,
+  Normal 30%, Slow 50%, Stagnant 100% (no blocking, Stagnant just
+  produces a steeply-discounted real number). Formula, deviation from
+  the spec's exact wording, verification (hand-calc + mocked e2e +
+  jsdom render tests), and the live-confirmed numbers (a real Pikachu
+  XY95 scan: NM BE $163.64 ÷ 1.5 Slow-margin = suggested bid $109.09,
+  exact match across all 5 tiers) are in `docs/test-cases.md`'s
+  "Feature: Suggested Max Bid" section — not repeated here in full.
+  Raw BE is still computed and returned by the backend
+  (`conditionsBreakEven`), just moved out of the primary inline label
+  into the sell-through badge's native tooltip (hover), since this
+  codebase has no existing expandable detail view to reuse — flagged as
+  an interpretation, not a literal match to the spec's wording.
+  **Comment-stripping was used proactively from the start this time**
+  (per the explicit lesson from the break-even deploy's 4 failed
+  attempts, below) — the reconstruction pass still hit the SAME
+  historically-documented diacritic-regex corruption once, but this
+  time it was caught via a local Bash diff against the already-verified
+  stripped file BEFORE any deploy call, not after. `get_runtime_errors`
+  clean for 20 minutes post-deploy. **Not yet observed in the real
+  extension UI** — needs a manual reload in `chrome://extensions` plus
+  a live rescan, same gap as every other extension-side change.
+
 - **Break-even max bid — new feature, BUILT, DEPLOYED, AND
   LIVE-CONFIRMED, 2026-09-17** (`dpl_G19142TXQjXShVC1XzdgCSbQrHDn`,
   `READY`, aliased to `whatnot-pokemon-identify.vercel.app`,
