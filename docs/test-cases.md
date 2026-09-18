@@ -5573,11 +5573,24 @@ normally on the real scans, confirming unrelated features are
 unaffected. `get_runtime_errors` clean for the 15 minutes following
 deploy.
 
-**Not yet observed**: the badge rendering live in the actual extension
-UI (only backend-verified via curl so far, same gap pattern as prior
-features before their own follow-up screenshot confirmation) — worth a
-reload + live rescan next time the extension is touched. Not pushed to
-GitHub yet — pending go-ahead.
+**Observed working in the real extension UI, 2026-09-17, same day**:
+user sent a real screenshot of a live scan (Pawmi, SV: Paldean Fates,
+Read: High, Match: Low, "none stamp" note) showing the new badge
+rendering correctly: **`Fast-flip · 892/mo`** — the new raw-pace
+wording, no trace of the old "mo supply" text. Hand-verified all three
+fully-visible Suggested Bid values against the real Fast-flip formula
+(15% required margin, bid = BE ÷ 1.15):
+- NM $2.95 → fee = 0.1325×2.95+0.30 = 0.690875, shipping = 0.955 → BE
+  = $1.30 → bid = 1.30÷1.15 = **$1.13** — exact match.
+- LP $2.87 → fee = 0.680275, shipping = 0.955 → BE = $1.23 → bid =
+  1.23÷1.15 = **$1.07** — exact match.
+- MP $2.33 → fee = 0.608725, shipping = 0.955 → BE = $0.77 → bid =
+  0.77÷1.15 = **$0.67** — exact match.
+
+(HP's bid figure was cut off in the screenshot, not independently
+checked.) This is a real, live production scan, not a mock — closes
+the "not yet observed in the real UI" gap from the deploy. Not pushed
+to GitHub yet — pending go-ahead.
 
 ## Related docs
 

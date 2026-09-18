@@ -1410,9 +1410,15 @@ checklist before reporting something as finished:
   for 15 minutes post-deploy. Full trace, including the boundary
   hand-calc and mocked-fetch/jsdom test verification, in
   `docs/test-cases.md`'s "Feature: sell-through tier rebuilt on raw
-  sales velocity" section. **Not yet observed in the real extension
-  UI** (backend-verified via curl only so far) — worth a reload + live
-  rescan next time the extension is touched. **Not yet pushed to
+  sales velocity" section.
+
+  **Observed working in the real extension UI, same day**: user sent a
+  real screenshot of a live scan (Pawmi, SV: Paldean Fates) showing the
+  badge correctly rendering `Fast-flip · 892/mo` (new raw-pace wording,
+  no "mo supply" text) with all three fully-visible Suggested Bid
+  values (NM $1.13, LP $1.07, MP $0.67) hand-verified exact matches
+  against the Fast-flip 15%-margin formula. Closes the observation gap
+  — see `docs/test-cases.md` for the full calc. **Not yet pushed to
   GitHub** — pending go-ahead.
 
 - **Suggested Max Bid — replaces the raw break-even figure as the
