@@ -5155,6 +5155,168 @@ documented gotcha), so the header-swap fix needs a manual reload in
 `chrome://extensions` plus a live rescan before it can be called
 confirmed end-to-end, not just backend-verified.
 
+## Feature: Break-even max bid — investigation-free build (pure math, no external API), BUILT, DEPLOYED, AND LIVE-CONFIRMED (2026-09-17)
+
+**Request**: alongside each condition price (NM/LP/MP/HP/DMG), show a
+"break-even max bid" — the most Eric could pay for a card in that exact
+condition and still break even if it resells at that condition's own
+listed price. Per explicit instruction, labeled `BE:` (not `Max:`) since
+"Max" risks being misread mid-auction as "safe to bid up to," when it's
+actually the point where profit is exactly zero.
+
+**Formula** (verified against Eric's own hand-calculated example before
+writing any code — see below):
+```
+Max Bid = Sale Price − eBay Fee − Shipping
+eBay Fee = 0.1325 × Sale Price + fixed fee ($0.30 if Sale Price ≤ $10,
+           else $0.40)
+Shipping = $0.955 if Sale Price < $20 (single-card eBay Standard
+           Envelope, all-in), else $5.80 (Ground Advantage)
+```
+Computed independently per condition, never once off NM and reused —
+sale price (and both fees) differ by condition.
+
+**No live-investigation step needed** (unlike the Months-of-Supply
+feature above) — this is pure computation off numbers `api/price.js`
+already has in hand (`conditionPrices`), no new external endpoint to
+verify.
+
+**Where computed — server-side**, per Eric's own suggested default given
+this project's general pattern of keeping money-math server-side, near
+its inputs: `computeBreakEvenMaxBid()`, new in `api/identify.js`, called
+inside `buildLivePriceVariantsFromTCGPlayer` right alongside where
+`conditions[t]` itself is set. Each variant now carries a parallel
+`conditionsBreakEven` map (same `{NM,LP,MP,HP,DMG}` shape as
+`conditions`, only for tiers with a real price). `api/price.js` forwards
+`chosenVariant.conditionsBreakEven` as a new top-level
+`conditionsBreakEven` response field — zero new fetches, zero added
+latency, since it rides on data already being computed.
+
+**Negative break-even (own judgment call)**: a cheap enough condition
+price can produce a negative Max Bid once fees/shipping exceed the sale
+price. Decided to show the real signed number, not clamp to $0.00 —
+matches this project's standing design principle of surfacing honest
+numbers rather than hiding them (see CLAUDE.md's "Key design
+principle"). A new `.wnpk-be-negative` CSS class (red/bold, same family
+as the existing `.wnpk-price-error` styling) makes a negative value
+visually unambiguous as "don't bid on this condition at any price."
+
+**UI placement**: inline on the SAME row as each condition's existing
+price (e.g. `NM $5.29 (BE: $3.33)`) — explicitly NOT a new row, to keep
+the narrow 260px side panel compact. `extension/content.js`'s
+`conditionRowsHtml()` now takes a second `breakEven` param; both real
+call sites (initial render, and the print-variant dropdown's `change`
+listener) pass `conditionsBreakEven` through. The graded-slab
+`gradedPriceUnavailable` fallback branch (already a known, separately
+flagged gap — see the 2026-09-10 identify/pricing-decoupling entry —
+that branch has no live `conditionPrices` at all since the decoupling)
+is left untouched; it simply has no break-even data either, same
+degradation as its existing missing-price gap, not a new one.
+
+**Verified locally, three ways, against the real (not reimplemented)
+code — no code deployed yet**:
+
+1. **Formula correctness, hand-calculated**: Sale Price $5.29 → eBay fee
+   = 0.1325×5.29+0.30 = $1.000925 → shipping $0.955 (< $20) → Max Bid =
+   5.29 − 1.000925 − 0.955 = 3.334075 → rounds to **$3.33** — exactly
+   matching Eric's own worked example.
+
+2. **Mocked-fetch test against the real `buildLiveVariantsForCandidate`**
+   (`api/identify.js`, not a reimplementation) — 4 cases:
+   - $5.29 → conditionsBreakEven.NM = **3.33** (Eric's example, exact
+     match).
+   - $0.50 → conditionsBreakEven.NM = **-0.82** (a real negative
+     break-even, confirming the "don't clamp" decision produces the
+     correct signed number: fee 0.1325×0.50+0.30=0.36625, shipping
+     0.955, maxBid = 0.50−0.36625−0.955 = −0.82125 → −0.82).
+   - $10.01 → **7.33** and $20.00 → **11.15** — the two fee/shipping
+     boundary transitions (fixed fee $0.30→$0.40 above $10; shipping
+     $0.955→$5.80 at/above $20) both land correctly.
+   - Partial-coverage input (only NM + MP prices present) → only those
+     2 tiers get a `conditionsBreakEven` entry, matching how `conditions`
+     itself already handles missing tiers.
+
+3. **Mocked-fetch test against the real `api/price.js` `handler()`**
+   end-to-end (full HTTP request/response cycle, no reimplementation) —
+   confirmed `conditionsBreakEven: {"NM": 3.33}` reaches the actual JSON
+   response body a real client would receive, with the rest of the shape
+   (`conditionPrices`, `priceVariants`, `sellThrough`, etc.) unchanged and
+   no stale/leftover fields.
+
+4. **jsdom harness driving the real, unmodified `extension/content.js`**
+   — loaded the actual file (only chrome.* APIs and video layout/canvas
+   stubbed, since a plain webpage can't provide those), dispatched a real
+   click on the Identify Card button against mocked `/api/identify` +
+   `/api/price` responses (NM $5.29/BE $3.33, LP $0.50/BE -$0.82), and
+   confirmed the ACTUAL rendered DOM:
+   `<div class="wnpk-cond-row"><span>NM</span><span>$5.29 <span
+   class="wnpk-be">(BE: $3.33)</span></span></div>` and the LP row
+   correctly carrying `wnpk-be-negative` and `(BE: -$0.82)`, with the NM
+   row's positive break-even confirmed NOT carrying that class.
+
+**Deploy incident — a new failure mode, honestly disclosed.** Four
+consecutive attempts to deploy the full 5-file array to production each
+silently omitted `api/identify.js` from the submitted `files` array,
+despite explicit intent to include it each time — new, distinct from
+every prior deploy incident in this project's history (which were
+either a caught accidental omission or genuine diacritic-regex
+transcription corruption). All four were caught immediately via
+`get_deployment` (`readyState: "ERROR"`, `errorCode: "unused_function"`)
+before ever reaching `READY` or the live alias — zero production
+impact. Root cause isolated via a diagnostic: an isolated preview
+deploy of a small placeholder stub for `api/identify.js` alone went
+`READY` immediately, confirming the omission was specific to the REAL
+file's ~153KB size, not random.
+
+**Fix**: applied this project's own established "condense this file's
+comments under deploy pressure" precedent, but MECHANICALLY this time —
+the `strip-comments` npm package (a real JS-aware parser, confirmed to
+correctly leave `//` inside URL strings untouched, unlike a naive regex)
+cut `api/identify.js` from 153KB to 64KB, comments only. A line-by-line
+diff script confirmed all 2867 lines match the real source byte-for-byte
+except for fully-blanked comment lines — zero code lines differ,
+confirmed mechanically rather than by inspection. Re-ran the exact
+break-even mocked-fetch tests above against the stripped file (identical
+pass) plus a direct `GET`-debug-endpoint simulation confirming
+`normalizeDiacriticTest: "pokemon collector"` survived the strip. An
+isolated preview deploy of the real stripped file confirmed it
+transmits correctly (the resulting build error moved from
+`api/identify.js` to the deliberately-omitted `api/price.js`, proving
+`api/identify.js` was no longer the problem) before the real production
+deploy was attempted.
+
+**DEPLOYED AND LIVE-CONFIRMED**: `dpl_G19142TXQjXShVC1XzdgCSbQrHDn`,
+`READY`, aliased to `whatnot-pokemon-identify.vercel.app`,
+`aliasError: null`, 3 lambdas built. Live `GET /api/identify` returns
+`normalizeDiacriticTest: "pokemon collector"`; live `POST {}` returns
+the real `400 {"error":"Missing imageBase64","requestId":"..."}`; a
+real end-to-end scan (Pikachu XY95 promo, fetched from TCGplayer's own
+public CDN) returned correct identification (`tcgPlayerId: "114004"`,
+High confidence, `timingMs.total: 1765`ms, inside the 1-3s target); a
+follow-up real `/api/price` call for that same card returned
+`conditionsBreakEven: {NM: 163.64, LP: 83.84, MP: 51.71, HP: 43.88,
+DMG: 24.6}` alongside `conditionPrices: {NM: 195.78, ...}` —
+hand-verified NM: fee = 0.1325×195.78+0.40 = 26.34085, shipping
+(≥$20) = $5.80, maxBid = 195.78−26.34085−5.80 = 163.63915 → rounds to
+$163.64, exact match. `sellThrough` (Months of Supply, unrelated
+pre-existing feature) also present and correct, confirming no
+regression. `get_runtime_errors` clean for the 15 minutes following
+deploy.
+
+**Known, accepted deviation**: the live deployed `api/identify.js` has
+every comment mechanically stripped (functional code unchanged and
+verified byte-identical to source) — same class of deviation as this
+project's prior comment-condensing precedents, but this time verified
+mechanically rather than by inspection. The git-committed source (full
+comments) remains the source of truth; not worth a dedicated redeploy
+just to resync comments.
+
+**Not yet observed in the real extension UI** — `content.js`/
+`content.css` changes need a manual reload in `chrome://extensions`
+(Chrome doesn't auto-reload an unpacked extension) plus a live rescan
+before the break-even display is confirmed working in the actual panel,
+not just backend-verified.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

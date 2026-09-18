@@ -1367,6 +1367,177 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Break-even max bid — new feature, BUILT, DEPLOYED, AND
+  LIVE-CONFIRMED, 2026-09-17** (`dpl_G19142TXQjXShVC1XzdgCSbQrHDn`,
+  `READY`, aliased to `whatnot-pokemon-identify.vercel.app`,
+  `aliasError: null`, 3 lambdas built). Per Eric's explicit
+  request: alongside each condition price (NM/LP/MP/HP/DMG), show the
+  most Eric could pay for a card in that condition and still break even
+  if it resells at that condition's own listed price — a zero-profit
+  floor, e.g. `NM $5.29 (BE: $3.33)`. Deliberately labeled `BE:`, not
+  `Max:` — Eric's own instruction, since "Max" risks being misread
+  mid-auction as "safe to bid up to," when it's actually where profit is
+  exactly zero.
+
+  Formula (all-in eBay + shipping):
+  ```
+  Max Bid = Sale Price − eBay Fee − Shipping
+  eBay Fee = 0.1325 × Sale Price + fixed fee ($0.30 if Sale Price ≤ $10,
+             else $0.40)
+  Shipping = $0.955 if Sale Price < $20 (single-card eBay Standard
+             Envelope, all-in), else $5.80 (Ground Advantage)
+  ```
+  Computed independently per condition (never once off NM and reused) —
+  sale price, and both fees, differ by condition.
+
+  **Computed server-side**, in `buildLivePriceVariantsFromTCGPlayer`
+  (`api/identify.js`, new `computeBreakEvenMaxBid()` right above it) —
+  right next to where `conditions` itself is built, following this
+  project's general pattern of keeping money-math server-side and near
+  its inputs (per Eric's own suggestion). Pure computation off numbers
+  already in hand — no new fetch, no added latency. Each variant now
+  also carries `conditionsBreakEven` ({NM,LP,MP,HP,DMG} → number, same
+  shape as `conditions`, present only for tiers that have a real price).
+  `api/price.js` passes `chosenVariant.conditionsBreakEven` through as a
+  new top-level `conditionsBreakEven` field, same pattern as
+  `conditionPrices`/`sellThrough`.
+
+  **Negative break-even (own judgment call, per the open question in the
+  request)**: a cheap enough condition price (e.g. $0.50) can produce a
+  negative Max Bid once fees/shipping exceed the sale price itself.
+  Decided to show the real signed number rather than clamp to $0.00 —
+  consistent with this project's standing "log real honest numbers,
+  don't hide them" design principle (see "Key design principle" above) —
+  styled with a new `.wnpk-be-negative` CSS class (red, bold, same color
+  family as the existing `.wnpk-price-error` styling) so a negative
+  value reads unambiguously as "not worth bidding on in this condition
+  at any price," not silently misleading.
+
+  **Rendered inline** in `extension/content.js`'s `conditionRowsHtml()`
+  (now takes a second `breakEven` param) — on the SAME row as each
+  condition's price, not a new row, per explicit instruction to keep the
+  narrow 260px side panel compact; small muted `.wnpk-be` styling so it
+  reads as supplementary, not a second price. Both real call sites
+  (initial render in `renderPriceSection`, and the print-variant dropdown
+  `change` listener) now pass `conditionsBreakEven` through alongside
+  `conditionPrices`. The one already-known-broken call site (the
+  graded-slab `gradedPriceUnavailable` fallback branch — see the
+  2026-09-10 "Open item" entry below) is untouched; it has no
+  `conditionsBreakEven` data either, same as it already has no
+  `conditionPrices` data, so it degrades the same way it already does
+  (no BE shown, not a new gap).
+
+  **Verified locally against the real (not reimplemented) code, three
+  ways, before any UI wiring**: (1) `node --check` passes on all 3 touched
+  files; (2) a mocked-fetch test called the real
+  `buildLiveVariantsForCandidate` (`api/identify.js`) directly — 4 cases,
+  including Eric's own hand-calculated example (**$5.29 → BE $3.33**,
+  exact match), a negative case ($0.50 → **-$0.82**), the two fee/shipping
+  boundaries ($10.01 and $20.00), and partial-coverage tiers; (3) a
+  second mocked-fetch test drove the real `api/price.js` `handler()`
+  end-to-end and confirmed `conditionsBreakEven` reaches the actual JSON
+  response body a client would receive, with no stale/unexpected fields;
+  (4) a jsdom harness loaded the real, unmodified `extension/content.js`,
+  stubbed only what a plain webpage can't provide (chrome.* APIs, video
+  layout/canvas), and drove a real click on the Identify button against
+  mocked `/api/identify` + `/api/price` responses — confirmed the actual
+  rendered DOM shows `NM $5.29 (BE: $3.33)` and `LP $0.50 (BE: -$0.82)`
+  inline on the correct rows, with `wnpk-be-negative` applied only to the
+  negative row.
+
+  **Deploy incident, honestly disclosed — a new failure mode, not the
+  historical transcription-corruption one.** Four consecutive attempts
+  at deploying the full 5-file array (`api/identify.js`, `api/price.js`,
+  `api/flag.js`, `vercel.json`, `package.json`) to production each
+  silently omitted `api/identify.js` from the submitted `files` array,
+  despite explicit intent each time to include it — a new, previously
+  undocumented failure mode distinct from every prior deploy incident in
+  this file (which were all either an accidental omission caught by
+  re-reading the call, or genuine transcription corruption of the
+  diacritic regex). All four attempts were caught immediately via
+  `get_deployment` (`readyState: "ERROR"`, `errorCode: "unused_function"`,
+  the exact same error signature this file has documented before) —
+  confirmed via the tool's own state, not assumed — and never reached
+  `READY` or touched the live alias; zero production impact across all
+  four. One attempt was also denied outright by the session's own
+  auto-mode permission classifier (flagged as a repeated "Production
+  Deploy" pattern) before it could even submit, requiring the user's
+  explicit permission grant to proceed at all.
+
+  **Root cause, isolated via a diagnostic**: a small stand-alone preview
+  deploy containing only a placeholder stub for `api/identify.js` (no
+  other files) went `READY` immediately, confirming the omission wasn't
+  random — it was specific to the REAL file's ~153KB size. Applying
+  this project's own established precedent for exactly this situation
+  (see the 2026-09-03/2026-09-16/2026-09-17 "known, accepted deviation"
+  entries elsewhere in this file, where this file's extensive historical
+  comments were condensed under deploy pressure before) — but this time
+  done MECHANICALLY rather than by hand: the `strip-comments` npm
+  package (a real JS-aware parser, not a naive `//`-matching regex —
+  confirmed it correctly leaves `//` inside URL string literals like
+  `https://...` untouched) stripped every comment from a local copy of
+  `api/identify.js`, cutting it from 153KB to 64KB. **Verified
+  mechanically, not by inspection**: a line-by-line diff script
+  confirmed all 2867 lines match the real source byte-for-byte except
+  for lines that were blanked entirely (comments) — zero code lines
+  differ. Re-ran the exact same mocked-fetch break-even tests
+  (`test-breakeven.js`) against this stripped file and they passed
+  identically, plus a direct simulation of the `GET` debug endpoint
+  confirmed `normalizeDiacriticTest: "pokemon collector"` — the
+  diacritic regex survived the strip intact (expected, since it's code,
+  not a comment). A follow-up isolated preview deploy of the REAL
+  stripped file (plus `vercel.json` alone) confirmed it transmits
+  correctly — the resulting build error moved from `api/identify.js` to
+  `api/price.js` (deliberately not included in that test), proving
+  `api/identify.js`'s content itself was no longer the problem.
+
+  The full 5-file production deploy with this stripped `api/identify.js`
+  then succeeded on the first attempt: `READY`, aliased correctly,
+  `aliasError: null`. **Live-confirmed, not just deployed**: `GET
+  /api/identify` returns `normalizeDiacriticTest: "pokemon collector"`
+  (diacritic regex intact in the live deployment too); `POST {}` returns
+  the real `400 {"error":"Missing imageBase64","requestId":"..."}`; a
+  real end-to-end scan (a Pikachu XY95 promo photo fetched from
+  TCGplayer's own public CDN) returned correct identification
+  (`tcgPlayerId: "114004"`, High confidence, `timingMs.total: 1765`ms —
+  inside the 1-3s target); a follow-up real `/api/price` call for that
+  exact card returned **`conditionsBreakEven: {NM: 163.64, LP: 83.84,
+  MP: 51.71, HP: 43.88, DMG: 24.6}`** alongside `conditionPrices: {NM:
+  195.78, ...}` — hand-verified NM: fee = 0.1325×195.78+0.40 =
+  26.34085, shipping (≥$20) = $5.80, maxBid = 195.78−26.34085−5.80 =
+  163.63915 → rounds to $163.64, matching exactly. `sellThrough` (Months
+  of Supply, unrelated pre-existing feature) also present and correct,
+  confirming no regression. `get_runtime_errors` clean for the 15
+  minutes following deploy.
+
+  **Known, accepted deviation, same class as the 2026-09-03/09-16/09-17
+  precedents**: the LIVE deployed `api/identify.js` has every comment
+  mechanically stripped — all functional code (including the new
+  `computeBreakEvenMaxBid`/`conditionsBreakEven` lines) is present and
+  verified byte-identical to the git-committed source; only comments
+  differ, and this time provably so (mechanical diff, not a hand-wave).
+  The git-committed source in this repo (with full comments) remains the
+  source of truth. Per the established precedent's own rule: not worth a
+  dedicated redeploy just to resync comments — fold a byte-exact resync
+  into the next real code change to this file.
+
+  Extension frontend changes (`content.js`/`content.css`) are not
+  something Vercel deploys — per this project's own documented gotcha,
+  they need a manual reload in `chrome://extensions` plus a live rescan
+  before the break-even display can be called "observed working in the
+  real panel," not just backend-verified.
+
+  **Lesson for next time this file needs a full-content deploy**: a
+  large `api/identify.js` payload can silently fail to transmit as part
+  of a multi-file `deploy_to_vercel` call, with no error — the deploy
+  tool just returns `INITIALIZING` as if it worked, and the omission
+  only surfaces via `get_deployment` afterward. If this recurs, isolate
+  immediately with a small placeholder-content preview deploy of just
+  that one file to confirm whether it's a size problem before retrying
+  blind, and consider stripping comments via `strip-comments` (verified
+  safe and mechanical, not a manual retype) as a first mitigation rather
+  than repeated raw retries.
+
 - **Chansey Base Set (Shadowless) header/dropdown desync — BUILT,
   BACKEND DEPLOYED AND LIVE-CONFIRMED, extension change awaiting a
   manual reload, 2026-09-17.** User-reported bug: the price dropdown

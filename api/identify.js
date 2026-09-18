@@ -1575,8 +1575,47 @@ async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Break-even max bid (2026-09-17)
+// ---------------------------------------------------------------------------
+// Feature request: alongside each condition's live price, show the most
+// Eric could pay for a card in that exact condition and still break even
+// if it resells at that condition's own listed price — a zero-profit
+// floor, not "safe to bid up to" (hence the UI's "BE:" label, not "Max:"
+// — explicit per Eric's instruction, since "Max" risks being misread
+// mid-auction as "bid up to this").
+//
+// Formula, all-in eBay + shipping costs:
+//   eBay fee = 13.25% of sale price + a fixed fee ($0.30 if sale price
+//              <= $10, else $0.40)
+//   Shipping = $0.955 (single-card eBay Standard Envelope, all-in) if
+//              sale price < $20, else $5.80 (Ground Advantage)
+//   Max Bid  = Sale Price - eBay Fee - Shipping
+//
+// Verified against Eric's own hand-calculated example before wiring this
+// into any response: salePrice=$5.29 -> fee = 0.1325*5.29 + 0.30 =
+// 1.000925 -> shipping 0.955 -> maxBid = 5.29 - 1.000925 - 0.955 =
+// 3.334075 -> rounds to $3.33, matching exactly.
+//
+// Computed independently per condition (never once off NM and reused) —
+// sale price, and therefore both fees, differs by condition. Can go
+// negative for a cheap enough condition price (fees + shipping exceed
+// the sale price itself) — returned as the real signed number, not
+// clamped to $0, so the panel can show it honestly; see the
+// wnpk-be-negative styling in content.css for how a negative value is
+// made visually unambiguous as "not worth bidding on at any price in
+// this condition," consistent with this project's standing "log real
+// uncertainty/bad numbers, don't hide them" design principle.
+function computeBreakEvenMaxBid(salePrice) {
+  if (salePrice == null || !Number.isFinite(salePrice)) return null;
+  const fixedFee = salePrice <= 10 ? 0.3 : 0.4;
+  const ebayFee = 0.1325 * salePrice + fixedFee;
+  const shipping = salePrice < 20 ? 0.955 : 5.8;
+  return Math.round((salePrice - ebayFee - shipping) * 100) / 100;
+}
+
 // Groups TCGplayer's flat per-SKU result list into
-// { <printingLabel>: { label, printEdition, basePrice, conditions: {NM,LP,MP,HP,DMG}, estimated, partial } }
+// { <printingLabel>: { label, printEdition, basePrice, conditions: {NM,LP,MP,HP,DMG}, conditionsBreakEven: {NM,LP,MP,HP,DMG}, estimated, partial } }
 // using each SKU's most recent weekly bucket as the live market price for
 // that condition.
 //
@@ -1638,7 +1677,15 @@ function buildLivePriceVariantsFromTCGPlayer(historyResult) {
     // the best-condition one available.
     const basePriceTier = byTier.NM != null ? "NM" : presentTiers[0];
     const conditions = {};
-    for (const t of presentTiers) conditions[t] = byTier[t].price;
+    const conditionsBreakEven = {};
+    for (const t of presentTiers) {
+      conditions[t] = byTier[t].price;
+      // ADDED (2026-09-17, break-even max bid): computed per-condition off
+      // that condition's own price, not once off NM and reused — see
+      // computeBreakEvenMaxBid's comment above for the formula and the
+      // known-good hand-verified example.
+      conditionsBreakEven[t] = computeBreakEvenMaxBid(byTier[t].price);
+    }
     variants[label] = {
       label,
       printEdition: label,
@@ -1651,6 +1698,7 @@ function buildLivePriceVariantsFromTCGPlayer(historyResult) {
       basePriceTier,
       basePriceTierSold: byTier[basePriceTier].sold,
       conditions,
+      conditionsBreakEven,
       estimated: { NM: false, LP: false, MP: false, HP: false, DMG: false },
       partial: presentTiers.length < CONDITION_TIERS.length,
     };

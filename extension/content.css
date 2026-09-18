@@ -422,6 +422,26 @@
   border-bottom: 1px solid #26272e;
 }
 
+/* ADDED 2026-09-17 (break-even max bid): inline on the same row as its
+   condition's price (per explicit instruction, not a new row) — kept
+   small/muted so it reads as supplementary info, not a second price.
+   wnpk-be-negative overrides that for the one case where the distinction
+   actually matters: a negative break-even means the card isn't worth
+   bidding on in that condition at any price, so it's colored to match
+   the panel's existing "urgent, don't miss this" red (same family as
+   .wnpk-price-error) rather than staying muted like a normal figure. */
+.wnpk-be {
+  font-size: 10px;
+  font-weight: 400;
+  color: #a3a4ab;
+  white-space: nowrap;
+}
+
+.wnpk-be-negative {
+  color: #ff8a8a;
+  font-weight: 700;
+}
+
 .wnpk-link {
   display: block;
   margin-top: 10px;

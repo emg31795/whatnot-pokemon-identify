@@ -98,6 +98,12 @@ module.exports = async function handler(req, res) {
     priceVariantUsed,
     marketPrice: chosenVariant ? chosenVariant.basePrice : null,
     conditionPrices: chosenVariant ? chosenVariant.conditions : null,
+    // ADDED 2026-09-17 (break-even max bid): same shape as conditionPrices
+    // above ({NM,LP,MP,HP,DMG} -> number, can be negative), computed
+    // per-condition in buildLivePriceVariantsFromTCGPlayer (api/identify.js)
+    // right alongside conditions — pure math off the same numbers, no new
+    // fetch, no added latency.
+    conditionsBreakEven: chosenVariant ? chosenVariant.conditionsBreakEven : null,
     // Kept for frontend/shape compatibility — always all-false now,
     // since every surviving number is genuine live TCGplayer data (see
     // buildLivePriceVariantsFromTCGPlayer in api/identify.js).

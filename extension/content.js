@@ -717,11 +717,30 @@
   // `estimatedMap` is kept only for shape compatibility with the backend
   // response (always all-false when prices are present) — no "*" marking
   // is needed since nothing shown is ever a guess.
-  function conditionRowsHtml(conditions) {
+  // ADDED 2026-09-17 (break-even max bid): `breakEven` is the SAME shape
+  // as `conditions` ({NM,LP,MP,HP,DMG} -> number, see
+  // api/identify.js's computeBreakEvenMaxBid) rendered inline on the same
+  // row as its condition's price — per explicit instruction, this is
+  // NOT a new row, to keep the narrow side panel compact. A negative
+  // break-even (fees + shipping exceed the sale price itself) is shown
+  // as the real signed number, not clamped to $0 — the wnpk-be-negative
+  // class makes it visually unambiguous ("don't bid on this condition at
+  // any price") without hiding the actual math. Missing/undefined
+  // `breakEven` (e.g. the graded-slab fallback branch, which has no
+  // pricingLookup-derived data at all) just omits the "(BE: ...)" suffix,
+  // same graceful-degradation pattern as a missing price already uses.
+  function conditionRowsHtml(conditions, breakEven) {
     return CONDITION_ORDER.map((tier) => {
       const price = conditions ? conditions[tier] : null;
+      const be = price != null && breakEven ? breakEven[tier] : null;
+      const beHtml =
+        be != null
+          ? ` <span class="wnpk-be${be < 0 ? " wnpk-be-negative" : ""}">(BE: ${
+              be < 0 ? "-$" + Math.abs(be).toFixed(2) : "$" + be.toFixed(2)
+            })</span>`
+          : "";
       return `<div class="wnpk-cond-row"><span>${tier}</span><span>${
-        price != null ? "$" + price.toFixed(2) : "—"
+        price != null ? "$" + price.toFixed(2) + beHtml : "—"
       }</span></div>`;
     }).join("");
   }
@@ -890,7 +909,7 @@
       <div id="wnpk-sell-through">${sellThroughBadgeHtml(initialVariant ? initialVariant.sellThrough : priceData.sellThrough)}</div>
       ${variantPicker}
       <div class="wnpk-cond-label" id="wnpk-cond-label">CONDITION PRICES</div>
-      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(priceData.conditionPrices)}</div>
+      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(priceData.conditionPrices, priceData.conditionsBreakEven)}</div>
     `;
 
     // FIX (2026-09-17, see setNameForVariantKey above): keep the header's
@@ -909,7 +928,7 @@
         if (!variant) return;
         $("#wnpk-market-price").innerHTML = marketPriceLine(variant, priceData.listingCount);
         $("#wnpk-sell-through").innerHTML = sellThroughBadgeHtml(variant.sellThrough);
-        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions);
+        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions, variant.conditionsBreakEven);
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
         if (setNameEl && identifyData) {
