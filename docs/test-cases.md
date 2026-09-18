@@ -5476,6 +5476,8 @@ this feature), zero errors. Confirms the screenshot reflects real,
 ongoing production traffic on the new deployment, not an isolated or
 stale request.
 
+Pushed to GitHub (`143192f..a2c1d79`, `main`).
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

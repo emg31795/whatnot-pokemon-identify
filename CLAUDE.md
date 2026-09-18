@@ -1417,7 +1417,8 @@ checklist before reporting something as finished:
   logs pulled the same session: multiple genuine `/api/identify` +
   `/api/price` pairs in the preceding ~7 minutes, all `200`, all
   `dep=dpl_4W1wRrbgM3UoXgP2Gb2GRgEg5rNM`, zero errors — real scanning
-  traffic on the new deployment, not just the one screenshot.
+  traffic on the new deployment, not just the one screenshot. Pushed to
+  GitHub (`143192f..a2c1d79`, `main`).
 
 - **Break-even max bid — new feature, BUILT, DEPLOYED, AND
   LIVE-CONFIRMED, 2026-09-17** (`dpl_G19142TXQjXShVC1XzdgCSbQrHDn`,
