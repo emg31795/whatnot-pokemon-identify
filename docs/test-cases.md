@@ -5592,6 +5592,77 @@ checked.) This is a real, live production scan, not a mock — closes
 the "not yet observed in the real UI" gap from the deploy. Pushed to
 GitHub (`51c3199..2367b1a`, `main`).
 
+## Research: `/api/price` occasionally slow (8-10s) during rapid back-to-back scans (2026-09-18)
+
+**Trigger**: user reported a real live panel stuck on "Loading price…"
+for a Kingdra EX scan and asked directly whether the app was being
+rate-limited.
+
+**Not a rate limit — confirmed via real logs, not assumed.**
+`get_runtime_errors` (30m window) showed zero errors. Every single
+`/api/price` response in the window (grouped by statusCode) was `200`
+— no `429`s from either PPT or TCGplayer.
+
+**But a real, different latency problem was found.** Correlating the
+Kingdra scan's own `requestId` against real runtime logs: its
+`/api/price` CORS preflight (`OPTIONS`) fired at 03:08:42 UTC, but the
+matching `POST` didn't complete until 03:08:52 — a genuine 10-second
+gap, against a normal sub-1-second completion time for this endpoint.
+Pulling the full available 1-hour log window and correlating every
+`OPTIONS`→`POST` pair for `/api/price` found this is rare, not
+systemic: across ~33 minutes of real browser traffic (02:43-03:10
+UTC, 15+ price calls), there is exactly **one** slow cluster — three
+overlapping calls (Zekrom EX ×2, then Kingdra EX) within a ~30-second
+span (03:08:18-03:08:52) where the user scanned three cards in quick
+succession. Every other real price call in the window, including ones
+spaced just 7-9s apart, completed in under a second (`OPTIONS` and
+`POST` logged in the same second).
+
+**Ruled out as external (TCGplayer itself)**: curled the exact
+productIds from the slow calls (90743, 117848, 642610) directly
+against `infinite-api.tcgplayer.com`, outside the app entirely —
+170-220ms each, right now. TCGplayer is not slow for these cards.
+
+**Ruled out as caused by the same-day sell-through-velocity deploy**:
+that change only *removed* a fetch (the Current-Quantity/mp-search-api
+call) from `buildLiveVariantsForCandidate` — it didn't touch
+`fetchTCGPlayerPriceHistory` at all, and removing work should reduce
+concurrent load, not increase it.
+
+**Four genuine reproduction attempts, all failed to reproduce the
+slowdown** — a real, useful negative result, not just "couldn't be
+bothered to check":
+1. 4 concurrent `/api/price`-only calls via curl (no `/api/identify`
+   involved) — all 150-296ms.
+2. 3 concurrent `/api/identify` (real image, so Gemini + Haiku +
+   legacy-shadow all genuinely fire) + 4 concurrent `/api/price` via
+   curl, fully simultaneous — all price calls under 300ms, identify
+   calls normal (~1.7-1.8s).
+3. Real browser `fetch()` (not curl — genuine CORS preflight, real
+   browser network stack, matching what the extension actually does)
+   from a cross-origin page, staggered ~6-8s apart mimicking the real
+   burst's timing — all under 500ms.
+4. Real browser `fetch()`, 3 `/api/identify` (real image) + 3
+   `/api/price`, ALL fully simultaneous (zero stagger — more
+   concurrent load than the real incident had) — price calls
+   148-305ms, identify calls ~2.1-2.2s. No slowdown at all, even under
+   deliberately maximized concurrency, on the live current deployment.
+
+**Conclusion, honestly uncertain**: could not identify or reproduce a
+root cause despite ruling out rate-limiting, TCGplayer health, and
+today's code change, and despite genuinely trying to force it via
+concurrent load exceeding what the real incident had. Most likely
+explanation given the evidence (rare — one cluster in ~33 real
+minutes; not reproducible under matched or heavier synthetic load) is
+a transient event — a momentary Vercel-side cold-start/scaling blip or
+similar — of the same general class as the transient Gemini/TCGplayer
+slowdown clusters already documented elsewhere in this project's
+history that self-resolved without any code change. **Not actioned —
+no code changed.** Per this project's own "don't build speculatively"
+convention, worth continued normal log-watching for recurrence (not a
+dedicated new watch) rather than a speculative fix aimed at an
+unconfirmed mechanism.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
