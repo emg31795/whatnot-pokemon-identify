@@ -1367,6 +1367,68 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Break-even / Suggested Max Bid now factor in Eric's 1.2x listing
+  markup — BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-20**
+  (`dpl_A9pscRdcDzMgpWypAZmeCK8KmTxc`, `READY`, aliased to
+  `whatnot-pokemon-identify.vercel.app`, `aliasError: null`). Real
+  finding: `computeBreakEvenMaxBid` (`api/identify.js`) assumed a card
+  resells at exactly its live TCGplayer market price, but Eric actually
+  lists at **1.2x** market — understating his real bid room. Verified
+  on a Chansey NM example (market $64.47): current Suggested Bid showed
+  $38.25 off raw market; using 1.2x market as the assumed sale price,
+  the real number is $46.85 (a ~22% increase), not $38.25.
+
+  **Fix**: new `LISTING_MARKUP_MULTIPLIER = 1.2` constant near the top
+  of `api/identify.js` (alongside `GEMINI_MODEL`/`GEMINI_TIMEOUT_MS`
+  etc. — easy to find and tune later). `computeBreakEvenMaxBid` now
+  multiplies the incoming market price by this constant to get the
+  assumed sale price, then runs the existing 13.25%+fixed-fee /
+  $0.955-or-$5.80-shipping math on THAT — the fee model itself is
+  unchanged, only the sale price it's applied to. Displayed Market
+  Price and per-condition prices (`conditions` in
+  `buildLivePriceVariantsFromTCGPlayer`) are completely untouched —
+  confirmed via a real test that `conditions.NM` still returns raw
+  `64.47` while `conditionsBreakEven.NM` reflects the markup.
+  `computeSuggestedBid` itself is unchanged, per explicit scope — it
+  just divides whatever break-even value it's handed.
+
+  **Rounding-order question resolved with Eric before deploying**: the
+  Chansey example's exact hand-calculated target was $46.86, but the
+  real code (round break-even to cents, THEN divide by 1+margin — the
+  existing, unchanged architecture) produces $46.85, a one-cent
+  difference from an unrounded-intermediate hand-calc. Eric confirmed
+  keeping the existing rounded-then-divide architecture is correct —
+  $46.85 is the intended, correct number, not a bug to chase further.
+
+  **Verified before deploying**: a mocked-fetch test against the real,
+  exported `buildLiveVariantsForCandidate` confirmed the exact Chansey
+  numbers (BE $60.91, Suggested Bid $46.85, Normal tier/30% margin) and
+  that `conditions.NM` never picks up the markup. Two real live
+  TCGplayer cards spot-checked and hand-verified: Pikachu XY95
+  (NM $195.78 → BE $197.61) and Chansey Base Set 2 (NM $22.59 →
+  BE $17.32) — both exact matches. `api/identify.js` had grown to
+  155,239 bytes (past the documented danger threshold for this
+  project's multi-file deploy tool), so comments were stripped via
+  `strip-comments` (→62,841 bytes) and diff-verified 0 code lines
+  differ from source before deploying; the stripped file was re-run
+  through the same test with identical results.
+
+  **Live-confirmed via the actual fixed behavior**: `GET /api/identify`
+  returns `normalizeDiacriticTest: "pokemon collector"` (diacritic
+  regex intact) and a fresh `sourceHash`; `POST {}` returns the real
+  `400 {"error":"Missing imageBase64"}`. Live `POST /api/price` calls
+  for the real Chansey (42471) and Pikachu (114004) productIds returned
+  the exact same numbers verified locally — `conditionPrices.NM`
+  unchanged (raw market), `conditionsBreakEven.NM` markup-adjusted. A
+  full real end-to-end scan (Pikachu XY95 promo photo) returned correct
+  identification with `timingMs.total: 1367`ms — inside the 1-3s
+  target. `get_runtime_errors` clean for 15 minutes post-deploy.
+
+  **No local Vercel CLI auth found** (checked before deploying — no
+  `.vercel` link, no `VERCEL_TOKEN` env var) — deployed via the same
+  MCP `create_deployment` inline-content path as every prior deploy in
+  this file's history.
+
 - **Sell-through "Total Sold" undercounting fix — sum across all
   condition tiers instead of NM-only — BUILT, DEPLOYED, AND
   LIVE-CONFIRMED, 2026-09-20** (`dpl_7WWVwz8MLd77Bjestrccfm4qHdDZ`,

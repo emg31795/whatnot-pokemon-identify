@@ -5847,6 +5847,84 @@ case jumping two full tiers on this fix alone suggests a real, broad
 effect, but two cards is not a representative sample — watch how real
 scanned cards classify going forward before revisiting the boundaries.
 
+## Feature: factor Eric's 1.2x listing markup into break-even / Suggested Max Bid (2026-09-20)
+
+**Reported by the user**: `computeBreakEvenMaxBid` assumed a card
+resells at exactly its live TCGplayer market price, but Eric actually
+lists at 1.2x market — understating his real bid room. Verified on a
+Chansey NM example: current Suggested Bid showed $38.25 off raw market
+$64.47; using 1.2x market as the assumed sale price, it should be
+~$46.86 (about 22% more room).
+
+**Fix**: new `LISTING_MARKUP_MULTIPLIER = 1.2` constant near the top of
+`api/identify.js` (alongside `GEMINI_MODEL` etc.). `computeBreakEvenMaxBid`
+multiplies the incoming market price by this constant into an
+`assumedSalePrice` before running the unchanged fee/shipping math
+(13.25% + fixed fee, $0.955/$5.80 shipping) on that value instead of
+the raw price. Displayed Market Price and per-condition prices
+(`conditions` in `buildLivePriceVariantsFromTCGPlayer`) are completely
+untouched — the markup only ever reaches `conditionsBreakEven`.
+`computeSuggestedBid` is unchanged (still BE ÷ (1+margin)); it just
+now receives a bigger BE input.
+
+**Rounding-order discrepancy found and resolved with the user before
+deploying**: running the real code gave Suggested Bid = **$46.85**,
+one cent below the user's $46.86 hand-calc target. Traced to a
+rounding-order question: `conditionsBreakEven` is rounded to cents
+(`60.91`) BEFORE `computeSuggestedBid` divides it by 1.3 → $46.85.
+Using the raw unrounded break-even (`60.91327`) before rounding would
+give $46.86 instead. Flagged to the user via AskUserQuestion rather
+than silently picking one; **user confirmed the existing
+rounded-then-divide architecture (current code, no change needed) is
+correct** — $46.86 was a manual-calc approximation, $46.85 is the
+intended real number.
+
+**Verified before deploying**:
+1. A mocked-fetch test against the real, exported
+   `buildLiveVariantsForCandidate` (NM market $64.47, Normal
+   tier/30% margin, no reimplementation): `conditions.NM === 64.47`
+   (unchanged, no markup leak), `conditionsBreakEven.NM === 60.91`,
+   `conditionsSuggestedBid.NM === 46.85` — all exact.
+2. Two real live TCGplayer cards, pulled directly (not synthetic):
+   **Pikachu XY95** (tcgPlayerId 114004) — NM market $195.78 → BE
+   $197.61 (hand-verified: 195.78×1.2=234.936, fee=31.52902,
+   shipping=5.80, BE=197.60698→$197.61, exact match). **Chansey, Base
+   Set 2** (tcgPlayerId 42471) — NM market $22.59 → BE $17.32
+   (22.59×1.2=27.108, fee=3.99181, shipping=5.80,
+   BE=17.31619→$17.32, exact match).
+3. `api/identify.js` had grown to 155,239 bytes (past the documented
+   deploy-risk threshold) — comments stripped via `strip-comments`
+   (→62,841 bytes), confirmed 0 code lines differ from source via a
+   line-by-line diff script (only whole-line/trailing comments
+   blanked), the new constant/formula and the diacritic regex both
+   confirmed intact post-strip, and the stripped file re-tested against
+   the same mocked-fetch case with identical results.
+
+**Checked for a local deploy shortcut first**: no `.vercel` link, no
+`VERCEL_TOKEN` env var found locally — no CLI auth available, so this
+went through the same MCP `create_deployment` inline-content path as
+every prior deploy in this project's history.
+
+**Deployed clean on the first attempt**: `dpl_A9pscRdcDzMgpWypAZmeCK8KmTxc`,
+`READY`, aliased to `whatnot-pokemon-identify.vercel.app`
+(`aliasError: null`), all 3 lambdas (`identify`/`price`/`flag`)
+confirmed present via `list_deployment_files`.
+
+**Live-confirmed via the actual fixed behavior**: `GET /api/identify`
+returns `normalizeDiacriticTest: "pokemon collector"` (diacritic regex
+intact) and a fresh `sourceHash`; `POST {}` returns the real `400
+{"error":"Missing imageBase64"}`. Live `POST /api/price` for the real
+Chansey productId (42471) returned `conditionPrices.NM: 22.59` (raw,
+unchanged) alongside `conditionsBreakEven.NM: 17.32` and
+`conditionsSuggestedBid.NM: 13.32` (Normal tier, real sellThrough
+totalSold=405/135/mo) — exact match to the local pre-deploy numbers.
+Same for Pikachu (114004): `conditionPrices.NM: 195.78`,
+`conditionsBreakEven.NM: 197.61`, both exact matches. A full real
+end-to-end scan (Pikachu XY95 promo photo) returned correct
+identification (High confidence, `timingMs.total: 1367`ms — inside the
+1-3s target), confirming no regression to the identify path.
+`get_runtime_errors` clean for 15 minutes post-deploy.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
