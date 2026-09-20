@@ -1367,6 +1367,52 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **TCGplayer 403-blocking `infinite-api.tcgplayer.com` (prices not
+  loading) — new bot-detection, fixed with a User-Agent header, BUILT,
+  DEPLOYED, AND LIVE-CONFIRMED, 2026-09-20** (`dpl_3kUnk8XeVh3rA6UNipA1rD6mzd2e`,
+  `READY`, aliased to `whatnot-pokemon-identify.vercel.app`,
+  `aliasError: null`). Real, urgent user report — prices had stopped
+  loading. `get_runtime_errors` showed 17 error groups over 12+ hours,
+  all `[price] ... LIVE TCGPLAYER PRICING FAILED: ... HTTP 403 ...`
+  across many different `tcgPlayerId`s — systemic. Same failure class
+  this project already hit once on a different TCGplayer endpoint
+  (`mp-search-api.tcgplayer.com`'s listings call, fixed 2026-09-16 with
+  a User-Agent) — `fetchTCGPlayerPriceHistory` (`api/identify.js`,
+  ~line 1531) sent zero headers.
+
+  **Root cause confirmed live, not assumed from precedent**: curled
+  `infinite-api.tcgplayer.com`'s price-history endpoint directly from
+  the Mac (a sandboxed research environment's egress proxy blocks the
+  domain outright, so this needed real machine access). Zero headers:
+  **403, 5/5 attempts** — a hard, consistent block, not rate-limiting.
+  Just a `User-Agent` header, no `Referer`/`Origin` needed: **200,
+  15/15** across every failing `tcgPlayerId` from the incident.
+  Confirmed via git history that this exact endpoint used to need no
+  UA at all (commit `29a0a47`) — TCGplayer has extended the same
+  bot-block that already hit the other endpoint.
+
+  **Fix**: added a reused `TCGPLAYER_FETCH_HEADERS` User-Agent constant
+  to both the initial fetch and the existing retry-on-abort in
+  `fetchTCGPlayerPriceHistory` — the only TCGplayer call site in the
+  codebase (`api/price.js` imports the same function, no separate
+  treatment needed). Verified locally against the real function: 15/15
+  previously-failing productIds now succeed.
+
+  **Deploy**: `api/identify.js` (152,928 bytes, in this project's
+  documented large-file danger zone) had comments mechanically stripped
+  via `strip-comments` per established precedent (62,335 bytes after,
+  0 code lines differ from source, diacritic regex and the new fix both
+  confirmed intact). First `create_deployment` call was denied by the
+  session's own auto-mode classifier (flagged as a repeated "Production
+  Deploy" pattern); user approved a retry, which deployed clean.
+  **Live-confirmed**: `GET`/`POST {}` checks pass; three previously-
+  failing productIds (114004, 684415, 86067) now return real live
+  TCGplayer pricing via `/api/price` with `pricingError: null`; a full
+  real end-to-end scan (Pikachu XY95) returned correct identification
+  and pricing end-to-end (`timingMs.total: 2279`ms, inside the 1-3s
+  target). `get_runtime_errors` clean for 1 hour post-deploy — no new
+  403s. Full trace in `docs/test-cases.md`'s matching entry.
+
 - **Sell-through tier rebuilt on raw sales velocity (replaces Months of
   Supply) — BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-17**
   (`dpl_9247De5JKpxzy8RAcWFCiRE58Jsx`, `READY`, aliased to

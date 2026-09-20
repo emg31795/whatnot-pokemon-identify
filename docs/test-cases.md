@@ -5663,6 +5663,86 @@ convention, worth continued normal log-watching for recurrence (not a
 dedicated new watch) rather than a speculative fix aimed at an
 unconfirmed mechanism.
 
+## Fix: TCGplayer 403-blocking `infinite-api.tcgplayer.com` — new bot-detection, fixed with a User-Agent header, BUILT, DEPLOYED, AND LIVE-CONFIRMED (2026-09-20)
+
+Real, urgent user report: prices had stopped loading in the extension.
+`get_runtime_errors` (24h window) showed 17 error groups, all the same
+shape, spanning `2026-09-20T00:33` through `12:54` (ongoing, not a
+blip): `[price] ... LIVE TCGPLAYER PRICING FAILED: TCGplayer
+price-history returned HTTP 403 for productId=<id>: <html>...403
+Forbidden...</html>`, across many different `tcgPlayerId`s (114004,
+684415, 477050, 89964, 699876, 268712, 96420, 450289, 478098, 509960,
+86067, 284295, 699871, 534460, 693513, and more) — systemic, not one
+bad card. Backend confirmed healthy (`GET /api/identify` 200,
+`lastDeployment` on every error was the current known-good production
+deployment) and `fetchTCGPlayerPriceHistory`
+(`api/identify.js`, ~line 1531) sent zero headers on the request —
+notable because this project already hit the identical failure mode
+once before, on a different TCGplayer endpoint
+(`mp-search-api.tcgplayer.com`'s listings call, used by the old
+Months-of-Supply feature, see the 2026-09-16 entry above), fixed by
+adding a real browser `User-Agent`.
+
+**Root cause confirmed live, from the Mac, not assumed from the prior
+precedent alone** (a sandboxed research environment's own egress proxy
+blocked the domain outright, so this needed a real machine): curled
+`https://infinite-api.tcgplayer.com/price/history/114004/detailed?range=quarter`
+directly. With zero headers: **403, 5/5 repeated attempts** — a hard,
+consistent block, not rate-limit-shaped. With just a real browser
+`User-Agent` header added (no `Referer`/`Origin` needed): **200, with
+real JSON pricing data**, tested across **all 15 distinct `tcgPlayerId`s
+from the error list — 15/15 succeeded**. Confirmed via git history
+(commit `29a0a47`, the Months-of-Supply build, 2026-09-16) that this
+exact endpoint used to need no UA at all — TCGplayer has evidently
+extended the same bot-detection to `infinite-api.tcgplayer.com` that
+already hit `mp-search-api.tcgplayer.com`.
+
+**Fix**: added a `TCGPLAYER_FETCH_HEADERS` constant (reusing the exact
+same UA string already established as precedent in this codebase) and
+passed it into both the initial fetch and the existing retry-on-abort
+in `fetchTCGPlayerPriceHistory`. Confirmed via grep this is the ONLY
+TCGplayer call site in the entire codebase (`api/price.js` imports the
+same function via `require("./identify.js")` — no separate treatment
+needed; the old `mp-search-api` listings call was already removed in
+the 2026-09-17 sell-through-velocity rebuild).
+
+**Verified locally before deploying**: ran the real, unmodified
+exported `buildLiveVariantsForCandidate` against all 15 real failing
+productIds — 15/15 succeeded, returning real SKU/variant data.
+`node --check` passed on both touched-adjacent files.
+
+**Deploy checklist followed in full**: `api/identify.js` (152,928
+bytes, in the documented ~150KB+ danger zone for this project's
+multi-file deploy tool) had comments mechanically stripped via the
+`strip-comments` npm package (62,335 bytes after) per this project's
+own established precedent for files this size — verified 0 code lines
+differ from source via a line-by-line diff script (only whole-line
+comments blanked), diacritic regex and the new fix both confirmed
+intact in the stripped file, and the stripped file re-tested against
+the same 15 productIds with identical results before deploying. The
+first `create_deployment` call was denied by the session's own
+auto-mode permission classifier (flagged as a repeated "Production
+Deploy" pattern, the same known occurrence documented elsewhere in
+this file) — the user explicitly approved a retry, which then
+deployed clean on the first attempt: `dpl_3kUnk8XeVh3rA6UNipA1rD6mzd2e`,
+`READY`, aliased to `whatnot-pokemon-identify.vercel.app`
+(`aliasError: null`), all 5 files confirmed present via
+`list_deployment_files`.
+
+**Live-confirmed**: `GET /api/identify` returns
+`normalizeDiacriticTest: "pokemon collector"` (diacritic regex intact);
+`POST {}` returns the real `400 {"error":"Missing imageBase64"}`; three
+direct `/api/price` calls against previously-failing productIds
+(114004 Pikachu, 684415, and 86067 — a multi-variant Holofoil +
+Reverse Holofoil case) all returned real live TCGplayer pricing with
+`pricingError: null`; a full real end-to-end scan (Pikachu XY95 photo)
+returned correct identification (`tcgPlayerId: "114004"`, High
+confidence, `timingMs.total: 2279`ms — inside the 1-3s target)
+followed by a real `/api/price` call using that response's own
+`pricingLookup`, returning correct 5-tier pricing
+(`marketPrice: 195.78`). `get_runtime_errors` clean for both a 15-minute
+and a 1-hour post-deploy window — no new 403s since deploy.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

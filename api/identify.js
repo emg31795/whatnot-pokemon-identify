@@ -1528,11 +1528,27 @@ const CONDITION_NAME_TO_TIER = {
 // as a loud, visible warning instead of any price.
 const TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS = 2500;
 
+// FIX (2026-09-20): TCGplayer started 403-blocking this endpoint too — this
+// project already hit the identical bot-block once on a different
+// TCGplayer endpoint (mp-search-api's listings call, see the comment above
+// TCGPLAYER_LISTINGS_TIMEOUT_MS's old removed usage in git history) and
+// fixed it the same way. Confirmed live, 2026-09-20: a request with zero
+// headers 403s 100% of the time (5/5 attempts); adding just this
+// User-Agent succeeds 100% of the time (15/15 real failing productIds from
+// the incident, incl. 114004/684415/477050/89964/699876/268712/96420/
+// 450289/478098/509960/86067/284295/699871/534460/693513) — no Referer/
+// Origin needed. Not rate-limit-shaped: it was a hard, consistent block
+// with no headers, not intermittent.
+const TCGPLAYER_FETCH_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+};
+
 async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
   const url = `https://infinite-api.tcgplayer.com/price/history/${tcgPlayerId}/detailed?range=quarter`;
   let resp;
   try {
-    resp = await fetchWithTimeout(url, {}, TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS);
+    resp = await fetchWithTimeout(url, { headers: TCGPLAYER_FETCH_HEADERS }, TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS);
   } catch (e) {
     // FIX (2026-09-04, test #72, live Ferrothorn scan): a single retry
     // after a timeout/abort on this fetch specifically — live-confirmed via
@@ -1544,7 +1560,7 @@ async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
     // error status, invalid JSON, or a genuine zero-SKU response below are
     // real answers from TCGplayer, not something a retry can fix.
     try {
-      resp = await fetchWithTimeout(url, {}, TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS);
+      resp = await fetchWithTimeout(url, { headers: TCGPLAYER_FETCH_HEADERS }, TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS);
     } catch (e2) {
       throw new Error(`TCGplayer price-history request failed for productId=${tcgPlayerId} (after 1 retry): ${e2 && e2.message}`);
     }
