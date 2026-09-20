@@ -123,6 +123,11 @@ const GEMINI_TIMEOUT_MS = 5000;
 const CARDDB_TIMEOUT_MS = 2500;
 const CARDDB_RETRY_TIMEOUT_MS = 1200;
 
+// ADDED (2026-09-20, break-even/Suggested Bid markup): Eric lists cards at
+// this multiple of live TCGplayer market price, not at market price itself
+// — see computeBreakEvenMaxBid below, the only place this is used.
+const LISTING_MARKUP_MULTIPLIER = 1.2;
+
 // FIX (2026-09-03): these were stale for the model active at the time
 // (gemini-3.6-flash, $0.75 input / $3.75 output per MTok — confirmed live
 // against Google's own pricing page) — see CLAUDE.md/test-cases.md for
@@ -1593,33 +1598,48 @@ async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
 // — explicit per Eric's instruction, since "Max" risks being misread
 // mid-auction as "bid up to this").
 //
-// Formula, all-in eBay + shipping costs:
-//   eBay fee = 13.25% of sale price + a fixed fee ($0.30 if sale price
-//              <= $10, else $0.40)
+// CHANGED (2026-09-20): the assumed sale price is Eric's real listing
+// price, not raw market price — Eric lists at LISTING_MARKUP_MULTIPLIER
+// (1.2x) times live TCGplayer market price, so break-even/Suggested Bid
+// were understating his real bid room by assuming he'd sell at market.
+// This only affects the internal break-even math below — the displayed
+// Market Price / per-condition prices (`conditions` in
+// buildLivePriceVariantsFromTCGPlayer) are untouched, still raw market.
+//
+// Formula, all-in eBay + shipping costs (fee model itself unchanged):
+//   Assumed sale price = market price * LISTING_MARKUP_MULTIPLIER
+//   eBay fee = 13.25% of assumed sale price + a fixed fee ($0.30 if
+//              assumed sale price <= $10, else $0.40)
 //   Shipping = $0.955 (single-card eBay Standard Envelope, all-in) if
-//              sale price < $20, else $5.80 (Ground Advantage)
-//   Max Bid  = Sale Price - eBay Fee - Shipping
+//              assumed sale price < $20, else $5.80 (Ground Advantage)
+//   Max Bid  = Assumed Sale Price - eBay Fee - Shipping
 //
 // Verified against Eric's own hand-calculated example before wiring this
-// into any response: salePrice=$5.29 -> fee = 0.1325*5.29 + 0.30 =
-// 1.000925 -> shipping 0.955 -> maxBid = 5.29 - 1.000925 - 0.955 =
-// 3.334075 -> rounds to $3.33, matching exactly.
+// into any response: market price=$5.29 -> assumed sale price =
+// 5.29*1.2 = 6.348 -> fee = 0.1325*6.348 + 0.30 = 1.14111 -> shipping
+// 0.955 -> maxBid = 6.348 - 1.14111 - 0.955 = 4.25189 -> rounds to $4.25.
+// (Superseded the earlier pre-markup example of $3.33 off raw $5.29 —
+// see CLAUDE.md/test-cases.md for that original verification and this
+// feature's own markup verification, including the Chansey NM case that
+// prompted this change.)
 //
 // Computed independently per condition (never once off NM and reused) —
-// sale price, and therefore both fees, differs by condition. Can go
-// negative for a cheap enough condition price (fees + shipping exceed
-// the sale price itself) — returned as the real signed number, not
-// clamped to $0, so the panel can show it honestly; see the
-// wnpk-be-negative styling in content.css for how a negative value is
-// made visually unambiguous as "not worth bidding on at any price in
-// this condition," consistent with this project's standing "log real
-// uncertainty/bad numbers, don't hide them" design principle.
+// market price, and therefore the assumed sale price and both fees,
+// differs by condition. Can go negative for a cheap enough condition
+// price (fees + shipping exceed the assumed sale price itself) —
+// returned as the real signed number, not clamped to $0, so the panel
+// can show it honestly; see the wnpk-be-negative styling in content.css
+// for how a negative value is made visually unambiguous as "not worth
+// bidding on at any price in this condition," consistent with this
+// project's standing "log real uncertainty/bad numbers, don't hide
+// them" design principle.
 function computeBreakEvenMaxBid(salePrice) {
   if (salePrice == null || !Number.isFinite(salePrice)) return null;
-  const fixedFee = salePrice <= 10 ? 0.3 : 0.4;
-  const ebayFee = 0.1325 * salePrice + fixedFee;
-  const shipping = salePrice < 20 ? 0.955 : 5.8;
-  return Math.round((salePrice - ebayFee - shipping) * 100) / 100;
+  const assumedSalePrice = salePrice * LISTING_MARKUP_MULTIPLIER;
+  const fixedFee = assumedSalePrice <= 10 ? 0.3 : 0.4;
+  const ebayFee = 0.1325 * assumedSalePrice + fixedFee;
+  const shipping = assumedSalePrice < 20 ? 0.955 : 5.8;
+  return Math.round((assumedSalePrice - ebayFee - shipping) * 100) / 100;
 }
 
 // Groups TCGplayer's flat per-SKU result list into
