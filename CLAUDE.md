@@ -1367,6 +1367,97 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Sell-through "Total Sold" undercounting fix — sum across all
+  condition tiers instead of NM-only — BUILT, DEPLOYED, AND
+  LIVE-CONFIRMED, 2026-09-20** (`dpl_7WWVwz8MLd77Bjestrccfm4qHdDZ`,
+  `READY`, aliased to `whatnot-pokemon-identify.vercel.app`,
+  `aliasError: null`). Real user report: a Shiny Lotad (Platinum SH4)
+  Reverse Holofoil scan showed `Stagnant · 0.3/mo`, which was
+  arithmetically correct for NM-only sales but threw away up to 4/5 of
+  TCGplayer's own real per-condition sold-count data before the
+  sell-through tier was ever computed — `computeSellThrough` was fed
+  `v.basePriceTierSold` (whichever single tier `basePrice` happened to
+  come from, usually NM), never the other 4 tiers' `totalQuantitySold`.
+  This does NOT touch the separate eBay-visibility gap (TCGplayer-only
+  data can never see eBay's own sales) — that needs a real eBay data
+  source this project doesn't have; this fix is purely "stop discarding
+  data we already fetch."
+
+  **Fix**: `buildLivePriceVariantsFromTCGPlayer` (`api/identify.js`) now
+  sums `totalQuantitySold` across every condition tier with real price
+  data for that printing, into a new `totalSoldAllConditions` field
+  (same temp-field lifecycle as the old `basePriceTier`/
+  `basePriceTierSold` — computed here, consumed by
+  `buildLiveVariantsForCandidate`, deleted before the API response).
+  Null-handling: a tier with a missing/unparseable sold value counts as
+  0 in the sum once at least one other tier has real data; if literally
+  every present tier is null, the total stays `null` so "no data
+  anywhere" still reads as unknown rather than a false confirmed zero.
+  `classifySellThroughTier`'s boundaries and the `sellThrough` response
+  shape (`{monthlyPace, tier, totalSold}`) are unchanged — no frontend
+  changes needed (confirmed via grep: `api/price.js`/`extension/
+  content.js` only ever consume the shape, never the old field names).
+
+  **Verified real numbers before deploying, per explicit request** (see
+  the matching `docs/test-cases.md` entry for the full trace): a
+  5-case mocked-fetch regression test (multi-tier sum, single-tier
+  unchanged, partial-null tiers treated as 0, all-null stays unknown,
+  a genuine-zero tier adds normally) — all passed, confirmed no
+  leftover temp fields on the response. Two real cards pulled from
+  TCGplayer's live price-history endpoint: **Lotad (Shiny), Platinum
+  SH4** (tcgPlayerId 86838) — NM sold=1 alone → Stagnant/0.33mo; summed
+  across all 5 tiers (1+3+7+2+3=16) → **Slow/5.33mo**; and **Charizard,
+  Base Set** (tcgPlayerId 42382) — NM sold=8 alone → Stagnant/2.67mo;
+  summed (8+20+59+46+81=214) → **Normal/71.33mo**, a full two-tier jump.
+
+  **Deploy checklist followed in full**: `api/identify.js` had comments
+  mechanically stripped via `strip-comments` (153,950 → 62,690 bytes),
+  verified 0 code lines differ from source via a line-by-line diff
+  script (only whole-line/trailing comments blanked), the fix and the
+  diacritic regex both confirmed intact in the stripped file, and the
+  stripped file re-tested against the same 5 regression cases with
+  identical results before deploying. No local Vercel CLI auth was
+  available to deploy from disk directly (checked — no `.vercel` link,
+  no `VERCEL_TOKEN` env var), so this went through the same MCP
+  `create_deployment` inline-content path as every prior deploy in this
+  file's history. Deployed clean on the first attempt:
+  `dpl_7WWVwz8MLd77Bjestrccfm4qHdDZ`, `READY`, all 3 lambdas
+  (`identify`/`price`/`flag`) confirmed present via
+  `list_deployment_files`.
+
+  **Live-confirmed, decisively, via the actual fixed behavior, not just
+  a generic health check**: `GET /api/identify` returns
+  `normalizeDiacriticTest: "pokemon collector"` (diacritic regex intact)
+  and a fresh `sourceHash`; `POST {}` returns the real `400
+  {"error":"Missing imageBase64"}`. A live `POST /api/price` for the
+  real Lotad SH4 productId (86838) returned `sellThrough:
+  {monthlyPace: 5.333, tier: "Slow", totalSold: 16}` — the exact
+  numbers hand-verified locally before deploying, now confirmed live in
+  production. Same for the Charizard productId (42382): `{monthlyPace:
+  71.333, tier: "Normal", totalSold: 214}`, exact match. A full real
+  end-to-end scan (Pikachu XY95 promo photo) returned correct
+  identification (`tcgPlayerId: "114004"`, High confidence,
+  `timingMs.total: 1575`ms — inside the 1-3s target) and a follow-up
+  `/api/price` call returned the same `marketPrice: 195.78` this exact
+  card has returned in every prior deploy's verification — confirming
+  no regression to ordinary pricing. `get_runtime_errors` clean for 15
+  minutes post-deploy.
+
+  **Not yet pushed to GitHub** — committed locally (`abfde28`) before
+  this deploy; push needs the user's own go-ahead per this project's
+  standing convention (deploy and push are separate approvals).
+
+  **Open question, deliberately not acted on yet**: does this alone
+  meaningfully close the gap the user's Lotad report raised, or do the
+  `classifySellThroughTier` boundaries themselves also need adjusting
+  now that the input signal is bigger? The Charizard case jumping two
+  full tiers (Stagnant→Normal) suggests a lot of "looks dead" cards may
+  have looked that way only because of the undercounting, which would
+  mean this fix alone resolves most of it — but that's an inference
+  from two cards, not a broad sample. Per explicit instruction, no tier
+  boundary changes were made in this pass; watch how real cards
+  classify going forward before deciding whether that's also needed.
+
 - **TCGplayer 403-blocking `infinite-api.tcgplayer.com` (prices not
   loading) — new bot-detection, fixed with a User-Agent header, BUILT,
   DEPLOYED, AND LIVE-CONFIRMED, 2026-09-20** (`dpl_3kUnk8XeVh3rA6UNipA1rD6mzd2e`,

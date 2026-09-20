@@ -5743,6 +5743,110 @@ followed by a real `/api/price` call using that response's own
 (`marketPrice: 195.78`). `get_runtime_errors` clean for both a 15-minute
 and a 1-hour post-deploy window — no new 403s since deploy.
 
+## Fix: sell-through "Total Sold" summed across all condition tiers (2026-09-20)
+
+**Reported by the user**: a Shiny Lotad (Platinum SH4) Reverse Holofoil
+scan showed `Stagnant · 0.3/mo` in the sell-through badge. Hand-verified
+against a real sales-history screenshot that 0.3/mo was arithmetically
+correct — for NM alone. PriceCharting's own sales list for the same
+card showed a much higher overall pace once eBay/other conditions are
+counted, but that's a different, not-yet-solvable gap (this app has no
+eBay data source). The actionable finding: TCGplayer's own
+price-history response already carries `totalQuantitySold` for every
+condition tier, and `computeSellThrough` was only ever being fed the
+one tier `basePrice` came from (usually NM) — up to 4/5 of TCGplayer's
+own real data was being thrown away before the tier was computed.
+
+**Root cause**, `buildLivePriceVariantsFromTCGPlayer` (`api/identify.js`
+~line 1651): each variant carried `basePriceTier`/`basePriceTierSold`
+(that one tier's sold count only) as the sole input to
+`computeSellThrough` in `buildLiveVariantsForCandidate`.
+
+**Fix**: sum `totalQuantitySold` across every present condition tier
+into a new `totalSoldAllConditions` field, fed into `computeSellThrough`
+instead. A tier with a missing/unparseable sold value counts as 0 once
+at least one other tier has real data (consistent with how a genuine
+zero-sold tier was already handled — no special-casing); if literally
+every present tier is null, the total stays `null` so "no data at all"
+still reads as unknown, not a false confirmed zero.
+`classifySellThroughTier`'s boundaries (Stagnant <5/mo, Slow 5-49/mo,
+Normal 50-599/mo, Fast-flip 600+/mo) and the `sellThrough` response
+shape are unchanged — no frontend changes needed.
+
+**Verified locally, before deploying, per explicit request**:
+
+1. A 5-case mocked-fetch regression test against the real, exported
+   `buildLiveVariantsForCandidate` (no reimplementation): multi-tier sum
+   (NM=8,LP=10,MP=3 → 21 sold, Slow); single-tier unchanged (NM=8 alone
+   → 8 sold, matches old behavior); a null tier alongside a real one
+   (NM=NaN, LP=10 → 10 sold, null treated as 0 within the sum); all
+   tiers null → `sellThrough: null` (stays unknown, not a false zero);
+   a genuine zero tier alongside real data (NM=0, LP=6 → 6 sold, adds
+   normally). All 5 passed; confirmed no leftover `basePriceTier`/
+   `basePriceTierSold`/`totalSoldAllConditions` temp fields on the
+   returned variant.
+2. Two real cards, pulled from TCGplayer's live price-history endpoint
+   directly (not synthetic), run through the real
+   `buildLiveVariantsForCandidate`:
+   - **Lotad (Shiny), Platinum SH4, Reverse Holofoil** (tcgPlayerId
+     86838) — real sold counts NM=1, LP=3, MP=7, HP=2, DMG=3.
+     OLD (NM-only): 1 sold → 0.33/mo → **Stagnant**. NEW (summed): 16
+     sold → 5.33/mo → **Slow**. Matches the user's own reported case
+     exactly (the "0.3/mo" they saw is the old NM=1 figure).
+   - **Charizard, Base Set, Holofoil** (tcgPlayerId 42382) — real sold
+     counts NM=8, LP=20, MP=59, HP=46, DMG=81. OLD: 8 sold → 2.67/mo →
+     **Stagnant**. NEW: 214 sold → 71.33/mo → **Normal** — a full
+     two-tier jump, showing this isn't a small effect for high-value
+     vintage cards that sell much more often in played condition than
+     NM.
+
+Grepped `api/price.js`/`extension/content.js` to confirm the
+`sellThrough` object's consumers only ever read `{monthlyPace, tier,
+totalSold}` by shape, never the old field names directly — no frontend
+changes were needed.
+
+**Deploy checklist followed in full**: `api/identify.js` had comments
+mechanically stripped via `strip-comments` (153,950 → 62,690 bytes),
+confirmed 0 code lines differ from source via a line-by-line diff
+script (only whole-line/trailing comments blanked), the fix and the
+diacritic regex both confirmed intact post-strip, and the stripped file
+re-tested against the same 5 regression cases with identical results
+before deploying. Checked for a local Vercel CLI auth shortcut first
+(no `.vercel` link, no `VERCEL_TOKEN` env var found) — none available,
+so this went through the same MCP `create_deployment` inline-content
+path as every prior deploy in this project's history. Deployed clean on
+the first attempt: `dpl_7WWVwz8MLd77Bjestrccfm4qHdDZ`, `READY`, aliased
+to `whatnot-pokemon-identify.vercel.app` (`aliasError: null`), all 3
+lambdas (`identify`/`price`/`flag`) confirmed present via
+`list_deployment_files`.
+
+**Live-confirmed via the actual fixed behavior**, not just a generic
+health check: `GET /api/identify` returns
+`normalizeDiacriticTest: "pokemon collector"` (diacritic regex intact);
+`POST {}` returns the real `400 {"error":"Missing imageBase64"}`. A
+live `POST /api/price` for the real Lotad SH4 productId (86838) on the
+production endpoint returned `sellThrough: {monthlyPace:
+5.333333333333333, tier: "Slow", totalSold: 16}` — exactly matching the
+local pre-deploy numbers. Same for the Charizard productId (42382):
+`{monthlyPace: 71.33333333333333, tier: "Normal", totalSold: 214}`,
+exact match. A full real end-to-end scan (Pikachu XY95 promo photo)
+returned correct identification (`tcgPlayerId: "114004"`, High
+confidence, `timingMs.total: 1575`ms — inside the 1-3s target), and a
+follow-up `/api/price` call returned `marketPrice: 195.78` — the same
+figure this exact card has returned in every prior deploy's
+verification, confirming no regression to ordinary pricing.
+`get_runtime_errors` clean for 15 minutes post-deploy.
+
+**Not yet pushed to GitHub** — committed locally (`abfde28`) before
+this deploy.
+
+**Open, deliberately not acted on**: whether this fix alone is enough,
+or whether `classifySellThroughTier`'s boundaries also need adjusting
+now that the input signal is larger across the board. The Charizard
+case jumping two full tiers on this fix alone suggests a real, broad
+effect, but two cards is not a representative sample — watch how real
+scanned cards classify going forward before revisiting the boundaries.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
