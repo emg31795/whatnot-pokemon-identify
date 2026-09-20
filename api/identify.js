@@ -1694,17 +1694,34 @@ function buildLivePriceVariantsFromTCGPlayer(historyResult) {
       // known-good hand-verified example.
       conditionsBreakEven[t] = computeBreakEvenMaxBid(byTier[t].price);
     }
+    // FIX (2026-09-20, Shiny Lotad SH4 report): sell-through used to be fed
+    // ONLY the base-price tier's totalQuantitySold (e.g. NM alone), throwing
+    // away up to 4/5 of TCGplayer's own real sold-count data for this
+    // printing. Sum across every present tier instead — a tier with a real
+    // sold value of 0 counts as 0 (same as always), and a tier missing sold
+    // data entirely also counts as 0 toward the sum, but ONLY once at least
+    // one tier has real sold data; if every present tier's sold value is
+    // null, the sum stays null so a genuine "no data anywhere" case still
+    // reads as unknown, not as a confirmed zero.
+    let totalSoldAllConditions = null;
+    for (const t of presentTiers) {
+      const tierSold = byTier[t].sold;
+      if (tierSold == null) continue;
+      totalSoldAllConditions = (totalSoldAllConditions || 0) + tierSold;
+    }
     variants[label] = {
       label,
       printEdition: label,
       basePrice: byTier[basePriceTier].price,
-      // ADDED (2026-09-16, sell-through signal): which tier basePrice
-      // actually came from, and that tier's own totalQuantitySold — kept
-      // only long enough for buildLiveVariantsForCandidate below to feed
-      // it into computeSellThrough, then deleted before the variant
-      // object goes out in the API response.
+      // ADDED (2026-09-16, sell-through signal); CHANGED (2026-09-20, see
+      // FIX comment above): basePriceTier/basePriceTierSold are kept only
+      // long enough for reference below; totalSoldAllConditions is what
+      // buildLiveVariantsForCandidate now feeds into computeSellThrough.
+      // All three are deleted before the variant object goes out in the
+      // API response.
       basePriceTier,
       basePriceTierSold: byTier[basePriceTier].sold,
+      totalSoldAllConditions,
       conditions,
       conditionsBreakEven,
       estimated: { NM: false, LP: false, MP: false, HP: false, DMG: false },
@@ -1817,11 +1834,11 @@ async function buildLiveVariantsForCandidate(candidate, tag) {
   // listings endpoint) run in parallel here. Per explicit instruction,
   // the tier no longer depends on TCGplayer's supply figure at all (see
   // the "Sales-velocity" comment block above computeSellThrough) — it's
-  // computed directly from v.basePriceTierSold, already sitting on the
-  // variant from buildLivePriceVariantsFromTCGPlayer above, with no
+  // computed directly from v.totalSoldAllConditions, already sitting on
+  // the variant from buildLivePriceVariantsFromTCGPlayer above, with no
   // fetch, no await, and no failure mode of its own.
   for (const v of Object.values(variants)) {
-    v.sellThrough = computeSellThrough(v.basePriceTierSold);
+    v.sellThrough = computeSellThrough(v.totalSoldAllConditions);
     // ADDED (2026-09-17, suggested max bid): per condition, divides THAT
     // condition's own conditionsBreakEven by the variant's single
     // liquidity tier (tier is per-variant, sale price/BE is per-condition
@@ -1838,6 +1855,7 @@ async function buildLiveVariantsForCandidate(candidate, tag) {
     }
     delete v.basePriceTier;
     delete v.basePriceTierSold;
+    delete v.totalSoldAllConditions;
   }
 
   if (!tag) return variants;
