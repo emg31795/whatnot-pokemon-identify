@@ -128,6 +128,20 @@ const CARDDB_RETRY_TIMEOUT_MS = 1200;
 // — see computeBreakEvenMaxBid below, the only place this is used.
 const LISTING_MARKUP_MULTIPLIER = 1.2;
 
+// ADDED (2026-09-26, break-even/Suggested Bid tier overrides): Eric's real
+// eBay repricer template runs these pricing-tier overrides AFTER the
+// LISTING_MARKUP_MULTIPLIER markup above — if the marked price lands
+// inside a tier's [min, max] range, the repricer pins the actual list
+// price to that tier's newPrice instead of the raw multiplied figure.
+// Ordered array (not an object) so tiers are checked in order, first
+// match wins, same as the real template — and so Eric can add/reorder/
+// edit tiers later if his template changes. See computeBreakEvenMaxBid
+// below, the only place this is used.
+const LISTING_PRICE_TIERS = [
+  { min: 0.0, max: 2.48, newPrice: 2.49 },
+  { min: 20.0, max: 25.58, newPrice: 19.99 },
+];
+
 // FIX (2026-09-03): these were stale for the model active at the time
 // (gemini-3.6-flash, $0.75 input / $3.75 output per MTok — confirmed live
 // against Google's own pricing page) — see CLAUDE.md/test-cases.md for
@@ -1607,21 +1621,42 @@ async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
 // buildLivePriceVariantsFromTCGPlayer) are untouched, still raw market.
 //
 // Formula, all-in eBay + shipping costs (fee model itself unchanged):
-//   Assumed sale price = market price * LISTING_MARKUP_MULTIPLIER
+//   Step 1 (markup):  marked price = market price * LISTING_MARKUP_MULTIPLIER
+//   Step 2 (tiers):   walk LISTING_PRICE_TIERS in order; if marked price
+//                      falls in a tier's [min, max] range, first match
+//                      wins and marked price is REPLACED by that tier's
+//                      newPrice. No match -> marked price is unchanged
+//                      (this is the whole pre-2026-09-26 behavior).
+//   Assumed sale price = marked price after step 2
 //   eBay fee = 13.25% of assumed sale price + a fixed fee ($0.30 if
 //              assumed sale price <= $10, else $0.40)
 //   Shipping = $0.955 (single-card eBay Standard Envelope, all-in) if
 //              assumed sale price < $20, else $5.80 (Ground Advantage)
 //   Max Bid  = Assumed Sale Price - eBay Fee - Shipping
 //
-// Verified against Eric's own hand-calculated example before wiring this
-// into any response: market price=$5.29 -> assumed sale price =
-// 5.29*1.2 = 6.348 -> fee = 0.1325*6.348 + 0.30 = 1.14111 -> shipping
-// 0.955 -> maxBid = 6.348 - 1.14111 - 0.955 = 4.25189 -> rounds to $4.25.
+// Verified against Eric's own hand-calculated example before wiring the
+// markup step into any response: market price=$5.29 -> assumed sale
+// price = 5.29*1.2 = 6.348 (no tier match, both tiers are far below
+// $6.35) -> fee = 0.1325*6.348 + 0.30 = 1.14111 -> shipping 0.955 ->
+// maxBid = 6.348 - 1.14111 - 0.955 = 4.25189 -> rounds to $4.25.
 // (Superseded the earlier pre-markup example of $3.33 off raw $5.29 —
 // see CLAUDE.md/test-cases.md for that original verification and this
 // feature's own markup verification, including the Chansey NM case that
 // prompted this change.)
+//
+// ADDED (2026-09-26): the tier-override step mirrors Eric's real eBay
+// repricer template, which pins the computed list price to a fixed
+// value whenever it lands in one of two bands ($0-$2.48 -> $2.49,
+// $20.00-$25.58 -> $19.99) rather than actually listing at the raw
+// marked price. Before this, a market price whose marked price
+// (market * 1.2) landed in the $20-$25.58 band — roughly market
+// $16.67-$21.32 — had its break-even computed off a sale price up to
+// ~$5 higher than what Eric will actually list at, overstating safe
+// bid room in that band; the $0-$2.48 band is a smaller, opposite-
+// direction miss. See docs/test-cases.md for the tier-boundary
+// verification (a marked price inside each band, and one clearly
+// outside both — the untouched Chansey $64.47 NM example — all
+// hand-checked before deploy).
 //
 // Computed independently per condition (never once off NM and reused) —
 // market price, and therefore the assumed sale price and both fees,
@@ -1635,7 +1670,11 @@ async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
 // them" design principle.
 function computeBreakEvenMaxBid(salePrice) {
   if (salePrice == null || !Number.isFinite(salePrice)) return null;
-  const assumedSalePrice = salePrice * LISTING_MARKUP_MULTIPLIER;
+  let assumedSalePrice = salePrice * LISTING_MARKUP_MULTIPLIER;
+  const tier = LISTING_PRICE_TIERS.find(
+    (t) => assumedSalePrice >= t.min && assumedSalePrice <= t.max
+  );
+  if (tier) assumedSalePrice = tier.newPrice;
   const fixedFee = assumedSalePrice <= 10 ? 0.3 : 0.4;
   const ebayFee = 0.1325 * assumedSalePrice + fixedFee;
   const shipping = assumedSalePrice < 20 ? 0.955 : 5.8;

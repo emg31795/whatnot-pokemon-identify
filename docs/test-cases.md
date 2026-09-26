@@ -5925,6 +5925,73 @@ identification (High confidence, `timingMs.total: 1367`ms — inside the
 1-3s target), confirming no regression to the identify path.
 `get_runtime_errors` clean for 15 minutes post-deploy.
 
+## Feature: mirror eBay pricing-tier overrides in the break-even calc — BUILT AND VERIFIED LOCALLY, NOT YET DEPLOYED (2026-09-26)
+
+Per Eric's explicit request: his real eBay repricer template applies the
+`LISTING_MARKUP_MULTIPLIER` (1.2x) markup from the entry directly above,
+then runs fixed pricing-tier overrides on TOP of that — if the marked
+price (`market × 1.2`) lands in one of two `[min, max]` bands, the
+repricer pins the actual list price to a fixed value instead of the raw
+multiplied figure:
+
+- marked price in `[$0.00, $2.48]` → actual list price `$2.49`
+- marked price in `[$20.00, $25.58]` → actual list price `$19.99`
+
+Before this fix, `computeBreakEvenMaxBid` (`api/identify.js`) had no idea
+about these overrides, so for a market price whose `market × 1.2` landed
+in the $20-$25.58 band (roughly market $16.67-$21.32), break-even/
+Suggested Max Bid were computed off a sale price up to ~$5 higher than
+what Eric will actually list at — overstating safe bid room in that
+band. The $0-$2.48 band is a smaller, opposite-direction miss (slightly
+understates).
+
+**Fix**: new `LISTING_PRICE_TIERS` constant (`api/identify.js`, right
+next to `LISTING_MARKUP_MULTIPLIER`) as an ordered array — first
+matching tier wins, same semantics as Eric's real template, and easy for
+him to add/edit/reorder tiers later. `computeBreakEvenMaxBid` now walks
+the tiers right after computing the marked price (`salePrice ×
+LISTING_MARKUP_MULTIPLIER`) and, on a match, replaces the marked price
+with that tier's `newPrice` before the existing fee/fixed-fee/shipping
+math runs — unchanged otherwise. No match → marked price is used as-is,
+identical to the pre-2026-09-26 behavior. Displayed Market Price and
+per-condition prices are untouched, same scope boundary as the original
+markup change — only the internal break-even/Suggested Bid calc is
+affected.
+
+**Verified before deploying**, against the real extracted
+`computeBreakEvenMaxBid` source (not a reimplementation — a scratch
+script pulled the actual constant/function text out of `api/identify.js`
+and eval'd it), all 3 cases the task asked for plus 3 extra boundary
+checks:
+
+1. **Market price landing in the $20-$25.58 tier** ($18.00 → marked
+   $21.60, in-band → overridden to $19.99): fixedFee (>$10) = $0.40,
+   ebayFee = 0.1325×19.99+0.40 = 3.048675, shipping (<$20) = $0.955 →
+   BE = 19.99 − 3.048675 − 0.955 = 15.986325 → **$15.99**. Confirmed the
+   function returns exactly `15.99`, not the raw-multiplied figure
+   (which would have been $16.19 off a $21.60 marked price).
+2. **Market price landing in the $0-$2.48 tier** ($2.00 → marked $2.40,
+   in-band → overridden to $2.49): fixedFee (≤$10) = $0.30, ebayFee =
+   0.1325×2.49+0.30 = 0.6298125, shipping (<$20) = $0.955 → BE = 2.49 −
+   0.6298125 − 0.955 = 0.9051875 → **$0.91**. Confirmed exact.
+3. **Outside both bands, unchanged from the prior deploy** — the
+   Chansey $64.47 NM example from the listing-markup entry above:
+   marked = 64.47×1.2 = 77.364 (no tier match), BE = 77.364 −
+   10.65723 − 5.80 = 60.90677 → **$60.91**, Suggested Bid (Normal tier,
+   30% margin) = 60.91/1.3 = **$46.85** — both identical to the
+   pre-this-change verified numbers, confirming no regression.
+4. Boundary checks: a marked price of exactly $2.48 and exactly $25.58
+   both correctly land in their tier (inclusive `>=`/`<=` bounds); a
+   marked price of $25.584 (just above the high tier's $25.58 ceiling,
+   from market $21.32) correctly does NOT match either tier and falls
+   through to the raw-multiplied-price formula.
+
+`node --check api/identify.js` passes. Not yet deployed — `api/identify.js`
+is 157,466 bytes, past this project's documented Vercel large-file
+silent-omission risk threshold, so a comment-strip + byte-diff pass is
+needed before any deploy attempt, per standing process. **Per explicit
+instruction, no deploy or push has been done — awaiting go-ahead.**
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

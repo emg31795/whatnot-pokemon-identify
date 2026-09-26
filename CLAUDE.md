@@ -1367,6 +1367,48 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Mirror Eric's real eBay pricing-tier overrides in the break-even calc
+  — BUILT AND VERIFIED LOCALLY, NOT YET DEPLOYED, NOT YET PUSHED,
+  2026-09-26.** Eric's real eBay repricer template applies the
+  `LISTING_MARKUP_MULTIPLIER` (1.2x) markup (see the entry directly
+  below), then pins the result to a fixed price if it lands in one of
+  two bands: marked price in `[$0.00, $2.48]` → `$2.49`; marked price in
+  `[$20.00, $25.58]` → `$19.99`. `computeBreakEvenMaxBid` had no idea
+  about these overrides, so a market price whose `market × 1.2` landed
+  in the $20-$25.58 band (roughly market $16.67-$21.32) had its
+  break-even computed off a sale price up to ~$5 higher than what Eric
+  actually lists at — overstating safe bid room in that band; the
+  $0-$2.48 band is a smaller, opposite-direction miss.
+
+  **Fix**: new `LISTING_PRICE_TIERS` ordered-array constant next to
+  `LISTING_MARKUP_MULTIPLIER` in `api/identify.js` — first matching tier
+  wins (same semantics as the real template), easy for Eric to
+  add/edit/reorder tiers later. `computeBreakEvenMaxBid` walks it right
+  after computing the marked price and, on a match, replaces the marked
+  price with that tier's `newPrice` before the existing fee/shipping math
+  runs; no match leaves behavior exactly as before. Displayed Market
+  Price / per-condition prices are untouched — only the internal
+  break-even/Suggested Bid calc is affected, same scope boundary as the
+  original markup change.
+
+  **Verified locally against the real, extracted `computeBreakEvenMaxBid`
+  source** (not a reimplementation): all 3 cases requested — a market
+  price landing in the $20-$25.58 tier ($18.00 → marked $21.60 →
+  overridden to $19.99 → BE **$15.99**), one landing in the $0-$2.48 tier
+  ($2.00 → marked $2.40 → overridden to $2.49 → BE **$0.91**), and one
+  outside both bands confirming no regression (Chansey $64.47 NM → BE
+  **$60.91** / Suggested Bid **$46.85**, identical to the prior deploy's
+  verified numbers) — plus boundary checks at exactly $2.48/$25.58 (both
+  correctly tier-matched) and just above $25.58 (correctly falls through
+  to the untiered formula). `node --check` passes. Full trace in
+  `docs/test-cases.md`'s matching entry.
+
+  **Not yet deployed**: `api/identify.js` is 157,466 bytes, past this
+  project's documented Vercel large-file silent-omission risk threshold
+  — needs a comment-strip + byte-diff pass before any deploy attempt, per
+  standing process. **Per explicit instruction, awaiting go-ahead before
+  deploying or pushing.**
+
 - **Break-even / Suggested Max Bid now factor in Eric's 1.2x listing
   markup — BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-20**
   (`dpl_A9pscRdcDzMgpWypAZmeCK8KmTxc`, `READY`, aliased to
