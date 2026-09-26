@@ -290,6 +290,20 @@ const GEMINI_SCHEMA = {
     subtype: { type: "string", nullable: true },
     setName: { type: "string", nullable: true },
     attackName: { type: "string", nullable: true },
+    // ADDED (2026-09-26, Victreebel — Pokemon Jungle attackName tie):
+    // PPT's `attacks` data is always stored in English regardless of a
+    // card's actual print language (see extractFirstAttackName above),
+    // but a Japanese card's `attackName` is transcribed as-printed
+    // (Japanese script) — so the attackName scoring signal was
+    // structurally dead for every Japanese scan, never able to break a
+    // tie like this one (3 candidates sharing HP=80, no card number in
+    // PPT's data to disambiguate, only the real card's actual attacks —
+    // "Lure"/"Acid" vs. two decoys' "Razor Leaf" — could have told them
+    // apart). This new field asks for the standard English move name
+    // alongside the as-printed transcription (attackName is left
+    // untouched, not replaced, since other things may read it) so
+    // scoreCandidate can compare against PPT's English `attacks` data.
+    attackNameEnglish: { type: "string", nullable: true },
     language: { type: "string", enum: ["English", "Japanese"], nullable: true },
     stampType: {
       type: "string",
@@ -312,7 +326,7 @@ If cardNumber ends up null, briefly say why in reason (e.g. "number area obscure
 
 If the card text is in Japanese, translate the species name to its standard English name for cardName (e.g. チャーレム -> Medicham), and set language to "Japanese". Otherwise language is "English".
 
-attackName is just the short name of the top/first attack (e.g. "Continuous Tumble"), not a full transcription of its text or damage.
+attackName is just the short name of the top/first attack (e.g. "Continuous Tumble"), not a full transcription of its text or damage. If the card's attack name is printed in a language other than English, also fill in attackNameEnglish with that attack's standard/official English name (the name it's known by in English-language Pokemon TCG releases, not a literal word-for-word translation) — e.g. attackName "だいばくはつ" -> attackNameEnglish "Explosion". If the card's attack name is already printed in English, leave attackNameEnglish null (attackName already covers it).
 
 For stampType: only report "1st Edition" if the specific black/red "1st Edition" logo is actually visible and legible on the card — being an old-looking vintage holo is NOT evidence on its own. Default to "none" (meaning standard/Unlimited) whenever the stamp area is unclear, out of frame, or not confidently seen. Other tournament/promo stamps (Staff, Prerelease, Winner, Pokemon Center, World Championship) should only be reported if their text/logo is actually legible; use "other" for a visible-but-unrecognized stamp.
 
@@ -574,6 +588,9 @@ const HAIKU_SCHEMA = {
     subtype: { type: ["string", "null"] },
     setName: { type: ["string", "null"] },
     attackName: { type: ["string", "null"] },
+    // ADDED (2026-09-26) — see the matching comment on GEMINI_SCHEMA
+    // above for the full rationale (Victreebel/Pokemon Jungle tie).
+    attackNameEnglish: { type: ["string", "null"] },
     // FIX (2026-09-03, caught by a local smoke test before deploying —
     // see the shadow-test comment above): `type: ["string", "null"]`
     // combined with `enum` including `null` was rejected live by
@@ -600,6 +617,7 @@ const HAIKU_SCHEMA = {
     "subtype",
     "setName",
     "attackName",
+    "attackNameEnglish",
     "language",
     "stampType",
     "isSlab",
@@ -680,7 +698,7 @@ async function identifyWithHaiku(imageBase64, apiKey) {
 // log line. Deliberately the fields that actually drive matching/scoring
 // downstream (see scoreCandidate below) — not every raw field Gemini
 // returns (e.g. `reason` is free text, not meaningfully comparable).
-const HAIKU_SHADOW_COMPARE_FIELDS = ["cardName", "cardNumber", "hp", "subtype", "setName", "attackName", "language", "stampType", "isSlab", "confidence"];
+const HAIKU_SHADOW_COMPARE_FIELDS = ["cardName", "cardNumber", "hp", "subtype", "setName", "attackName", "attackNameEnglish", "language", "stampType", "isSlab", "confidence"];
 
 function haikuShadowFieldsMatch(a, b) {
   const na = a == null ? "" : String(a).trim().toLowerCase();
@@ -1028,6 +1046,70 @@ function numbersMatch(readRaw, candRaw) {
 // Pokémon cards) is still open, see ROADMAP.md.
 const NOTABLE_RARITY_PATTERN = /double rare|hyper rare|illustration rare|secret rare|shiny holo rare|ultra rare|prism rare|radiant rare|rare break|mega attack rare/i;
 
+// ADDED (2026-09-26, Victreebel — Pokemon Jungle attackName tie): the
+// attackName comparison used to require exact string equality, which
+// only ever worked when Gemini's read was already in English (matching
+// PPT's own English-only `attacks` data — see extractFirstAttackName
+// above). Now that a Japanese card also supplies `attackNameEnglish`
+// (Gemini's own translation to the move's standard English name, not a
+// literal transcription), exact equality is too strict a bar: official
+// Pokémon TCG translations are sometimes rendered slightly differently
+// across sources/printings ("Hydro Bombard" vs "Hydro-Bombard"), and a
+// vision model's translation of Japanese move text won't always land on
+// PPT's exact string even when it's substantively the same move. This
+// normalizes punctuation/whitespace/"&" first, then falls back to an
+// edit-distance similarity ratio so minor phrasing differences still
+// count as a match while genuinely different attacks (low similarity)
+// correctly don't.
+function normalizeAttackNameForMatch(name) {
+  return String(name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function levenshteinDistance(a, b) {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const row = new Array(n + 1);
+  for (let j = 0; j <= n; j++) row[j] = j;
+  for (let i = 1; i <= m; i++) {
+    let prevDiag = row[0];
+    row[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const temp = row[j];
+      row[j] = a[i - 1] === b[j - 1] ? prevDiag : 1 + Math.min(prevDiag, row[j], row[j - 1]);
+      prevDiag = temp;
+    }
+  }
+  return row[n];
+}
+
+// Similarity ratio >= this counts as a match once normalized. Tuned
+// against real PPT attack-name pairs (see docs/test-cases.md's matching
+// entry for the full multi-card verification) — high enough that
+// genuinely different attacks (e.g. "Lure" vs "Razor Leaf", similarity
+// ~0.2) never cross it, low enough that realistic translation-phrasing
+// variance ("Hydro Bombard" vs "Hydro-Bombard", "Poltergeist" vs
+// "Poltergeist!") still does.
+const ATTACK_NAME_FUZZY_THRESHOLD = 0.82;
+
+function attackNamesFuzzyMatch(readAttackName, candidateAttackName) {
+  const a = normalizeAttackNameForMatch(readAttackName);
+  const b = normalizeAttackNameForMatch(candidateAttackName);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const maxLen = Math.max(a.length, b.length);
+  const similarity = 1 - levenshteinDistance(a, b) / maxLen;
+  return similarity >= ATTACK_NAME_FUZZY_THRESHOLD;
+}
+
 function scoreCandidate(candidate, read) {
   let score = 0;
   const detail = {};
@@ -1064,7 +1146,14 @@ function scoreCandidate(candidate, read) {
     detail.set = true;
   }
 
-  if (read.attackName && candidate.attackName && String(candidate.attackName).toLowerCase().trim() === String(read.attackName).toLowerCase().trim()) {
+  // FIX (2026-09-26, Victreebel — Pokemon Jungle attackName tie): prefer
+  // the translated attackNameEnglish when present (non-English cards),
+  // falling back to attackName (already English on an English card, so
+  // this is a no-op for the English path — attackNameEnglish is null
+  // there per the prompt). Compared via attackNamesFuzzyMatch, not exact
+  // equality — see the comment above that function for why.
+  const attackNameForCompare = read.attackNameEnglish || read.attackName;
+  if (attackNameForCompare && candidate.attackName && attackNamesFuzzyMatch(attackNameForCompare, candidate.attackName)) {
     score += SCORE.attackName;
     detail.attackName = true;
   }
@@ -1202,7 +1291,7 @@ function pickBestCandidate(candidates, read, logPrefix) {
     "tieCount=",
     tieCount,
     "read=",
-    { cardName: read.cardName, cardNumber: read.cardNumber, hp: read.hp, subtype: read.subtype, setName: read.setName, attackName: read.attackName }
+    { cardName: read.cardName, cardNumber: read.cardNumber, hp: read.hp, subtype: read.subtype, setName: read.setName, attackName: read.attackName, attackNameEnglish: read.attackNameEnglish }
   );
 
   if (!best || bestScore < MATCH_FLOOR) {
@@ -1454,7 +1543,21 @@ async function fetchPokemonPriceTracker(name, { graded = false, language = "Engl
 function extractFirstAttackName(attacks) {
   if (!Array.isArray(attacks) || !attacks.length) return null;
   const first = String(attacks[0] || "");
-  const m = first.match(/^\s*\[[^\]]*\]\s*([^(\r\n<]+)/);
+  // FIX (2026-09-26, found while testing the attackNameEnglish fuzzy-
+  // match fix above): this regex only ever stripped ONE leading
+  // "[cost]" bracket group, so a multi-energy-cost attack like
+  // "[Fire][Colorless] Explosion Y" came out as "[Colorless] Explosion
+  // Y" — a leftover bracket survived as part of candidate.attackName.
+  // Checked against real PPT data across 6 species (180 candidates):
+  // 71% of real extracted attack names had this residual bracket. Since
+  // Gemini's own read.attackName/attackNameEnglish never includes cost
+  // brackets (the prompt asks for "just the short name"), this silently
+  // broke the attackName comparison for the large majority of real
+  // multi-cost-attack cards — not just for the new Japanese-translation
+  // path, but for English cards too, the whole time this signal has
+  // existed. `(?:\[[^\]]*\]\s*)+` now consumes every leading bracket
+  // group, however many there are, before capturing the actual name.
+  const m = first.match(/^\s*(?:\[[^\]]*\]\s*)+([^(\r\n<]+)/);
   return m ? m[1].trim() : null;
 }
 

@@ -203,6 +203,75 @@ flagged as still open, not resolved.
 Committed and **pushed to GitHub** (commit `2b1c1c6`, `464fc45..2b1c1c6`,
 `main`) per explicit go-ahead.
 
+**Update, 2026-09-26, later same evening: post-deploy live check-in
+(Eric scanning live, ~19 minutes of real traffic on
+`dpl_EhCjA8NthYsG8S4MTCu4bHYPdjqq`) — health read only, no code
+changed.** Zero runtime errors, latency 1413-2488ms across 29 real
+samples (inside the 1-3s target). Of ~29 real identify calls, 5 hit the
+new legacy-model number rescue and 1 hit the new weak-signal floor —
+all spot-checked as plausible-to-confirmed correct. Two watch items
+came out of it, logged in `docs/test-cases.md`'s matching entry, neither
+urgent, no fix proposed yet: (1) a real Japanese Azumarill scan had
+BOTH the primary and legacy shadow model agree on reading
+`cardNumber: "No. 184"` — unusual for this failure mode — which is
+actually Azumarill's Pokédex number, not a print number; the floor
+correctly withheld the price, but if this recurs on other cards with
+similar flavor-text layout it may be worth a prompt tweak distinguishing
+"Pokédex number" from "print number." (2) A real Charizard ex - 115/190
+(SV4a: Shiny Treasure ex, Japanese) rescue returned $2.31, which looked
+suspicious next to pricier alt-art variants in the same pool but is very
+likely correct — SV4a is a high-print-run set where base-numbered "ex"
+cards (as opposed to the chase alt-art variants) legitimately sell for a
+couple dollars; logged so a future low price on this set isn't mistaken
+for a misidentification.
+
+**Update, 2026-09-26, later same evening: Victreebel (Pokemon Jungle)
+misidentification investigated, root-caused, and a fix BUILT AND TESTED
+LOCALLY — NOT YET DEPLOYED.** Eric reported a real Japanese Victreebel
+scan failing to identify after 4-5 attempts. Investigated via real
+runtime logs (all 5 real attempts pulled and read) plus a live PPT
+catalog query, per standing convention, before any code change: the
+real card (Pokemon Jungle, Holo Rare, HP 80, attacks "Lure"/"Acid") WAS
+sitting in the fetched candidate pool the whole time, tied 3-for-3 at
+`bestScore=6` (HP-only) against two "Erika's Victreebel" decoys that
+also have HP 80 and an empty `cardNumber` in PPT's data (all three, real
+vintage-era cards, have no numeric identifier PPT can match against at
+all) — so no amount of rescanning could ever have broken the tie; it
+was structural, not a legibility issue. Root cause: `attackName`
+scoring (worth 4 points, the only signal left that could have separated
+the real card's "Lure"/"Acid" from the decoys' shared "Razor Leaf") was
+silently dead on every Japanese card — Gemini transcribes the attack
+name as-printed (Japanese script), but PPT's `attacks` data is always
+stored in English, so the exact-string comparison never fired.
+
+**Fix, per explicit request, with fuzzy matching (not strict
+equality)**: a new `attackNameEnglish` schema field (Gemini + Haiku)
+asks for the attack's standard English move name on a non-English card,
+compared via a new normalized edit-distance fuzzy matcher instead of
+exact equality (official translations render slightly differently
+across sources, and a vision model's translation won't always land on
+PPT's exact string). **A second, independent bug found while testing,
+fixed in the same pass**: `extractFirstAttackName` only stripped ONE
+leading `[cost]` bracket, leaving a residual bracket on 71% of real
+multi-energy-cost attacks (checked live across 6 species, 180
+candidates) — which would have silently broken the new fuzzy match for
+most real cards, English ones included, not just the Japanese path this
+fix targets. Fixed alongside; re-verified 0% residual afterward.
+
+**Verified locally, 79 checks total, all passing** — English cards
+completely unaffected, a close-but-not-exact Japanese translation
+matches, a genuinely different attack correctly does not match (fuzzy
+threshold tuned against real catalog data so it isn't too loose), 6
+species' worth of real PPT attack-name perturbation and negative-control
+checks, and **the real Victreebel case re-verified resolved**:
+`bestScore` 6→10, `tieCount` 3→1, correctly picks the real Pokemon
+Jungle card over both decoys. Full trace, all test categories, and the
+one honestly-flagged limitation (fuzzy matching can't rescue a
+genuinely-wrong translation, only a close-but-imperfect one) in
+`docs/test-cases.md`'s matching entry. **Holding for explicit go-ahead
+before deploying or pushing**, per standing convention — a live rescan
+report is wanted first.
+
 **Update, 2026-09-26, later same day: Gemini cardNumber read-consistency
 fix — BUILT, DEPLOYED, AND LIVE-CONFIRMED, with one real deploy incident
 along the way (honestly disclosed below).** See the dedicated "Recent /

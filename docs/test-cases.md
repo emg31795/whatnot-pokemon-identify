@@ -6521,6 +6521,120 @@ open, not resolved — flagged precisely rather than overclaimed.
 Committed and pushed to GitHub (commit `2b1c1c6`, `464fc45..2b1c1c6`,
 `main`) per explicit go-ahead.
 
+**Post-deploy live check-in, 2026-09-26, later same evening (Eric
+scanning live, ~19 minutes of real traffic on `dpl_EhCjA8NthYsG8S4MTCu4bHYPdjqq`)**:
+health read only, no code changed. Zero runtime errors, 29 real
+`total ms` samples ranging 1413-2488ms (median ~1805ms, inside the 1-3s
+target). Of ~29 real identify calls, 5 hit the new
+`LEGACY-MODEL NUMBER RESCUE` path (Revavroom ex, Entei, Special Red
+Card, Charizard ex, Hitmonchan — all spot-checked as plausible-to-
+confirmed correct; the Hitmonchan rescue landed on the real Base Set
+#7/102) and 1 hit the new weak-signal floor (Azumarill, price
+correctly withheld). Two watch items came out of this check-in, logged
+below — neither urgent, no fix proposed yet.
+
+**Watch item 1 — possible Pokédex-number-as-cardNumber misread
+pattern.** On the real Japanese Azumarill scan that hit the weak-signal
+floor, both the primary model AND the `[legacy-model-shadow-test]`
+model agreed on reading `cardNumber: "No. 184"` — unusual for this
+failure mode, which normally has the two models disagree. 184 is
+Azumarill's Pokédex number, not a set/print number; both models may be
+latching onto Pokédex-number flavor text near the card's bottom edge
+instead of the actual print-number fraction. The new weak-signal floor
+caught it correctly this time (withheld the price, no bad number shown
+to Eric) — this is one data point, not confirmed as a pattern. If it
+recurs on other cards with similar flavor-text layout, it's worth a
+targeted prompt tweak explicitly distinguishing "Pokédex number" from
+"print number." Not built, not urgent.
+
+**Watch item 2 — SV4a: Shiny Treasure ex has legitimately low prices on
+base-numbered "ex" cards.** The same check-in's Charizard ex - 115/190
+(Holofoil, Japanese) rescue returned $2.31, which looked suspicious
+next to the much pricier alt-art Special/Secret Rare Charizard ex
+variants (numbered above 190) sitting in the same candidate pool. Very
+likely correct, not a misidentification: SV4a is a notoriously
+high-print-run set, and "ex" cards at their regular base number (as
+opposed to the chase alt-art variants) routinely sell for just a couple
+dollars. Logged so a future low price on this specific set isn't
+mistaken for a misidentification without checking base-vs-alt-art
+numbering first.
+
+**Follow-up fix, 2026-09-26, same evening: Japanese attackName
+translation + fuzzy matching — BUILT AND TESTED LOCALLY, NOT YET
+DEPLOYED.** Directly resolves watch item 1's underlying mechanism (the
+attackName scoring signal being structurally dead on every Japanese
+card, confirmed root cause of the Victreebel tie above): PPT's `attacks`
+data is always stored in English regardless of a card's actual print
+language, but Gemini/Haiku transcribe the attack name as-printed — so
+`scoreCandidate`'s exact-string attackName comparison never fired on a
+Japanese card. Built per explicit request: (1) a new `attackNameEnglish`
+schema field (both `GEMINI_SCHEMA` and `HAIKU_SCHEMA`) asking for the
+attack's standard English move name when the card isn't in English,
+left null on an English card (attackName already covers it) — the
+as-printed `attackName` field is untouched, not replaced; (2) the
+comparison now prefers `attackNameEnglish` when present, falling back to
+`attackName`, via a new fuzzy matcher (`attackNamesFuzzyMatch`/
+`normalizeAttackNameForMatch`/`levenshteinDistance`) instead of exact
+equality — normalizes punctuation/whitespace/"&", then accepts an
+edit-distance similarity ratio ≥0.82, so minor real-world translation-
+phrasing variance ("Hydro Bombard" vs "Hydro-Bombard") still counts
+while genuinely different attacks don't.
+
+**A second, real bug found while testing, fixed in the same pass**:
+`extractFirstAttackName` only ever stripped ONE leading `[cost]` bracket
+group, so any multi-energy-cost attack (e.g. `"[Fire][Colorless]
+Explosion Y"`) left a residual bracket in `candidate.attackName` —
+checked against real PPT data across 6 species (180 candidates, live
+`search=`/`language=japanese` queries for Charizard/Gengar/Blastoise/
+Alakazam/Mewtwo/Pikachu): **71% of real extracted attack names had this
+leftover bracket**. Since neither Gemini's `attackName` nor the new
+`attackNameEnglish` field ever includes cost brackets, this would have
+silently broken the new fuzzy match for the large majority of real
+cards — not just Japanese ones, English cards with a 2+-cost first
+attack have been silently losing this scoring signal the whole time
+this fix has existed, undetected until this test pass. Fixed by
+matching one-or-more leading bracket groups instead of exactly one;
+re-checked the same 6-species pull afterward — 0% residual brackets.
+
+**Verified locally, against the real (not reimplemented) functions**,
+via a scratch copy of `api/identify.js` byte-diff-verified identical to
+the real file except for its own appended test-only exports: 79 checks
+total, all passing —
+- 23 unit checks on `attackNamesFuzzyMatch` (exact/case/hyphen/
+  punctuation/whitespace/&-variants matching; several real-catalog
+  genuinely-different-attack pairs correctly not matching; null-safety).
+- 8 `scoreCandidate` integration checks: an English card is completely
+  unaffected (exact match still scores, a genuine mismatch still
+  doesn't); a Japanese card with a close-but-not-exact translation
+  ("Hydro-Bombard" vs PPT's "Hydro Bombard") correctly matches; a
+  Japanese card whose translated attack is genuinely a different move
+  correctly does not match; **the real Victreebel (Pokemon Jungle) case
+  from the check-in above now resolves** — `bestScore` goes from 6
+  (HP-only, 3-way tie) to 10 (HP+attackName, `tieCount:1`), correctly
+  picking the real card over both "Razor Leaf" decoys.
+- 36 synthetic multi-species perturbation checks (case/hyphenation/
+  trailing punctuation/padding whitespace/& against each species' real
+  PPT attack name, plus a same-species genuinely-different negative
+  control) across all 6 pulled species — 6/6 clean.
+- 12 full end-to-end `scoreCandidate` checks using realistic clean,
+  bracket-free Gemini-style translations against two distinct real
+  candidates per species (post-bracket-fix) — every species: the real
+  candidate's own translated attack matches, a translation of the
+  OTHER real candidate's attack does not.
+
+**Known, honestly-flagged limitation, not fixable by string matching
+alone**: fuzzy matching only helps when Gemini's translation is
+textually close to PPT's stored English name. If Gemini's translation
+uses genuinely different terminology for the same move (not just
+phrasing/punctuation variance), no similarity threshold recovers that —
+this is inherently a translation-accuracy question, not purely a code
+one, as flagged going in. Not yet observed either way in real traffic;
+worth watching once deployed.
+
+**Not yet deployed, not yet pushed** — per explicit instruction, holding
+for a live rescan report before deploying. See CLAUDE.md's "Current
+priority" for the matching status entry.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
