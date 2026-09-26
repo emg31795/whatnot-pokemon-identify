@@ -733,7 +733,7 @@
   // red as a negative BE was, since it's BE divided by a positive margin
   // factor and therefore keeps the same sign.
   //
-  // Two distinct "no number" cases, deliberately NOT collapsed into one:
+  // Three distinct states, deliberately NOT collapsed into each other:
   // - `suggestedBid` param itself is undefined (e.g. the graded-slab
   //   fallback branch below, which has no pricingLookup-derived data at
   //   all) -> omit the suffix entirely, same graceful-degradation this
@@ -743,6 +743,19 @@
   //   scan) -> show an explicit "(Bid: —)" rather than silently doing
   //   nothing or falling back to a different number under the same
   //   label, per explicit instruction.
+  // - `suggestedBid` IS a real number but <= $0 (fees + shipping eat the
+  //   whole assumed sale price even after the 1.2x markup — real,
+  //   correct math, not a bug) -> FIX (2026-09-26, user report: a bare
+  //   "(Bid: -$0.62)" reads as broken output mid-auction, not as "don't
+  //   bid") show a plain-language "(Bid: Skip)" flag instead of the raw
+  //   dollar figure. Threshold is exact (`bid <= 0`), not a fuzzy
+  //   "too low" heuristic. The math itself is completely unchanged
+  //   (computeSuggestedBid/computeBreakEvenMaxBid in api/identify.js
+  //   untouched) and the real negative break-even number is still shown
+  //   in full, unhidden, in the sell-through badge's own tooltip (see
+  //   sellThroughBadgeHtml) — this only changes the headline figure on
+  //   the condition row, per this project's "never hide real numbers,
+  //   just don't let one number read as a glitch" principle.
   function conditionRowsHtml(conditions, suggestedBid) {
     return CONDITION_ORDER.map((tier) => {
       const price = conditions ? conditions[tier] : null;
@@ -750,11 +763,11 @@
       if (price != null && suggestedBid) {
         const bid = suggestedBid[tier];
         bidHtml =
-          bid != null
-            ? ` <span class="wnpk-be${bid < 0 ? " wnpk-be-negative" : ""}">(Bid: ${
-                bid < 0 ? "-$" + Math.abs(bid).toFixed(2) : "$" + bid.toFixed(2)
-              })</span>`
-            : ` <span class="wnpk-be">(Bid: —)</span>`;
+          bid == null
+            ? ` <span class="wnpk-be">(Bid: —)</span>`
+            : bid <= 0
+            ? ` <span class="wnpk-be wnpk-be-negative">(Bid: Skip)</span>`
+            : ` <span class="wnpk-be">(Bid: $${bid.toFixed(2)})</span>`;
       }
       return `<div class="wnpk-cond-row"><span>${tier}</span><span>${
         price != null ? "$" + price.toFixed(2) + bidHtml : "—"
