@@ -1505,9 +1505,9 @@ checklist before reporting something as finished:
   no regression to ordinary pricing. `get_runtime_errors` clean for 15
   minutes post-deploy.
 
-  **Not yet pushed to GitHub** — committed locally (`abfde28`) before
-  this deploy; push needs the user's own go-ahead per this project's
-  standing convention (deploy and push are separate approvals).
+  **Pushed to GitHub** (commit `abfde28`, plus the subsequent
+  documentation and listing-markup commits through `eb34c4b`) — local
+  `main` and `origin/main` confirmed identical as of 2026-09-25.
 
   **Open question, deliberately not acted on yet**: does this alone
   meaningfully close the gap the user's Lotad report raised, or do the
