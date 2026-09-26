@@ -70,6 +70,38 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
+**Update, 2026-09-26, later same day: Gemini cardNumber read-consistency
+fix — BUILT, DEPLOYED, AND LIVE-CONFIRMED, with one real deploy incident
+along the way (honestly disclosed below).** See the dedicated "Recent /
+in-flight work" entry below for the full investigation, fix, and deploy
+trace. Short version: a live-traffic audit found ~27-35% of scans landing
+in genuine identification ties, with Gemini's `cardNumber` coming back
+`null` as the biggest driver — investigated (prompt read, real logs,
+same-frame Haiku evidence), diagnosed as a mix of genuine legibility limit
+and a real prompt/fallback gap, and fixed with explicit go-ahead: better
+prompt guidance on where the card number is printed + glare handling, a
+`reason` field asking Gemini to explain *why* whenever cardNumber is null
+(so future nulls are self-diagnosing), a setName-based tie-narrowing
+rescue for null-cardNumber ties, and a corrected ambiguous-tie message
+that no longer always blames "wasn't legible" when the number was
+actually legible. **Deploy incident**: the first deploy attempt included
+a `api/price.js` that was reconstructed from memory instead of read from
+the real file — missing `conditionsSuggestedBid`/`sellThrough`/
+`listingCount`/`requestId` from the response — caught within minutes via
+a post-deploy hash check (not assumed correct) and fixed with a
+corrected redeploy using the real file. **Live-confirmed**: a real
+end-to-end scan (Pikachu XY95) returned correct identification
+(`timingMs.total: 1708`ms) and the corrected `/api/price` response now
+includes every expected field; real organic traffic in the minutes after
+deploy (a Primarina scan, a Pikachu EX scan) ran cleanly through the
+existing page-2/combined-search fallback logic with zero errors, and one
+real Haiku shadow-test `reason` field read "card number area obscured by
+glare and angle of card" — direct confirmation the new prompt text is
+live and working as designed. **Not yet observed**: a real null-cardNumber
+tie actually getting narrowed by the new setName rescue in live traffic
+(none occurred in the post-deploy window checked) — worth a normal
+amount of continued log-watching, not a dedicated follow-up.
+
 **Update, 2026-09-26**: the eBay pricing-tier override fix (see the
 dedicated "Recent / in-flight work" entry below) is deployed,
 live-confirmed on real productIds, pushed to GitHub, AND now also
@@ -1380,6 +1412,149 @@ checklist before reporting something as finished:
   they do not auto-reload (caused real confusion in test #43).
 
 ## Recent / in-flight work
+
+- **Gemini cardNumber read-consistency investigation + fix — BUILT,
+  DEPLOYED, AND LIVE-CONFIRMED, 2026-09-26** (commit `adaa18e`, plus a
+  post-deploy fix redeployed live — see incident below; not yet pushed
+  to GitHub as of this entry). Investigated per explicit request,
+  triggered by a live-traffic audit finding ~27-35% of scans landing in
+  genuine identification ties, with Gemini's `cardNumber` coming back
+  `null` as the reported biggest driver (named examples: Moltres,
+  Ceruledge, Fuecoco, Piplup, a 7-way Mew EX tie).
+
+  **Investigation, honestly scoped**: could NOT reproduce the specific
+  named examples via real logs — Vercel's runtime-log retention (see
+  "Known gotchas") had already rolled past them by the time this session
+  started; `since=8h` hit a hard `ExceedsBillingLimitError`, and searches
+  for "Moltres"/"Ceruledge"/"Fuecoco"/"Piplup" returned zero hits at
+  every window queryable. What WAS available: a live ~1h window (~19
+  `/api/identify` calls) with 0/11 primary Gemini reads showing
+  `cardNumber: null` — didn't reproduce the pattern directly. But a
+  directly relevant same-frame signal was available regardless: this
+  session's own `[haiku-shadow-test]` lines (Haiku reads the SAME frame
+  as Gemini, same prompt) showed Haiku returning `cardNumber: null`
+  repeatedly, and every time it did, its own `reason` text attributed it
+  to legibility/angle/lighting ("not clearly legible in this frame
+  angle," etc.) — never a sign of misunderstanding the field. Real,
+  code-level, confirmed-independent-of-the-log-gap finding:
+  `scoreCandidate()` (`api/identify.js`) skips its entire number-scoring
+  block (`SCORE.number = 20`, the single largest weight — over 3x the
+  next-highest signal) whenever `read.cardNumber` is null, AND every
+  number-based rescue path (page-2 pagination, combined name+number
+  search) is ALSO gated on `read.cardNumber` being truthy — so a null
+  read doesn't just lose the top signal, it loses the entire existing
+  safety net built for "number came back but isn't in the pool." For a
+  species with many printings (Mew EX has dozens), that alone explains a
+  wide tie.
+
+  **Diagnosis reported back before building** (per explicit instruction):
+  both a genuine legibility limit AND a real, fixable prompt/fallback
+  gap — not one or the other. Proposed A) a `reason`-field diagnostic
+  instruction (zero risk, closes the "can't audit after logs expire"
+  gap this exact investigation hit), B) explicit prompt guidance on
+  where the card number is printed + glare handling (the one real
+  behavior change, unverified until live use), C) a setName-based
+  tie-narrowing rescue for null-cardNumber ties + an ambiguous-tie
+  message fix. User approved all three.
+
+  **Built**: `GEMINI_PROMPT` (shared by both Gemini and Haiku) now
+  explains the card number is normally small bottom-edge text, gives
+  format examples (fraction vs. promo code), and tells the model to
+  check through holo/foil glare before giving up; also asks it to
+  briefly state *why* in `reason` whenever cardNumber ends up null.
+  `lookupCardPPT` (`api/identify.js`) now has a new rescue block: when
+  `cardNumber` is null and candidates tie, a read `setName` (if present)
+  explicitly narrows the tied set rather than only contributing its
+  diluted +3 score; narrowing fully to one candidate is disclosed
+  (capped at Medium confidence, not silently promoted to High) via a
+  new note text, not treated as a confirmed match. `ambiguousNoteText()`
+  now takes a `numberWasLegible` param so the message no longer always
+  claims "the card number... wasn't legible this scan" when the number
+  actually WAS legible and matched but a genuine duplicate-printing tie
+  still existed (distinct from the already-handled Shadowless case).
+
+  **Verified locally before deploying**: a mocked-fetch harness driving
+  the real `lookupCardPPT()`/`ambiguousNoteText()` (not a
+  reimplementation) — 20 checks, all passing: the narrowing mechanism
+  resolving a compensating-score tie to one candidate with confidence
+  correctly capped; a tie whose setName read matches neither candidate
+  correctly left alone; the new duplicate-number message firing only
+  when the number was legible; the Shadowless-tie path and an ordinary
+  clean match both unaffected. Re-ran the same 20 checks against the
+  exact comment-stripped file before deploying, identical results.
+
+  **Deploy incident, honestly disclosed — a NEW failure mode, not the
+  historical transcription-corruption one.** `api/identify.js`
+  (162,878 bytes) was comment-stripped via `strip-comments` (installed
+  in a scratch dir, not a project dependency) to 66,137 bytes, verified
+  via a line-by-line diff script (0 suspicious partial-line changes,
+  only whole-line comment blanking) before deploying. The FIRST deploy
+  call, however, included an `api/price.js` that was **reconstructed
+  from memory/reasoning about the system rather than read from the real
+  file this session** — it was plausible-looking (correctly handled
+  `pricingLookup`/sibling merging/`buildLiveVariantsForCandidate`) but
+  silently missing `conditionsSuggestedBid`, `sellThrough`,
+  `listingCount`, and the top-level `requestId` echo from the response
+  — a real, live degradation (Suggested Bid and the sell-through badge
+  would have silently stopped appearing in the extension for every
+  price fetch). This deploy went `READY` and was auto-aliased to
+  production before the mistake was caught. **Caught within minutes**,
+  not assumed away: `list_deployment_files`'s per-file `uid` (confirmed
+  to be a genuine content sha1 — verified because 3 of 5 files matched
+  local `shasum` exactly) showed `api/price.js`'s uid did NOT match the
+  real local file's hash; fetching the deployed content back confirmed
+  the fabrication directly. Fixed immediately: re-read the REAL
+  `api/price.js` from disk and redeployed with that exact content
+  (`api/identify.js`/`api/flag.js`/`vercel.json`/`package.json`
+  reused by their already-verified sha references, not re-transcribed a
+  second time) — the corrected deploy's `api/price.js` uid then matched
+  local `shasum` exactly (`13f9e5ef...`).
+
+  **One remaining, honestly-flagged verification gap**: `api/identify.js`
+  itself could NOT be byte-diffed against the local source post-deploy —
+  `get_deployment_file_contents` truncates at a small fixed size
+  regardless of file (confirmed by testing against the 2225-byte
+  `flag.js`, which also truncated), so there's no way to pull the full
+  66KB file back for comparison with available tooling. Mitigated with
+  the strongest evidence actually obtainable: the live `GET
+  /api/identify` debug endpoint's `sourceHash` exactly matches the
+  deployment's own file uid (proving internal consistency and that no
+  unpredictable build transform is at play, contrary to an older,
+  unconfirmed note elsewhere in this file); `normalizeDiacriticTest`
+  returns the correct `"pokemon collector"` (this file's single most
+  historically fragile spot, confirmed intact); a real end-to-end scan
+  (Pikachu XY95, `tcgPlayerId: "114004"`, High confidence,
+  `timingMs.total: 1708`ms) returned correct results; and real ORGANIC
+  traffic in the minutes after deploy (not just synthetic checks) — a
+  Primarina scan (clean, `tieCount: 1`) and a Pikachu EX scan (a genuine
+  "NO NUMBER MATCH IN POOL" case that correctly triggered the existing
+  page-2 pagination and combined-search fallbacks) — both ran with zero
+  errors through code paths adjacent to what changed. One of those real
+  scans' Haiku shadow-test `reason` field read "card number area
+  obscured by glare and angle of card" — direct, organic confirmation
+  the new prompt text is live and producing exactly the diagnostic
+  output it was designed to. `get_runtime_errors` clean for the 15
+  minutes following deploy. Given all of this, functional correctness is
+  well-supported, but a literal byte-for-byte source match for this one
+  file is not something this session's tooling could confirm — flagging
+  precisely rather than overclaiming it the way past sessions have
+  warned against.
+
+  **Not yet observed**: a real null-cardNumber tie actually getting
+  narrowed by the new setName rescue, or the new `reason`-on-null
+  diagnostic text from GEMINI's own (not just Haiku's) reads, in real
+  live-stream traffic — none occurred in the post-deploy window checked.
+  Worth normal continued log-watching (the same discipline that
+  originally surfaced this issue), not a dedicated follow-up test.
+
+  **Note on the price.js incident and git**: `api/price.js` itself was
+  never part of this fix's intended code changes and was never touched
+  in the local commit (`adaa18e` only modifies `api/identify.js`, per
+  its diff) — the fabrication existed ONLY in the deploy tool call's
+  payload for a brief window between the two deploys, never in the git
+  repo or on disk. Once corrected, the live deployment matches the
+  real, always-correct local `api/price.js` exactly (hash-verified) —
+  no follow-up commit is needed for this file.
 
 - **Negative Suggested Bid now shown as a plain-language "(Bid: Skip)"
   flag instead of a raw dollar figure — BUILT, COMMITTED, AND PUSHED;
