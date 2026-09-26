@@ -70,6 +70,20 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
+**Update, 2026-09-26**: the eBay pricing-tier override fix (see the
+dedicated "Recent / in-flight work" entry below) is deployed,
+live-confirmed on real productIds, pushed to GitHub, AND now also
+verified against a broader real post-deploy traffic sample
+(31/31 real tier-band hits matched the expected math, zero errors,
+latency clean) — fully closed out, nothing further needed unless a
+future scan surfaces a new edge case. Separately, a small frontend-only
+display fix shipped the same day: negative Suggested Bid values now
+show `(Bid: Skip)` instead of a raw dollar figure (commit `5f94373`,
+pushed). **Immediate next step**: reload the extension in
+`chrome://extensions` and rescan a negative-bid card to move that fix
+from "verified in a Node harness" to "confirmed live in the real
+panel" — no other action needed unless that reveals a problem.
+
 **Update, 2026-09-13, later same day**: fixed a real, user-reported bug
 where a Base Set (Shadowless) tie was silently miscounted as
 unambiguous, producing a systematic bias toward Shadowless with no
@@ -1367,6 +1381,42 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Negative Suggested Bid now shown as a plain-language "(Bid: Skip)"
+  flag instead of a raw dollar figure — BUILT, COMMITTED, AND PUSHED;
+  NOT YET LIVE-CONFIRMED, 2026-09-26** (commit `5f94373`,
+  `c47cdce..5f94373`, `main`). User report: when Suggested Bid math
+  legitimately computes to `<= $0` (fees + shipping exceed the assumed
+  sale price even after the 1.2x markup/tier overrides — real, correct
+  math, not a bug), the panel showed the bare negative figure (e.g.
+  `(Bid: -$0.62)` on a real $0.52 HP-condition print), which reads as
+  broken output mid-auction rather than "don't bid on this."
+  Frontend-only fix in `extension/content.js`'s `conditionRowsHtml`:
+  a `suggestedBid <= 0` now renders `(Bid: Skip)` (same red
+  `.wnpk-be-negative` styling) instead of the dollar amount; exact
+  threshold, not a fuzzy heuristic. The two pre-existing states stay
+  distinct and untouched — a missing tier still shows `(Bid: —)`, no
+  `suggestedBid` param at all (graded-slab fallback) still omits the
+  suffix. No changes to `computeSuggestedBid`/`computeBreakEvenMaxBid`
+  (`api/identify.js`) — the real negative number is still shown in full
+  in the sell-through badge's tooltip, unhidden. Verified locally
+  against the real, extracted function (5 cases: the real negative
+  example, a normal positive card, the missing-tier case, the
+  no-param case, and an exact $0.00 boundary) — all matched. `node
+  --check` passes; `content.js` is 57.7KB, well under this project's
+  large-file deploy-danger threshold.
+
+  **This change needs no Vercel deploy at all** —
+  `extension/content.js` isn't part of `api/`/`vercel.json`; only a
+  Chrome-extension file changed. Committed and pushed per explicit
+  go-ahead. **Not yet live-confirmed**: per the documented "extensions
+  require a manual reload" gotcha, needs a `chrome://extensions` reload
+  plus a live rescan of a negative-bid card to visually confirm
+  `(Bid: Skip)` renders correctly in the real panel — no tooling in
+  this session can do that reload. Low-risk (display-only, no math
+  change) but flagged per the "definition of done" checklist rather
+  than marked fully closed. See the matching `docs/test-cases.md` entry
+  for the full trace.
+
 - **Mirror Eric's real eBay pricing-tier overrides in the break-even calc
   — BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-26**
   (`dpl_CisedPtq7ndjiiyjj2XwAyonKvti`, `READY`, aliased to
@@ -1456,9 +1506,28 @@ checklist before reporting something as finished:
   inside the 1-3s target), confirming no regression to the identify
   path. `get_runtime_errors` clean for the 10 minutes following deploy.
 
-  Not yet pushed to GitHub — per explicit instruction, the deploy
-  go-ahead did not extend to pushing; awaiting a separate go-ahead for
-  that.
+  **Pushed to GitHub** (commit `c47cdce`) — confirmed via `git log`
+  later the same day (local `main` matches `origin/main`). This
+  corrects the note above, which was accurate when written but went
+  stale once the separate push go-ahead came through.
+
+  **Update, 2026-09-26, later same session: broader post-deploy traffic
+  verification (verification only, no code changed)** — asked for a
+  wider pass beyond the two hand-verified productIds above. Every real
+  `tcgPlayerId` seen in actual `/api/price` traffic since this deploy
+  (36 unique cards, ~11 minutes of real scanning) was hit again live
+  and independently recomputed against the same formula (neither
+  `identify.js` nor `price.js` logs the actual dollar figures, so this
+  couldn't be a literal log replay). **Result: 31/157 real condition
+  rows landed in an override band, and all 31/31 matched the expected
+  tier-overridden math exactly** (27 low-band, 4 high-band, including a
+  genuine $0.00-raw-price boundary case that correctly still overrides
+  to $2.49/BE $0.91) — plus all 126/126 non-tier rows matched the
+  untiered formula too. `get_runtime_errors` clean since deploy;
+  latency from real `[timing]` lines held at median 1890ms / max
+  2968ms, still inside the 1-3s target, 0 calls over 3000ms. Nothing
+  flagged as off. Full numbers and 5 worked examples in
+  `docs/test-cases.md`'s matching entry.
 
 - **Break-even / Suggested Max Bid now factor in Eric's 1.2x listing
   markup — BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-20**

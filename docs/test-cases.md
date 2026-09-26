@@ -6045,8 +6045,112 @@ TCGplayer's own public CDN) returned correct identification
 inside the 1-3s target), confirming no regression to the identify path.
 `get_runtime_errors` clean for the 10 minutes following deploy.
 
-**Not yet pushed to GitHub** — the deploy go-ahead did not extend to
-pushing; awaiting a separate go-ahead for that.
+**Pushed to GitHub** (commit `c47cdce`) — confirmed via `git log`/`git
+status` (local `main` matches `origin/main`, working tree clean) in a
+later session the same day. This corrects the line above, which was
+accurate at the time it was written but went stale once the push
+actually happened.
+
+**Update, 2026-09-26, later same session: broader post-deploy traffic
+verification (verification only, no code changed).** The two
+productIds hand-verified above (478136, 497604) were real but few —
+asked for a wider pass against actual `/api/price` traffic since this
+deploy went live. Neither `api/identify.js` nor `api/price.js` logs the
+actual dollar amounts it computes (only productIds/sku counts), so a
+literal replay of historical response bytes wasn't possible; instead,
+every real `tcgPlayerId` that appeared in real `/api/price` traffic
+since `dpl_CisedPtq7ndjiiyjj2XwAyonKvti` went live (36 unique cards
+across ~11 minutes of real scanning, both the deploy-checklist burst
+and organic-looking spaced-out scans through 02:23:43 UTC) was hit
+again live, minutes later, against the actual production `/api/price`
+endpoint, and the returned `conditionsBreakEven` was checked against an
+independent recomputation of the same formula off the (still-fresh)
+returned `conditionPrices`.
+
+**Result: 31 of 157 real condition rows landed in an override band
+after ×1.2 (27 low-band, 4 high-band) — all 31/31 matched the expected
+tier-overridden math exactly**, and all 126/126 non-tier rows also
+matched the untiered formula (confirming that path wasn't disturbed by
+the change). Five examples, including a genuine boundary case: 253199
+NM ($0.95 → marked $1.14 → low-band → $2.49 → BE $0.91 ✓); 272492
+(Galarian Moltres V) NM ($19.14 → marked $22.968 → high-band → $19.99 →
+BE $15.99 ✓); 509949 DMG ($17.45 → marked $20.94 → high-band → $19.99 →
+BE $15.99 ✓, a different underlying price correctly collapsing to the
+same overridden output as designed); 595038 DMG ($1.09 → marked $1.308
+→ low-band → $2.49 → BE $0.91 ✓); and 534919 HP, a literal **$0.00**
+raw condition price — still correctly caught by the tier's inclusive
+`min: 0.0` and overridden to $2.49/BE $0.91 ✓, not a bug, just a real
+edge case worth knowing is live.
+
+`get_runtime_errors` since deploy: **zero errors**. Status-code
+breakdown across the whole window: 200×140, 204×54 (CORS preflight),
+400×1 (the deploy checklist's own `POST /api/identify {}` "Missing
+imageBase64" check at 02:13:31 UTC — expected, not a real client
+error). Latency from real `[timing]` lines (n=34 identify calls):
+total-ms median **1890ms**, max **2968ms**, 0 calls over 3000ms — still
+fully inside the 1-3s target, no regression. Nothing flagged as off:
+no override that should have fired and didn't (or vice versa), no
+latency regression, no suspicious pattern near either boundary.
+
+## Feature: negative Suggested Bid shown as a plain-language flag, not a dollar figure — BUILT, COMMITTED, AND PUSHED; NOT YET LIVE-CONFIRMED (2026-09-26)
+
+User report from the audit above: a real card (productId 478136,
+Normal-print HP condition, $0.52 raw) has a Suggested Bid that
+correctly computes to a negative number (BE -$0.71, Suggested Bid
+-$0.62 at the Stagnant-tier 100% margin) — the math itself is right
+(fees + shipping genuinely exceed the assumed sale price even after
+the 1.2x markup and any tier override), but the panel showed the bare
+figure `(Bid: -$0.62)`, which reads as broken output mid-auction, not
+as "don't bid on this."
+
+**Fix, frontend-only** (`extension/content.js`'s `conditionRowsHtml`):
+when a condition's `suggestedBid` value is `<= $0`, the row now shows
+`(Bid: Skip)` (styled with the existing `.wnpk-be-negative` red class)
+instead of the raw negative dollar figure. Threshold is exact
+(`bid <= 0`), not a fuzzy "too low" heuristic, per explicit instruction.
+The two pre-existing states are kept distinct and unchanged: a missing
+tier (`suggestedBid[tier]` is `null`) still shows `(Bid: —)`; no
+`suggestedBid` param at all (the graded-slab fallback branch) still
+omits the suffix entirely. No changes to `computeSuggestedBid`/
+`computeBreakEvenMaxBid` (`api/identify.js`) — purely a display
+reword. The real negative break-even figure is still shown in full,
+unhidden, in the sell-through badge's own tooltip
+(`sellThroughBadgeHtml`, untouched) — this only changes the one
+headline number on the condition row, per this project's standing
+"never hide real numbers" principle.
+
+**Verified locally against the real, extracted `conditionRowsHtml`
+function** (not a reimplementation — pulled the actual function text
+out of `content.js` and ran it in Node), 5 cases: (1) the real
+478136/HP example above → now renders `(Bid: Skip)`, red class applied;
+(2) a normal positive-bid card (Chansey-style, all 5 tiers) →
+unaffected, real dollar figures shown; (3) a missing-tier case
+(`suggestedBid[tier]` is `null`) → still renders the distinct
+`(Bid: —)`, not conflated with Skip; (4) no `suggestedBid` param at all
+(graded-slab fallback) → suffix omitted entirely, unchanged; (5) an
+exact `$0.00` boundary → correctly flagged `Skip`, confirming the
+`<= 0` threshold is inclusive of zero. `node --check` passes;
+`content.js` is 57,656 bytes, nowhere near this project's large-file
+deploy-danger threshold, so the comment-stripping precaution doesn't
+apply (and doesn't need to — see below).
+
+**No Vercel deploy applies to this change at all** — `extension/
+content.js` isn't part of `api/` and isn't declared in `vercel.json`;
+Vercel only ever serves `identify.js`/`price.js`/`flag.js`. This is a
+pure Chrome-extension frontend file. **Committed locally and pushed to
+GitHub** (commit `5f94373`, `c47cdce..5f94373`, `main`) per explicit
+go-ahead — no deploy step needed or possible for this change.
+
+**Not yet live-confirmed**: per this project's own "Chrome extensions
+require a manual reload" gotcha, the installed unpacked extension won't
+pick this up until it's reloaded in `chrome://extensions`, followed by
+a live rescan of a card whose Suggested Bid is negative (or the
+$0.52 HP example above, if it recurs) to visually confirm `(Bid: Skip)`
+renders correctly in the real panel, not just in the Node harness above.
+No tooling available in this session can do that reload — needs the
+user's own action. Low-risk/low-priority to close out (a display-only
+reword with no math change), but flagging per this project's "definition
+of done" checklist rather than marking it fully closed.
 
 ## Related docs
 
