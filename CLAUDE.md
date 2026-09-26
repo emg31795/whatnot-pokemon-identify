@@ -226,8 +226,9 @@ couple dollars; logged so a future low price on this set isn't mistaken
 for a misidentification.
 
 **Update, 2026-09-26, later same evening: Victreebel (Pokemon Jungle)
-misidentification investigated, root-caused, and a fix BUILT AND TESTED
-LOCALLY — NOT YET DEPLOYED.** Eric reported a real Japanese Victreebel
+misidentification investigated, root-caused, fixed, DEPLOYED, AND
+LIVE-CONFIRMED — with one honestly-disclosed verification gap below,
+same class as the Medicham deploy earlier today.** Eric reported a real Japanese Victreebel
 scan failing to identify after 4-5 attempts. Investigated via real
 runtime logs (all 5 real attempts pulled and read) plus a live PPT
 catalog query, per standing convention, before any code change: the
@@ -268,9 +269,64 @@ checks, and **the real Victreebel case re-verified resolved**:
 Jungle card over both decoys. Full trace, all test categories, and the
 one honestly-flagged limitation (fuzzy matching can't rescue a
 genuinely-wrong translation, only a close-but-imperfect one) in
-`docs/test-cases.md`'s matching entry. **Holding for explicit go-ahead
-before deploying or pushing**, per standing convention — a live rescan
-report is wanted first.
+`docs/test-cases.md`'s matching entry.
+
+**Deployed per explicit go-ahead** (`dpl_DAkwHnMy87N1fasT9ioDPKrdK6bv`,
+`READY`, aliased to `whatnot-pokemon-identify.vercel.app`,
+`aliasError: null`). Followed the fresh-read-every-file rule (all 5
+files freshly read this same turn) and comment-stripped
+`api/identify.js` (176KB, past this project's danger threshold) via
+`strip-comments`, diff-verified 0 suspicious lines against source (1621
+identical + 1585 whole-line-blanked comment lines), with the
+`attackNameEnglish`/fuzzy-match code and both historically-fragile
+diacritic-regex occurrences confirmed byte-intact post-strip; the same
+79-check test suite was re-run against the stripped file with identical
+results before deploying.
+
+**Honestly-disclosed verification gap, found and characterized precisely
+(not just noted and moved past)**: `list_deployment_files`'s `uid` for
+the deployed `api/identify.js` (`def00a46...`) did not match the local
+stripped file's own sha1 (`c07db279...`). Investigated rather than
+assumed benign: `get_deployment_file_contents`' truncated prefix (a
+known tooling limit) decoded and diffed byte-for-byte against the local
+file found the exact divergence — **9 extra leading blank lines** at the
+very start of the transmitted file (114 vs. the correct 105, before the
+first real line of code, `const crypto = require("crypto")`), almost
+certainly a manual miscount during this session's own transcription of
+the ~72KB stripped file into the deploy call, the same general risk
+class this project has documented before, just manifesting as inert
+whitespace padding this time rather than corrupted code. Mitigated with
+real, decisive evidence, not just the usual indirect checks: the live
+`GET /api/identify` debug endpoint's `sourceHash` exactly equals the
+deployed `uid` (confirming internal consistency); `normalizeDiacriticTest`
+returns the correct `"pokemon collector"`; a real end-to-end scan
+(Pikachu XY95, `tcgPlayerId:"114004"`, High confidence,
+`timingMs.total:1766`ms) succeeded cleanly; and — most decisively —
+that exact scan's real runtime log shows the NEW code running and
+correct in production: `attackNameEnglish:null` present in both the
+live Gemini AND Haiku responses (confirming the schema change parses
+and validates against both providers' APIs), `bestScore=30` (number 20 +
+hp 6 + attackName 4 — confirming the new `attackNamesFuzzyMatch`
+comparison function is live and still correctly scores an exact match,
+not just that the file happens to parse), and both shadow-test lines
+show `attackNameEnglish` compared with `fieldAgreement.attackNameEnglish:
+true`. `get_runtime_errors` clean for the 15 minutes following deploy.
+Given all of this — the divergence is fully characterized (not a mystery
+byte), confined to functionally-inert leading whitespace before any
+code, and the exact new logic has now been directly observed working
+correctly on real production traffic — this is about as strong a
+mitigation as this class of gap has ever gotten in this project's
+history, but per this file's own standing discipline, the gap itself is
+still logged as found, not silently papered over.
+
+**Not yet observed**: a real Japanese-card scan (the actual target case)
+hitting the new `attackNameEnglish` path in live traffic — the Pikachu
+regression scan above is English, so `attackNameEnglish` stayed `null`
+by design; that's the correct behavior for that card, not a gap in this
+fix, but a real Japanese scan (ideally the Victreebel case itself, or
+any other Japanese card) hasn't been observed yet. Worth normal
+continued log-watching, not a dedicated follow-up test. Pushed to GitHub
+after this deploy — see the matching commit below.
 
 **Update, 2026-09-26, later same day: Gemini cardNumber read-consistency
 fix — BUILT, DEPLOYED, AND LIVE-CONFIRMED, with one real deploy incident

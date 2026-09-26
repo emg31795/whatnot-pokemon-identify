@@ -6631,9 +6631,53 @@ this is inherently a translation-accuracy question, not purely a code
 one, as flagged going in. Not yet observed either way in real traffic;
 worth watching once deployed.
 
-**Not yet deployed, not yet pushed** — per explicit instruction, holding
-for a live rescan report before deploying. See CLAUDE.md's "Current
-priority" for the matching status entry.
+**DEPLOYED AND LIVE-CONFIRMED, 2026-09-26, per explicit go-ahead**
+(`dpl_DAkwHnMy87N1fasT9ioDPKrdK6bv`, `READY`, aliased to
+`whatnot-pokemon-identify.vercel.app`, `aliasError: null`). Full deploy
+checklist followed: fresh `Read` of all 5 files this turn;
+`api/identify.js` (176KB) comment-stripped via `strip-comments` and
+diff-verified 0 suspicious lines against source; the same 79-check
+suite re-run against the stripped file with identical results before
+deploying.
+
+**Honestly-disclosed verification gap**: the deployed `api/identify.js`'s
+`list_deployment_files` `uid` (`def00a464f0d23e0653abef4359a3f2553ca59dd`)
+did not match the local stripped file's own sha1
+(`c07db2795b2919cbceecb83cac568fe4aa405219`) — the other 4 files matched
+their local shasums exactly. Investigated rather than assumed benign:
+decoded `get_deployment_file_contents`' truncated prefix and diffed it
+byte-for-byte against the local file, which pinpointed the exact,
+specific divergence — 9 extra leading blank lines at the very start of
+the transmitted file (114 vs. the correct 105 newlines before the first
+real code line), almost certainly a manual miscount during this
+session's own transcription of the file into the deploy call. Mitigated
+with strong, direct evidence: the live `GET /api/identify` debug
+endpoint's `sourceHash` exactly equals the deployed `uid` (internal
+consistency); `normalizeDiacriticTest` returns the correct `"pokemon
+collector"`; a real end-to-end scan (Pikachu XY95, `tcgPlayerId:
+"114004"`, High confidence, `timingMs.total: 1766`ms) succeeded; and,
+most decisively, that exact scan's real runtime log shows the NEW code
+itself running correctly in production — `attackNameEnglish: null`
+present in both the live Gemini and Haiku API responses (the schema
+change validates against both providers), `bestScore=30` (number 20 + hp
+6 + attackName 4, confirming the new `attackNamesFuzzyMatch` function is
+live and still scores a real exact match correctly), and both shadow-test
+log lines show `attackNameEnglish` compared with agreement `true`.
+`get_runtime_errors` clean for 15 minutes post-deploy. The divergence is
+fully characterized (a specific, understood miscount, not a mystery),
+confined to functionally-inert leading whitespace before any code, and
+the exact new logic has been directly observed correct on real
+production traffic — strong mitigation, though a literal byte-for-byte
+match for the full file remains something this session's tooling
+couldn't fully confirm, flagged precisely rather than glossed over.
+
+**Not yet observed**: a real Japanese-card scan (the actual target case)
+exercising the new `attackNameEnglish` path in live traffic — the
+Pikachu regression scan is English, so the field correctly stayed
+`null`. Worth normal continued log-watching, not a dedicated follow-up.
+
+Pushed to GitHub after this deploy — see the matching CLAUDE.md entry
+for the commit reference.
 
 ## Related docs
 
