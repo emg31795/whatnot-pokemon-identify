@@ -1252,29 +1252,56 @@ with false certainty. This is deliberately closer to pallet.trade's own
 
 ### Before you deploy — checklist (follow every step, every time)
 
-This project has had **two real production outages** and **one severe
-multi-hour stall** from rushing this exact step. Do not skip any of these:
+This project has had **three real production incidents** and **one
+severe multi-hour stall** from rushing this exact step. Do not skip any
+of these:
 
-1. Read the source file in full via a normal `Read`/`cat` call. Do
+1. **For EVERY file that will go in the deploy's `files` array — not
+   just the largest or most fragile one — issue a fresh `Read` tool call
+   for that exact file path in this same turn, immediately before
+   constructing the deploy call.** Never source a file's content from
+   earlier in the conversation, a prior session, or general familiarity
+   with what the file "should" contain — even a file you can describe in
+   detail from this very document's own history. Before submitting the
+   deploy call, explicitly enumerate the files array against the `Read`
+   calls just issued in this turn and confirm a 1:1 match by path; if
+   any file in the payload doesn't have a corresponding fresh read from
+   this same turn, stop and read it first. **Why this rule exists**: on
+   2026-09-26, a deploy included an `api/price.js` that was reconstructed
+   from memory (based on this file's own extensive prior documentation of
+   that file) instead of read from disk — the other 4 files in the same
+   payload WERE freshly read, which created false confidence that the
+   whole batch was fresh-sourced. The reconstructed file was plausible
+   but silently missing `conditionsSuggestedBid`/`sellThrough`/
+   `listingCount`/the `requestId` echo from its response. It reached
+   `READY` and was auto-aliased to production before being caught via a
+   `sourceHash`/file-`uid` mismatch — by which point at least one real
+   live scan (productId 610414) had already received the incomplete
+   response. The fix that actually would have prevented this isn't more
+   post-deploy checking (a `sourceHash` check already existed and DID
+   catch it, just after the fact) — it's making "every file in the
+   payload has a same-turn fresh read" a mechanically checkable
+   precondition, not something trusted to memory.
+2. Read the source file in full via a normal `Read`/`cat` call. Do
    **not** base64-encode it "to be safe" — this has directly caused a
    multi-hour stall (2026-08-30) by turning a simple read into a
    chunk-and-hash-verify loop for no benefit. If the file is small enough
    to read in one call (this codebase's files all are), just read it
    plainly and pass the content straight through.
-2. Compute a hash (sha1/md5) of the exact content you're about to deploy
+3. Compute a hash (sha1/md5) of the exact content you're about to deploy
    and note it.
-3. Deploy via the Vercel MCP tools with that exact content.
-4. Fetch the deployed content back (or re-read via the deploy tool's
+4. Deploy via the Vercel MCP tools with that exact content.
+5. Fetch the deployed content back (or re-read via the deploy tool's
    response) and confirm the hash matches what you intended to ship —
    confirms no truncation/corruption happened in transit.
-5. Send a real test request to the live endpoint (e.g. `POST
+6. Send a real test request to the live endpoint (e.g. `POST
    /api/identify` with `{}` — should return `400
    {"error":"Missing imageBase64"}`, never a stub/module-not-found error)
    to confirm the real handler is serving, not a broken/placeholder file.
-6. Only after 1-5 all pass: tell the user it's deployed, and note that a
+7. Only after 1-6 all pass: tell the user it's deployed, and note that a
    live rescan is still needed to confirm any behavioral fix actually
    works (a clean deploy is not the same as a confirmed fix).
-7. Update CLAUDE.md / ROADMAP.md / test-cases.md to reflect the new
+8. Update CLAUDE.md / ROADMAP.md / test-cases.md to reflect the new
    deployed state in the same session — don't leave it for "later."
 
 ### Definition of done, for any fix
