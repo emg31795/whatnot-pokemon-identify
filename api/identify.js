@@ -306,7 +306,9 @@ const GEMINI_SCHEMA = {
 
 const GEMINI_PROMPT = `You are looking at a single video frame of a Pokemon trading card, held up on a live shopping stream. Transcribe ONLY what is literally printed and legible in this frame — do not guess a card's exact set/number from general trivia or memory. If a field isn't clearly legible, return null for it rather than guessing.
 
-cardNumber and hp are the two most important fields — they're the strongest signals for telling apart printings that otherwise look identical, so spend extra effort trying to find them even if other parts of the card are unclear or at an angle. If multiple cards are visible in the frame, make sure cardNumber, hp, and every other field describe the SAME single card being held up or highlighted — do not mix a number from one card with the HP or name of a different card in the background.
+cardNumber and hp are the two most important fields — they're the strongest signals for telling apart printings that otherwise look identical, so spend extra effort trying to find them even if other parts of the card are unclear or at an angle. The card number is normally small printed text along the bottom edge of the card — usually bottom-right as a fraction like "025/198" for numbered-set cards, or a short alphanumeric code (e.g. "SWSH001", "XY126", "SVP001") for promo cards, sometimes bottom-left instead. Check that specific bottom-edge region closely even if the text there is small — it's often still legible even when other parts of the card (artwork, larger body text) are blurry or at an angle. Holo and reverse-holo cards frequently have glare directly over this area; if there's glare, look for any digits visible at the edges of the glare before concluding it's unreadable. If multiple cards are visible in the frame, make sure cardNumber, hp, and every other field describe the SAME single card being held up or highlighted — do not mix a number from one card with the HP or name of a different card in the background.
+
+If cardNumber ends up null, briefly say why in reason (e.g. "number area obscured by glare", "card held too far from camera", "angled away from camera", "cropped out of frame") — a short phrase is enough, this is for diagnostics only, not a full explanation.
 
 If the card text is in Japanese, translate the species name to its standard English name for cardName (e.g. チャーレム -> Medicham), and set language to "Japanese". Otherwise language is "English".
 
@@ -1223,7 +1225,19 @@ function confidenceForScore(score) {
   return "Low";
 }
 
-function ambiguousNoteText() {
+// FIX (2026-09-26, Gemini read-consistency investigation): this used to
+// always claim "...the card number is the only thing that tells them
+// apart, and it wasn't legible this scan" — true when cardNumber came back
+// null, but actively wrong when cardNumber WAS read and DID match best
+// (the only way this generic branch is reached with a legible number is a
+// genuine tie where two+ candidates share the identical number/HP/attack/
+// type, e.g. a literal catalog duplicate that isn't the already-separately-
+// handled Shadowless case). Callers pass whether the number was actually
+// legible so the message matches what really happened.
+function ambiguousNoteText(numberWasLegible) {
+  if (numberWasLegible) {
+    return "Multiple different printings of this card share an identical card number, HP, attack, and type — there's nothing left in our data to tell them apart. This is our best guess only; verify the exact printing on the physical card before trusting this match or price.";
+  }
   return "Multiple different printings of this card share identical HP, attack, and type — the card number is the only thing that tells them apart, and it wasn't legible this scan. This is our best guess only; verify the exact set/number on the physical card before trusting this match or price.";
 }
 
@@ -2261,8 +2275,65 @@ async function lookupCardPPT(read, requestId) {
 
   if (!best) return { notFound: true };
 
+  // FIX (2026-09-26, Gemini read-consistency investigation — null
+  // cardNumber driving wide ties on popular multi-printing species, e.g.
+  // Mew EX/151 ex prints): when cardNumber comes back null, SCORE.number
+  // (20, the single largest weight — more than 3x the next-highest signal)
+  // contributes nothing, and none of the number-based rescue logic above
+  // (page-2 pagination, combined name+number search) can run either, since
+  // it's all gated on read.cardNumber being truthy. For a species with many
+  // printings, that alone is enough to leave a wide field tied. When Gemini
+  // did manage to read a setName even without a number, use it as an
+  // explicit narrowing filter over the tied candidates — not just its
+  // existing +3 score contribution in scoreCandidate, which can get diluted
+  // across multiple tied candidates that each pick up +3 or none uniformly.
+  // Deliberately tight scope: only fires when cardNumber is null (so this
+  // can never override a real number mismatch — the NO NUMBER MATCH IN POOL
+  // check below still owns that case), there IS a tie, and narrowing by
+  // setName leaves at least one but strictly fewer candidates than before.
+  // A zero-match narrow means Gemini's setName read doesn't string-match
+  // anything in the tied set — not trustworthy enough to act on, so the
+  // original tie is left alone rather than forcing a pick off that.
+  let nullNumberTieNarrowedToOne = false;
+  if (!read.cardNumber && tieCount >= 2 && read.setName && Array.isArray(tiedCandidates)) {
+    const wantedSet = String(read.setName).toLowerCase();
+    const setNarrowed = tiedCandidates.filter((c) => c.setName && String(c.setName).toLowerCase().includes(wantedSet));
+    const distinctNarrowed = [];
+    const seenNarrowed = new Set();
+    for (const c of setNarrowed) {
+      const key = candidateDedupKey(c);
+      if (!seenNarrowed.has(key)) {
+        seenNarrowed.add(key);
+        distinctNarrowed.push(c);
+      }
+    }
+    if (distinctNarrowed.length > 0 && distinctNarrowed.length < tieCount) {
+      console.log(
+        `[requestId=${requestId}]`,
+        `[lookup] NULL-NUMBER TIE NARROWED BY SET NAME: read setName="${read.setName}" narrowed ${tieCount} tied candidates down to ${distinctNarrowed.length}`
+      );
+      best = distinctNarrowed[0];
+      tieCount = distinctNarrowed.length;
+      tiedCandidates = distinctNarrowed;
+      nullNumberTieNarrowedToOne = tieCount === 1;
+    }
+  }
+
   let matchConfidence = confidenceForScore(bestScore);
   let ambiguousNote = null;
+
+  // Companion to the narrowing rescue above: when it fully resolved the tie
+  // to a single candidate, the generic `tieCount >= 2` disclosure below
+  // never fires (tieCount is now 1) — but the number is still genuinely
+  // unverified (this pick came from a setName string-match, not an exact
+  // card number), so High confidence would overstate it. Disclose plainly,
+  // same honesty bar as every other rescue path in this function.
+  if (nullNumberTieNarrowedToOne) {
+    matchConfidence = matchConfidence === "High" ? "Medium" : matchConfidence;
+    ambiguousNote =
+      `The card number wasn't legible this scan, so this match was narrowed down using the set name that was read ("${read.setName}") instead of the number — it's our best guess based on set alone, not confirmed by card number. Verify the exact printing before trusting this match or price.`;
+    console.log(`[requestId=${requestId}]`, `[lookup] NULL-NUMBER TIE RESOLVED VIA SET NAME: setName="${read.setName}" picked best=${best.name} ${best.number}`);
+  }
 
   // FIX (2026-08-27, live test — Baxcalibur, Japanese SV2P): the generic
   // tie-break note below ("...the card number is the only thing that
@@ -2320,7 +2391,7 @@ async function lookupCardPPT(read, requestId) {
   if (!ambiguousNote && tieCount >= 2) {
     matchConfidence = "Low";
     const shadowlessTie = isShadowlessVsPlainTie(tiedCandidates);
-    ambiguousNote = shadowlessTie ? shadowlessAmbiguousNoteText() : ambiguousNoteText();
+    ambiguousNote = shadowlessTie ? shadowlessAmbiguousNoteText() : ambiguousNoteText(!!read.cardNumber);
     console.log(
       `[requestId=${requestId}]`,
       `[lookup] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}${shadowlessTie ? " (Shadowless vs. non-Shadowless pair)" : ""}`
