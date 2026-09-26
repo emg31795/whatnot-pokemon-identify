@@ -2048,7 +2048,7 @@ function normalizeNameForMatch(name) {
     .trim();
 }
 
-async function lookupCardPPT(read, requestId) {
+async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   const cacheKey = pptCacheKey(read);
   if (cacheKey && getCache) {
     try {
@@ -2352,23 +2352,124 @@ async function lookupCardPPT(read, requestId) {
   // ambiguity. Check for "read a specific number that matches nothing in
   // the pool at all" FIRST, since when it applies it's a strictly more
   // accurate diagnosis than a generic tie-break note.
+  // FIX (2026-09-26, Medicham misidentification investigation — see
+  // CLAUDE.md's "print variant misdetection" entry): a real live scan
+  // showed the primary model (gemini-3.5-flash-lite) confidently misread a
+  // card's number TWICE in a row ("241/203", then "247/203"), both times
+  // anchoring toward "203" — a denominator shared by three unrelated
+  // candidates already sitting in this same pool — while the
+  // `[legacy-model-shadow-test]` call (gemini-3.6-flash, same two frames)
+  // correctly read "241/217" both times. Since the primary's number
+  // matched nothing, the code below used to fall straight through to a
+  // weak-signal-only match (HP=120 alone, score 6) that beat the real
+  // candidate (score 2, rarity only — its own PPT record has null
+  // hp/attacks) purely by coincidence, and showed a $0.06 price for what
+  // was really a $3.15 card. This fires often, not rarely — 14 real "NO
+  // NUMBER MATCH IN POOL" cases turned up in one hour of live scanning.
+  //
+  // Two-part fix, tried in order:
+  //   1. RESCUE: before giving up on the number, check whether the legacy
+  //      shadow-test model's cardNumber read (already in flight for
+  //      logging via `legacyReadPromise` — never a second API call, see
+  //      handler() above) matches a real candidate in this same pool. If
+  //      it does, prefer that candidate. This is a genuine cross-model
+  //      agreement signal, not a confirmed primary read, so it's capped at
+  //      Medium confidence — same bar as the setName-narrowing rescue
+  //      above — never High.
+  //   2. WEAK-SIGNAL FLOOR: if neither the primary number nor the legacy
+  //      rescue can pin a real candidate down, count how many INDEPENDENT
+  //      signals beyond number actually corroborate `best`
+  //      (hp/subtype/set/attackName/stampMatch, from `bestDetail` —
+  //      deliberately NOT rarity, a candidate-only prior true of almost
+  //      any valuable candidate regardless of correctness; see the note
+  //      at the actual check below for the real case that caught this).
+  //      A single weak signal (e.g. HP alone — many unrelated cards share
+  //      an HP value, this is exactly the Medicham case) is coincidence-
+  //      prone enough that showing that candidate's specific price reads
+  //      as a confirmed match rather than a guess. Two or more independent
+  //      signals is treated as enough real corroboration to still show a
+  //      specific (Low-confidence, disclosed) match, same as before this
+  //      fix. The "2+ signals" line is a judgment call, not a hard rule
+  //      derived from anything — tune it here if real scans show it's too
+  //      strict (good matches needlessly withheld) or too loose (bad
+  //      matches still getting through).
   if (read.cardNumber && best.number) {
     const { match: numberMatchedForBest } = numbersMatch(read.cardNumber, best.number);
     if (!numberMatchedForBest) {
       const anyNumberMatch = candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
       if (!anyNumberMatch) {
-        matchConfidence = "Low";
-        // CORRECTED (2026-08-27): this used to add a Japanese-specific
-        // caveat blaming a "database doesn't carry Japanese cards"
-        // data gap. That diagnosis was wrong — see the FIX comment on
-        // fetchPokemonPriceTracker for the real bug (a missing
-        // `language` query param) — so the language-specific blame is
-        // removed. This generic message (a legible number simply not
-        // present in whatever pool was searched) still applies to both
-        // languages equally.
-        ambiguousNote =
-          `No printing in our database has the exact card number that was read ("${read.cardNumber}") — this may be a set or promo PokemonPriceTracker doesn't track yet. Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact printing before trusting this price.`;
-        console.log(`[requestId=${requestId}]`, `[lookup] NO NUMBER MATCH IN POOL: read number=${read.cardNumber}, language=${read.language}, best=${best.name} ${best.number} (matched on other signals only)`);
+        let legacyRescued = false;
+        if (legacyReadPromise) {
+          try {
+            const legacyRead = await legacyReadPromise;
+            if (legacyRead && legacyRead.found && legacyRead.cardNumber) {
+              const legacyMatch = candidates.find((c) => numbersMatch(legacyRead.cardNumber, c.number).match);
+              if (legacyMatch) {
+                best = legacyMatch;
+                matchConfidence = "Medium";
+                ambiguousNote =
+                  `The card number we read ("${read.cardNumber}") didn't match anything in our database, but a second AI model's independent read of the same card ("${legacyRead.cardNumber}") matched this printing exactly — using that as a cross-check rescue. This isn't a fully confirmed read; verify the exact printing before trusting this price.`;
+                legacyRescued = true;
+                console.log(
+                  `[requestId=${requestId}]`,
+                  `[lookup] LEGACY-MODEL NUMBER RESCUE: primary read number=${read.cardNumber} matched nothing, but legacy shadow read number=${legacyRead.cardNumber} matched best=${best.name} ${best.number}`
+                );
+              }
+            }
+          } catch (e) {
+            console.error(`[requestId=${requestId}]`, "[lookup] legacy-model rescue check failed (treating as unavailable):", e && e.message);
+          }
+        }
+
+        if (!legacyRescued) {
+          // NOTE: deliberately excludes "rarity" from this list, unlike the
+          // corroboration comment above might suggest at a glance. Every
+          // other key here compares a piece of THIS read against THIS
+          // candidate (hp/subtype/set/attackName/stampMatch) — real,
+          // if individually weak, evidence the read and candidate are the
+          // same card. `rarity` is a candidate-only prior (see
+          // NOTABLE_RARITY_PATTERN above) that's true for almost any
+          // valuable-looking candidate regardless of whether it's the
+          // right one — confirmed by a real test case (the Wigglytuff
+          // scan below): a "Shiny Secret Rare" candidate matched on HP
+          // alone would have cleared a naive "2+" bar by picking up a
+          // free rarity point, defeating the whole point of this check.
+          // Counting it here would make the floor easiest to clear on
+          // exactly the priciest, riskiest-to-get-wrong candidates.
+          const corroboratingSignals = ["hp", "subtype", "set", "attackName", "stampMatch"].filter(
+            (k) => bestDetail && bestDetail[k]
+          ).length;
+          if (corroboratingSignals < 2) {
+            console.log(
+              `[requestId=${requestId}]`,
+              `[lookup] NO NUMBER MATCH, INSUFFICIENT CORROBORATION (${corroboratingSignals} signal(s)): read number=${read.cardNumber}, language=${read.language}, best=${best.name} ${best.number} — withholding specific price`
+            );
+            return {
+              found: true,
+              cardName: read.cardName,
+              setName: null,
+              cardImageUrl: null,
+              matchConfidence: "Low",
+              ambiguousNote:
+                `Read the name "${read.cardName}" but the card number ("${read.cardNumber}") didn't match any printing in our database, and no other model's read helped narrow it down — the closest candidate on other details shares only ${corroboratingSignals === 0 ? "no other signal" : "one weak signal"}, not enough to trust a specific printing or price. Verify the exact printing on the physical card.`,
+              tcgplayerUrl: null,
+              pricingLookup: null,
+              printingUndetermined: true,
+            };
+          }
+          matchConfidence = "Low";
+          // CORRECTED (2026-08-27): this used to add a Japanese-specific
+          // caveat blaming a "database doesn't carry Japanese cards"
+          // data gap. That diagnosis was wrong — see the FIX comment on
+          // fetchPokemonPriceTracker for the real bug (a missing
+          // `language` query param) — so the language-specific blame is
+          // removed. This generic message (a legible number simply not
+          // present in whatever pool was searched) still applies to both
+          // languages equally.
+          ambiguousNote =
+            `No printing in our database has the exact card number that was read ("${read.cardNumber}") — this may be a set or promo PokemonPriceTracker doesn't track yet. Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact printing before trusting this price.`;
+          console.log(`[requestId=${requestId}]`, `[lookup] NO NUMBER MATCH IN POOL: read number=${read.cardNumber}, language=${read.language}, best=${best.name} ${best.number} (matched on other signals only)`);
+        }
       }
     }
   }
@@ -2759,10 +2860,21 @@ async function handler(req, res) {
   // here, so it can never delay the response; waitUntil (when available)
   // keeps it alive after the response is sent, and the .catch() is a
   // second safety net.
+  // ADDED (2026-09-26, Medicham misidentification investigation — see
+  // CLAUDE.md's "print variant misdetection" entry): `legacyReadPromise` is
+  // hoisted to function scope, unlike the shadow-test-only locals below, so
+  // lookupCardPPT can use it later as a rescue signal (see the "NO NUMBER
+  // MATCH IN POOL" handling there). This is the SAME already-in-flight
+  // call the shadow-test logging below uses — not a second Gemini call, no
+  // added cost. Stays null (a complete no-op for the rescue) whenever
+  // LEGACY_GEMINI_SHADOW_MODEL isn't set, exactly like the shadow test
+  // itself.
+  let legacyReadPromise = null;
   if (LEGACY_GEMINI_SHADOW_MODEL) {
     const timedCurrentPromise = timePromise(geminiPromise, tStart);
     const tLegacyStart = Date.now();
     const legacyPromise = identifyWithGemini(imageBase64, geminiKey, LEGACY_GEMINI_SHADOW_MODEL);
+    legacyReadPromise = legacyPromise;
     const timedLegacyPromise = timePromise(legacyPromise, tLegacyStart);
     const legacyShadowPromise = runLegacyModelShadowTest(timedCurrentPromise, timedLegacyPromise, requestId).catch((e) => {
       console.error(`[legacy-model-shadow-test] requestId=${requestId} shadow test itself threw:`, e && e.message);
@@ -2841,7 +2953,7 @@ async function handler(req, res) {
       console.error(`[identify] requestId=${requestId} graded lookup threw:`, e && e.message);
     }
 
-    const baseLookup = await lookupCardPPT(read, requestId);
+    const baseLookup = await lookupCardPPT(read, requestId, legacyReadPromise);
 
     if (gradedResult && gradedResult.gradedPrice != null) {
       result = {
@@ -2874,7 +2986,7 @@ async function handler(req, res) {
     }
   } else {
     try {
-      result = await lookupCardPPT(read, requestId);
+      result = await lookupCardPPT(read, requestId, legacyReadPromise);
     } catch (e) {
       console.error(`[identify] requestId=${requestId} lookup threw:`, e && e.message);
       result = { error: "lookup-failed" };

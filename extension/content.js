@@ -1137,6 +1137,7 @@
 
       $("#wnpk-body").innerHTML = `
         ${header}
+        ${confidenceWarnings}
         <div class="wnpk-slab-badge">${escapeHtml(data.grader)} ${escapeHtml(data.grade)}${
         data.certNumber ? " · Cert " + escapeHtml(data.certNumber) : ""
       }</div>
@@ -1147,7 +1148,6 @@
           FROM EBAY SOLD COMPS ${nearbyRows ? "<span class=\"wnpk-estimate-note\">(nearby grades)</span>" : ""}
         </div>
         ${nearbyRows ? `<div class="wnpk-cond-list">${nearbyRows}</div>` : ""}
-        ${confidenceWarnings}
         ${footer}
       `;
       return;
@@ -1162,6 +1162,7 @@
         <div class="wnpk-warning">⚠ This looks like a graded slab${
           data.grader ? " (" + escapeHtml(data.grader) + (data.grade ? " " + escapeHtml(data.grade) : "") + ")" : ""
         }, but graded-market pricing isn't set up yet (or that exact grade wasn't found). Showing the raw-card estimate below, which will UNDER-value a graded slab — do not rely on it for grading premiums.</div>
+        ${confidenceWarnings}
         <div class="wnpk-market-price">
           Raw market: ${data.marketPrice != null ? "$" + data.marketPrice.toFixed(2) : "—"}
         </div>
@@ -1169,7 +1170,6 @@
           RAW CONDITION PRICES <span class="wnpk-estimate-note">${conditionLabelNote(data.conditionPricesEstimated, data.conditionPricesPartial)} — not graded value</span>
         </div>
         <div class="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices)}</div>
-        ${confidenceWarnings}
         ${footer}
       `;
       return;
@@ -1186,12 +1186,30 @@
     // starts in a lightweight loading state and gets filled in by
     // renderPriceSection once that call resolves, without touching
     // anything else already on screen.
+    //
+    // MOVED 2026-09-26 (Medicham misidentification investigation, fix 3 —
+    // see CLAUDE.md's "print variant misdetection" entry): confidenceWarnings
+    // used to render AFTER this section, meaning a Low-confidence/ambiguous
+    // match required scrolling past the price/Suggested-Bid numbers to see
+    // why they might be wrong — exactly backwards for a ~10-second live bid
+    // decision. Now renders right after the header, before any price
+    // content, so the warning is the first thing seen, not the last.
+    //
+    // ADDED 2026-09-26 (fix 2, same investigation): when the backend
+    // couldn't corroborate a specific printing well enough to trust a price
+    // (see api/identify.js's `printingUndetermined` — the read cardNumber
+    // matched nothing AND neither the legacy-model rescue nor a second
+    // corroborating signal saved it), `pricingLookup` is deliberately null
+    // so fetchAndRenderPricing (identifyCard) never fires a `/api/price`
+    // call for it. Without this branch, the section below would show
+    // "Loading price…" forever, since nothing ever resolves it.
+    const priceSectionHtml = data.pricingLookup
+      ? `<div id="wnpk-price-section"><div class="wnpk-cond-label">Loading price…</div></div>`
+      : `<div class="wnpk-cond-label">Printing undetermined — price withheld, see warning above.</div>`;
     $("#wnpk-body").innerHTML = `
       ${header}
-      <div id="wnpk-price-section">
-        <div class="wnpk-cond-label">Loading price…</div>
-      </div>
       ${confidenceWarnings}
+      ${priceSectionHtml}
       ${footer}
     `;
   }
