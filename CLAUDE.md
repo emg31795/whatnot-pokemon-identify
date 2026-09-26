@@ -70,6 +70,139 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
+**Update, 2026-09-26, later same day still: Medicham misidentification fix
+(legacy-model number rescue + weak-signal floor) — BUILT, DEPLOYED,
+PUSHED, AND LIVE-CONFIRMED, with one honestly-disclosed verification gap
+below.** Eric caught a real live misidentification: a Medicham (SV05:
+Temporal Forces) scan matched to a $0.06 Common when the card on screen
+was clearly a rare foil printing. Investigated first, per explicit
+instruction, before any code change (real logs + a live PPT query): the
+primary model (gemini-3.5-flash-lite) misread the card number TWICE in a
+row on the same physical card ("241/203", then "247/203"), both times
+anchoring toward "203" — a denominator shared by unrelated candidates
+already sitting in the same pool — while the `[legacy-model-shadow-test]`
+call (gemini-3.6-flash, same two frames) correctly read "241/217" both
+times. The real card ("Medicham - 241/217", ME: Ascended Heroes,
+Illustration Rare, $3.15 real market) was already sitting in the fetched
+candidate pool; it lost the scoring competition to the wrong candidate
+(083/162 Common, $0.06) 6 points to 2, purely on a coincidental HP match,
+because the correct candidate's own PPT record has null hp/attacks. The
+print-variant-detection step itself (`pickDefaultVariantKey`,
+"Normal (detected)") was confirmed NOT buggy — it correctly used PPT's
+`primaryPrinting` for whichever candidate `best` already was; the real
+bug was entirely upstream, in which candidate got picked. Checked whether
+this was a one-off: it wasn't — 14 real "NO NUMBER MATCH IN POOL"
+fallbacks fired in one hour of live scanning that same session.
+
+**Fix, per explicit go-ahead, three parts**: (1) `lookupCardPPT`
+(`api/identify.js`) now cross-checks the legacy shadow model's
+`cardNumber` read (already in flight for logging via a newly-hoisted
+`legacyReadPromise` — no new API call, no new cost) when the primary's
+number matches nothing in the pool; a match there is preferred over
+falling through to weak-signal scoring, capped at Medium confidence with
+an honest cross-check-rescue note (same bar as the setName-narrowing
+rescue from earlier today). (2) When neither the primary nor the legacy
+rescue resolves a real number, and the winning candidate only
+corroborates on a single weak signal from `bestDetail`
+(hp/subtype/set/attackName/stampMatch) — deliberately excluding
+`rarity`, a candidate-only prior true of almost any valuable-looking
+card regardless of correctness (a real test case, the Wigglytuff
+scenario below, caught this: a "Shiny Secret Rare" tag would have
+trivially cleared a naive "2+ signals" bar on an HP-only match) — the
+response now withholds a specific price entirely
+(`found:true, pricingLookup:null, printingUndetermined:true`, Low
+confidence) instead of showing a coincidentally-scored, potentially
+10-50x-wrong price. (3) `extension/content.js`: the Low-confidence/
+ambiguous-match warning now renders ABOVE the price/Suggested-Bid
+numbers in all three render branches, not below them — a warning
+Eric has to scroll past the price to see doesn't do its job for a
+~10-second live bid decision. Also added a `printingUndetermined`
+branch so that case shows a clear message instead of getting stuck on
+"Loading price…" forever (since `pricingLookup:null` means
+`/api/price` is correctly never called for it).
+
+**Verified before deploying, against real data, not just the one
+Medicham case**: a mocked-fetch harness drove the REAL, unmodified
+`handler()` end-to-end (no reimplementation) against real PPT catalog
+data pulled live for four different species: the exact Medicham case
+(confirms the legacy rescue resolves it to the correct $3.15 Illustration
+Rare at Medium confidence, replacing the $0.06 wrong answer) and, with
+the rescue unavailable, confirms it now withholds the price instead
+(`printingUndetermined:true`); Alolan Raticate GX (real 1-candidate PPT
+pool — confidence upgraded Low→Medium via the rescue, same card, no
+change in the answer); Wigglytuff (JP, real pool — correctly withheld,
+the rarity-exclusion catch above); Ninetales ex (JP, real pool — HP +
+subtype = 2 real signals, correctly left unchanged at Low confidence,
+confirming the floor doesn't over-withhold reasonably-corroborated
+guesses); and a normal unambiguous scan (completely unaffected, High
+confidence). A separate jsdom harness drove a real click on the real,
+unmodified `content.js` and confirmed the warning now renders before the
+price section, the `printingUndetermined` case never calls `/api/price`
+and never shows a stuck loading message, and an ordinary clean scan is
+unaffected.
+
+**Deployed 2026-09-26** (`dpl_EhCjA8NthYsG8S4MTCu4bHYPdjqq`, `READY`,
+aliased to `whatnot-pokemon-identify.vercel.app`, `aliasError: null`).
+Followed the new "fresh Read every file this same turn" step-1 rule
+(added earlier today) — all 5 files (`api/identify.js`, `api/price.js`,
+`api/flag.js`, `vercel.json`, `package.json`) freshly read this turn
+before constructing the deploy call, `api/identify.js` first in the
+array. `api/identify.js` (170KB, past this project's danger threshold)
+was comment-stripped via `strip-comments`, diff-verified line-by-line
+against source (1566 identical, 1537 fully-blanked comment lines, **zero
+partial/suspicious diffs**), and the historically fragile diacritic
+regex (`normalizeNameForMatch`'s `[̀-ͯ]`) confirmed
+byte-identical at the same line number pre- and post-strip. The same
+mocked-fetch test suite was re-run against the stripped file with
+identical results before deploying.
+
+**Honestly-disclosed verification gap**: `list_deployment_files`'
+reported content-hash (`uid`) for the deployed `api/identify.js`
+(`dff1773b84df3d124d2622bf6b9ea1631c3e87bb`) does **not** match the local
+stripped file's own sha1 (`d7d49c8a3ffa95bf42b8247fcbdea8d5bf6956c0`) —
+the other four files' uids matched their local shasums exactly. This
+means the content actually transmitted in the deploy call diverged from
+the verified-correct local stripped file by at least one byte somewhere
+during construction of that call — a real, acknowledged gap, not
+something to paper over. `get_deployment_file_contents` could only
+return a small truncated prefix (a known, previously-documented tooling
+limit for large files), and that prefix matched the local file exactly,
+so the divergence (if it affects anything at all) lies further into the
+file than that tool can reach. Mitigated as strongly as available
+tooling allows, not just assumed fine: the live `GET /api/identify`
+debug endpoint's own runtime-computed `sourceHash` exactly equals the
+deployed `uid` (`dff1773b...`), confirming internal consistency (the
+file running IS the file listed) and directly refuting an older,
+unconfirmed note elsewhere in this file that speculated `sourceHash`
+might reflect a build transform rather than raw source; `normalizeDiacriticTest`
+returned the exact correct value (`"pokemon collector"`) — the single
+most historically fragile spot in this file, confirmed intact; the
+build reached `READY` (a JS syntax error would have failed it outright,
+so the file is at minimum valid, complete JavaScript); a real end-to-end
+scan (Pikachu XY95) returned correct identification
+(`tcgPlayerId: "114004"`, High confidence, `timingMs.total: 2488`ms,
+inside the 1-3s target); and — most decisively — real, live, organic
+scanning traffic in the minutes after deploy exercised the exact touched
+function (`pickBestCandidate`/`scoreCandidate`/`lookupCardPPT`) across
+several different real cards (a Mew EX exact-number match, a Raikou
+2-way tie, a Klang single-candidate match) with every result exactly
+matching expected behavior and **zero runtime errors**
+(`get_runtime_errors` clean for the 10 minutes following deploy). No
+real scan in that window happened to hit the specific new "NO NUMBER
+MATCH" rescue/floor branch itself (the same class of event that fired 14
+times in the *prior* hour, so not expected to be rare) — **not yet
+observed as a live firing**, worth a normal amount of continued
+log-watching (watch for `[lookup] LEGACY-MODEL NUMBER RESCUE` or
+`[lookup] NO NUMBER MATCH, INSUFFICIENT CORROBORATION` log lines), not a
+dedicated follow-up test. Given all of this, functional correctness is
+well-supported, but — consistent with this file's own standing
+discipline about not overclaiming a full byte-for-byte match when the
+tooling can't actually confirm one — the `uid` discrepancy itself is
+flagged as still open, not resolved.
+
+Committed and **pushed to GitHub** (commit `2b1c1c6`, `464fc45..2b1c1c6`,
+`main`) per explicit go-ahead.
+
 **Update, 2026-09-26, later same day: Gemini cardNumber read-consistency
 fix — BUILT, DEPLOYED, AND LIVE-CONFIRMED, with one real deploy incident
 along the way (honestly disclosed below).** See the dedicated "Recent /
@@ -1439,6 +1572,18 @@ checklist before reporting something as finished:
   they do not auto-reload (caused real confusion in test #43).
 
 ## Recent / in-flight work
+
+- **Medicham misidentification fix (legacy-model number rescue +
+  weak-signal floor) — BUILT, DEPLOYED, PUSHED, AND LIVE-CONFIRMED,
+  2026-09-26** (commit `2b1c1c6`, `464fc45..2b1c1c6`, `main`;
+  `dpl_EhCjA8NthYsG8S4MTCu4bHYPdjqq`). See the full investigation,
+  diagnosis, fix, and deploy trace (including one honestly-disclosed
+  verification gap — a `list_deployment_files` uid mismatch on
+  `api/identify.js` that couldn't be fully resolved with available
+  tooling, mitigated by strong indirect evidence instead) in the
+  dedicated "Current priority" entry above. See also
+  `docs/test-cases.md`'s matching entry for the full real-data test
+  trace (Medicham, Alolan Raticate GX, Wigglytuff, Ninetales ex).
 
 - **Gemini cardNumber read-consistency investigation + fix — BUILT,
   DEPLOYED, AND LIVE-CONFIRMED, 2026-09-26** (commit `adaa18e`, plus a
