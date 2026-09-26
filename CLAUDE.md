@@ -1368,8 +1368,10 @@ checklist before reporting something as finished:
 ## Recent / in-flight work
 
 - **Mirror Eric's real eBay pricing-tier overrides in the break-even calc
-  — BUILT AND VERIFIED LOCALLY, NOT YET DEPLOYED, NOT YET PUSHED,
-  2026-09-26.** Eric's real eBay repricer template applies the
+  — BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-26**
+  (`dpl_CisedPtq7ndjiiyjj2XwAyonKvti`, `READY`, aliased to
+  `whatnot-pokemon-identify.vercel.app`, `aliasError: null`, all 3
+  lambdas built). Eric's real eBay repricer template applies the
   `LISTING_MARKUP_MULTIPLIER` (1.2x) markup (see the entry directly
   below), then pins the result to a fixed price if it lands in one of
   two bands: marked price in `[$0.00, $2.48]` → `$2.49`; marked price in
@@ -1403,11 +1405,60 @@ checklist before reporting something as finished:
   to the untiered formula). `node --check` passes. Full trace in
   `docs/test-cases.md`'s matching entry.
 
-  **Not yet deployed**: `api/identify.js` is 157,466 bytes, past this
-  project's documented Vercel large-file silent-omission risk threshold
-  — needs a comment-strip + byte-diff pass before any deploy attempt, per
-  standing process. **Per explicit instruction, awaiting go-ahead before
-  deploying or pushing.**
+  **Deploy incident, honestly disclosed — the same "silently omit
+  api/identify.js from the files array" failure mode this file has
+  documented repeatedly.** `api/identify.js` was 157,466 bytes, past
+  this project's documented Vercel large-file danger threshold, so
+  comments were stripped via `strip-comments` (→63,150 bytes) and
+  verified via an automated line-by-line diff script confirming 0 code
+  lines differ from source (1480 identical lines + 1439 fully-blanked
+  comment-only lines, zero partial/suspicious diffs) — then the exact
+  3 requested test cases plus boundary checks were re-run against that
+  stripped file with identical results before deploying. **Three
+  consecutive `create_deployment` calls in a row then omitted
+  `api/identify.js` from the submitted `files` array** despite intent
+  each time to include it (the first attempt was also blocked outright
+  by the session's own auto-mode permission classifier as a
+  "Production Deploy" pattern, requiring a retry) — all three caught
+  immediately via `get_deployment` (`readyState: "ERROR"`,
+  `errorCode: "unused_function"`, the exact recurring signature), never
+  reached `READY`, and a live curl after each confirmed zero production
+  impact. Root-caused to simply rushing the large multi-file payload
+  assembly; fixed by staging all 5 files in a scratch directory first to
+  confirm the complete set and their real byte sizes, then composing the
+  deploy call with `api/identify.js` as the very first array entry
+  (harder to drop by running out of message before reaching it) —
+  deployed clean on the fourth attempt.
+
+  **Live-confirmed, decisively, against real productIds (not just the
+  generic health check)**: `GET /api/identify` returns
+  `normalizeDiacriticTest: "pokemon collector"` (diacritic regex intact)
+  and `POST {}` returns the real `400 {"error":"Missing imageBase64"}`.
+  **Low-tier override, with genuine before/after evidence**: productId
+  478136's Normal-print HP/DMG conditions ($0.52/$1.50 raw) showed
+  `conditionsBreakEven` of **-$0.71/-$0.71** in a pre-deploy check
+  earlier this session — the identical live call after this deploy now
+  returns **$0.91** for both (marked price $0.624/$1.80 → overridden to
+  $2.49 → BE $0.91), the exact tier-override math confirmed on the same
+  real card, before and after. **High-tier override, found on a real
+  card by scanning today's live traffic for one that naturally lands in
+  the band**: productId 497604's Holofoil DMG condition ($18.20 raw →
+  marked $21.84, inside `[$20, $25.58]`) returned
+  `conditionsBreakEven.DMG: 15.99` — exactly the hand-calculated
+  tier-overridden value ($19.99 → fee $3.048675 → shipping $0.955 →
+  $15.986325 → $15.99), while that same response's NM condition
+  ($49.33 raw → marked $59.196, no tier match) correctly fell through
+  to the untiered formula (`$45.15`, matching the unchanged formula
+  exactly) — both tiers and the untiered path confirmed correct on real
+  data in the same response. A full real end-to-end scan (Pikachu XY95
+  promo photo) returned correct identification
+  (`tcgPlayerId: "114004"`, High confidence, `timingMs.total: 1589`ms —
+  inside the 1-3s target), confirming no regression to the identify
+  path. `get_runtime_errors` clean for the 10 minutes following deploy.
+
+  Not yet pushed to GitHub — per explicit instruction, the deploy
+  go-ahead did not extend to pushing; awaiting a separate go-ahead for
+  that.
 
 - **Break-even / Suggested Max Bid now factor in Eric's 1.2x listing
   markup — BUILT, DEPLOYED, AND LIVE-CONFIRMED, 2026-09-20**
