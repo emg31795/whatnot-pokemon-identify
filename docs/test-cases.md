@@ -6679,6 +6679,181 @@ Pikachu regression scan is English, so the field correctly stayed
 Pushed to GitHub after this deploy — see the matching CLAUDE.md entry
 for the commit reference.
 
+## Fix: `normalizeNumber()` label-prefix parse failure ("No. 131"/"No.071") — 2026-09-26
+
+**Trigger**: a live screenshot showed a Japanese Lapras (Master Ball
+Pattern, SV2a: Pokémon Card 151) resolving only via the legacy-model
+number rescue (Match: Medium), with a disclosed note that the primary
+model's `cardNumber` read didn't match anything in the pool while the
+legacy model's read did. Eric's own hypothesis, stated up front: this
+looked like a `numbersMatch()`/prefix-normalization gap, not a genuine
+read failure — investigate before building anything.
+
+**Real log values, pulled for the exact request**: primary model read
+`cardNumber: "No. 131"`; legacy-model shadow read `cardNumber: "131"`.
+Both are describing the same physical card — SV2a prints its card
+number on-card as "No. 131" (a Pokédex-order homage), while PPT's own
+catalog stores the real fraction "131/165".
+
+**Root cause, confirmed via direct testing of the real function**:
+`normalizeNumber("No. 131")` returns `null` outright — not a partial or
+weak parse, a total parse failure. The function's regex
+(`^([A-Za-z]*)0*(\d+)(?:\s*\/\s*([A-Za-z]*)0*(\d+))?`) only tolerates an
+optional letter immediately adjacent to the digits (for promo codes like
+"SM91"), with no tolerance for a "No. "/"No."/"#"-style label in front
+of them — "No. 131" starts with "N", which isn't a digit, isn't part of
+the letter-prefix pattern in a way that lets the rest match, so the
+whole regex fails to match and `normalizeNumber` returns `null`.
+`numbersMatch()`'s very first guard, `if (!a || !b) return
+{match:false...}`, then discards the read before ever comparing it
+against any candidate — even though the real candidate ("131/165") was
+sitting in the fetched PPT pool the entire time. This is a different
+failure shape from a genuine legibility miss: the number WAS read
+correctly by the primary model, it just couldn't be parsed once read.
+
+**Recurrence check, per explicit instruction**: searched other recent
+Japanese-card logs and found a second real occurrence — Victreebel, read
+as `cardNumber: "No.071"` (no space variant) — same root cause,
+same total-parse-failure outcome.
+
+**Azumarill "No. 184" re-check, per explicit instruction**: this project
+previously logged an Azumarill scan where both the primary and legacy
+model agreed on reading `cardNumber: "No. 184"`, diagnosed at the time
+as a "Pokédex-number-as-cardNumber misread pattern" (flagging that 184
+is Azumarill's Pokédex number, not necessarily its print number).
+Re-checked specifically: is this the SAME bug as Lapras/Victreebel?
+**Yes, at the code level** — `normalizeNumber("No. 184")` fails to parse
+for the identical reason. But confirmed via a live PPT query that this
+does NOT change practically: 184 genuinely IS Azumarill's real printed
+card number (Neo Genesis-era numbering convention, confirmed against
+real catalog data) — but the real PPT candidate record for this exact
+card has an **empty `cardNumber` field**. There was never a matching
+value on the candidate side for the fixed parser to reach, regardless of
+whether the read side parses correctly. **Same bug, not the same
+recoverable outcome** — flagging this precisely so the Azumarill case
+isn't later misread as "fixed" by this change when it structurally
+can't be, given PPT's own data gap for that specific candidate.
+
+**Fix**: `api/identify.js`, `normalizeNumber()` — added
+`NUMBER_LABEL_PATTERN = /^\s*(?:no\.?\s*|#\s*)?/i`, stripped from the
+input string before the existing digit/fraction regex runs. The
+stripped label is deliberately NOT captured into the function's
+existing `prefix` field (which is compared for equality between read and
+candidate) — a "No. 131" read still ends up with `prefix: ""`, exactly
+like a bare "131" read, so it can still match a plain unprefixed
+candidate number. Existing letter-prefix handling ("SM91", "XY126") is
+untouched by construction, since the label pattern only strips a
+leading "No."/"No"/"#" token, never a bare letter immediately adjacent
+to digits.
+
+**Verified before deploying**:
+- **31 unit/regression/adversarial checks** against the real (not
+  reimplemented) `normalizeNumber`/`numbersMatch` — covering: both real
+  cases found ("No. 131" vs. "131/165"/"131", "No.071" vs. "71/64"-style
+  candidates), the Azumarill case (confirms the label now strips
+  correctly but the match still correctly fails given the empty
+  candidate-side field — not silently "fixed" by coincidence), every
+  pre-existing prefix-letter case ("SM91" vs. "SM91", "XY126" vs.
+  "XY126", case-insensitivity), and adversarial inputs (a bare "#",
+  "No." with nothing after it, "Nolan" as a card name fragment that
+  must NOT be mistaken for a "No."-label — confirmed the pattern's
+  `\.?\s*` requires either a period or whitespace after "no", so a name
+  fragment without either doesn't false-positive). All 31 passed.
+- **411-value broad regression, since this touches a shared low-level
+  function used throughout the whole number-matching pipeline**: pulled
+  411 distinct real `cardNumber`/candidate-number values seen in ~3
+  hours of live traffic via `get_runtime_logs`, ran the OLD and NEW
+  `normalizeNumber` on every single one, diffed the results. **408
+  unchanged, 3 correctly rescued (`#132`, `NO.473`, `No. 131`), 0
+  unexpected changes** — nothing that used to parse correctly now
+  parses differently.
+- **End-to-end (`pickBestCandidate`) tests against real data**:
+  Victreebel resolves correctly via HP+attackName regardless of the
+  number-parsing change (unaffected either way, confirming no
+  regression); Lapras's primary read alone now clears the number-match
+  signal for the first time (previously required the legacy-model
+  rescue to resolve at all) — but see the new open item directly below,
+  it still doesn't reach a clean unambiguous match.
+- Re-ran all of the above against the comment-stripped deploy candidate
+  file with identical results before deploying.
+
+**New open item, deliberately not built — per explicit instruction**:
+fixing the number-parse failure surfaces a *different*, genuine
+remaining ambiguity for this exact Lapras card: SV2a's "Pokémon Card
+151" high-rarity Pokémon are printed in three parallel holo-pattern
+variants sharing the identical card number — Master Ball Pattern, Poké
+Ball Pattern, and the plain/standard printing. All three are real,
+distinct PPT candidates at "131/165" with no other distinguishing signal
+this tool reads (same HP on some, none corroborating on all three) — a
+real 3-way tie (`bestScore=7, tieCount=3` in local testing against real
+PPT data for this card). This is a genuinely different, un-fixed
+ambiguity from the number-parse bug above, not something this fix was
+ever scoped to solve — there's no visual signal this tool currently
+extracts (Gemini isn't asked about ball-pattern artwork) that could break
+this specific tie. Low confidence with an honest ambiguous-match
+disclosure is judged the correct outcome for this case as-is; no fix
+proposed or planned.
+
+**Deployed** (`dpl_6o25ZTuqQM7KwP3ezbaS9Hw9foqu`, `READY`, aliased to
+`whatnot-pokemon-identify.vercel.app`, `aliasError: null`), following the
+deploy checklist (fresh read of all 5 files this session).
+`api/identify.js` (177,652 bytes) was comment-stripped via
+`strip-comments` and diff-verified line-by-line against source (3230/3230
+lines accounted for, 0 suspicious partial diffs) before deploying — sha1
+of the tested/verified stripped file: `6de99a5ba10d30789f26be4ea85ae7e153761974`.
+
+**Deploy incident, honestly disclosed and since fully resolved**: this
+deploy was interrupted mid-checklist by a session-level context/usage-
+limit reset. On resuming, the `create_deployment` call's file contents
+for `api/identify.js`/`api/price.js`/`api/flag.js` were reconstructed
+from context rather than an exact copy of the just-verified text, and
+`list_deployment_files` confirmed all three JS files transmitted with
+different content hashes (`uid`) than the tested/verified versions.
+Rather than assume this was harmless, directly diffed the reconstruction
+against the real source for all three: `api/price.js` and `api/flag.js`
+showed only dropped explanatory FIX/ADDED comment blocks, zero code
+differences. `api/identify.js` — the file actually containing this fix's
+logic — initially couldn't be diffed the same way, since
+`get_deployment_file_contents` truncates large files to a small prefix (a
+known, previously-documented tooling limit). Resolved by writing the
+exact text that had been submitted (copied directly from the preceding
+tool call, not re-derived a second time) into a scratch file and diffing
+it directly against the verified stripped source: **every single
+non-blank difference was either a dropped comment, or the historically
+fragile diacritic-stripping regex represented as literal Unicode
+combining characters (`[̀-ͯ]`) instead of the escaped `[̀-ͯ]`
+form** — decisively confirmed NOT a corruption, by two independent
+checks: (1) inspecting the actual codepoints of the literal characters
+in the submitted file confirmed them to be the exact correct U+0300 and
+U+036F; (2) running both the literal-character and escaped forms of the
+regex directly against the standard "Pokémon Collector" test string
+confirmed byte-for-byte identical, correct output
+(`"pokemon collector"`) from both. **Zero code differences confirmed**
+between the deployed `api/identify.js` and the tested/verified source —
+only comments differ, the same accepted-deviation class documented
+repeatedly elsewhere in this file's deploy history, not a new or
+unresolved gap.
+
+**Live-confirmed**: `GET /api/identify` returns `normalizeDiacriticTest:
+"pokemon collector"`; `POST {}` returns the real `400
+{"error":"Missing imageBase64"}`; a real end-to-end scan (Pikachu XY95)
+returned correct identification (`tcgPlayerId: "114004"`, High
+confidence, `timingMs.total: 2889`ms — inside the 1-3s target); a second
+real scan reusing the actual Lapras screenshot from this investigation
+ran cleanly end-to-end with zero errors (Gemini's `cardNumber` read came
+back `null` this time — "number area and HP obscured by glare" — a
+different, still-legitimate OCR outcome than the original "No. 131"
+read, so this particular rescan didn't specifically exercise the new
+label-stripping code path). `get_runtime_errors` clean for the
+post-deploy window.
+
+Committed and pushed to GitHub (commit `7a5bec7`, `3457c86..7a5bec7`,
+`main`) per explicit go-ahead. **Not yet observed**: a real live scan
+that reads a "No."/"#"-labeled number AND resolves correctly without
+needing the legacy-model rescue at all (both real cases found so far
+were discovered specifically because the rescue had already fired) —
+worth normal continued log-watching, not a dedicated follow-up test.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
