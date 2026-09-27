@@ -2599,6 +2599,61 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         }
       }
     }
+  } else if (!read.cardNumber) {
+    // FIX (2026-09-27, live scan — Lapras "Start Deck 100" false positive):
+    // the weak-signal floor directly above only ever ran when
+    // read.cardNumber was PRESENT but matched no candidate — a read.cardNumber
+    // of null skipped this entire `if (read.cardNumber && best.number)`
+    // block outright, including the corroboration check, so a candidate
+    // that cleared MATCH_FLOOR on a single coincidental signal (e.g.
+    // attackName alone, worth 4 points) got shown as a real, specific,
+    // Low-confidence-but-priced match with no disclosure at all beyond the
+    // generic "Low-confidence match" badge — no `printingUndetermined`,
+    // no explanation of WHY. Confirmed live: a real Lapras (Master Ball
+    // Pattern, SV2a: Pokemon Card 151, 131/165, $21.88) scan had both
+    // cardNumber AND hp come back null (glare), and the only surviving
+    // signal — a misread attackName "Water Gun" — happened to match an
+    // unrelated candidate (Lapras, Start Deck 100 Battle Collection,
+    // 159/742, bestScore=4, tieCount=1) that then got shown with full
+    // confidence-badge treatment and a real price for the wrong card.
+    // Reproduced mechanically against real PPT data before this fix (see
+    // docs/test-cases.md) — this is the exact same corroboratingSignals
+    // check as the block above, applied to the other half of the
+    // "we don't actually know this candidate's number" problem: a number
+    // that doesn't match anything, and a number that was never read at
+    // all, are both cases where `best` was picked on non-number signals
+    // alone, and deserve the identical scrutiny. Deliberately does NOT
+    // add the legacy-model rescue here — a null primary read has no
+    // number for the legacy model's read to be "rescuing" against in the
+    // same sense (that mechanism is specifically about a primary
+    // MISREAD being corrected by a second read, not a primary NON-read);
+    // out of scope for this narrowly-targeted fix. Deliberately placed in
+    // an `else if`, mutually exclusive with the block above by
+    // construction (`read.cardNumber` can't be both truthy and falsy) —
+    // every case where cardNumber is present, matched or unmatched, is
+    // completely unaffected; this branch is reachable only when
+    // cardNumber was never read at all.
+    const corroboratingSignals = ["hp", "subtype", "set", "attackName", "stampMatch"].filter(
+      (k) => bestDetail && bestDetail[k]
+    ).length;
+    if (corroboratingSignals < 2) {
+      console.log(
+        `[requestId=${requestId}]`,
+        `[lookup] NULL CARDNUMBER, INSUFFICIENT CORROBORATION (${corroboratingSignals} signal(s)): language=${read.language}, best=${best.name} ${best.number} — withholding specific price`
+      );
+      return {
+        found: true,
+        cardName: read.cardName,
+        setName: null,
+        cardImageUrl: null,
+        matchConfidence: "Low",
+        ambiguousNote:
+          `The card number wasn't legible this scan, and the closest candidate on other details shares only ${corroboratingSignals === 0 ? "no other signal" : "one weak signal"}, not enough to trust a specific printing or price. Verify the exact printing on the physical card.`,
+        tcgplayerUrl: null,
+        pricingLookup: null,
+        printingUndetermined: true,
+      };
+    }
   }
 
   // FIX (2026-08-30, test #63): honest disclosure for the rescue path
