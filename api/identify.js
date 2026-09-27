@@ -1021,6 +1021,36 @@ function numbersMatch(readRaw, candRaw) {
   return { match: true, points: SCORE.number * 0.35, strength: "weak" };
 }
 
+// FIX (2026-09-27, live test — Mewtwo 10/130 and Nidoking 11/130, both
+// Base Set 2): the combined name+number search fallback below (added for
+// test #49) builds its query from `read.cardNumber` verbatim ("Mewtwo
+// 10/130"), but PPT's `search` param does exact/tokenized matching on the
+// stored cardNumber string, not fuzzy matching — and confirmed live
+// against real PPT data, certain vintage sets (Base Set, Base Set 2)
+// store their card numbers with the numerator zero-padded to the SAME
+// DIGIT WIDTH as the total ("010/130", "001/130"), while others (Jungle,
+// Fossil, every modern set checked) don't ("9/64" stored as "09/64" to
+// match Jungle's 2-digit total, not 3). A plain-text search for the
+// unpadded "10/130" therefore returns zero results against a stored
+// "010/130", even though the record exists and even though
+// `normalizeNumber()`/`numbersMatch()` already strip leading zeros
+// correctly once a candidate is actually in the pool — this was never a
+// scoring bug, only a query-construction gap. Confirmed via real PPT API
+// calls before building this: Base Set 2 and Base Set (Shadowless) both
+// pad every numerator to match their total's width (checked across the
+// full numerator range, 001-130 and 001-102); Jungle/Fossil (2-digit
+// totals) don't extend past 2-digit padding. This derives the padding
+// width from the read's own parsed total rather than hardcoding a fixed
+// width, so it generalizes to any set following the same convention
+// without needing to know in advance which sets do.
+function buildZeroPaddedNumberVariant(rawNumber) {
+  const parsed = normalizeNumber(rawNumber);
+  if (!parsed || !parsed.total) return null;
+  if (parsed.num.length >= parsed.total.length) return null;
+  const paddedNum = parsed.num.padStart(parsed.total.length, "0");
+  return `${parsed.prefix}${paddedNum}/${parsed.totalPrefix}${parsed.total}`;
+}
+
 // ADDED (2026-08-31, research write-up + test #53 Drayton case):
 // PPT's raw `rarity` field is fetched on every single lookup already
 // (zero extra API cost) but was never used anywhere in scoring —
@@ -2371,30 +2401,48 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   const stillMissingAfterPage2 =
     !!read.cardNumber && !candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
   if (stillMissingAfterPage2) {
-    const combinedQuery = `${read.cardName} ${read.cardNumber}`;
-    console.log(`[requestId=${requestId}]`, `[lookup] number still missing after page1+2 — trying combined name+number search= "${combinedQuery}"`);
-    const combinedResult = await fetchPokemonPriceTracker(combinedQuery, { language: read.language });
-    if (combinedResult && combinedResult.error === "rate-limited") return { error: "rate-limited", retryAfter: combinedResult.retryAfter, isDailyLimit: combinedResult.isDailyLimit };
-    const combinedList = combinedResult
-      ? Array.isArray(combinedResult.data)
-        ? combinedResult.data
-        : Array.isArray(combinedResult)
-        ? combinedResult
-        : []
-      : [];
-    console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search raw candidate count=", combinedList.length);
-    if (combinedList.length > 0) {
-      const combinedFiltered = combinedList.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
-      if (combinedFiltered.length > 0) {
-        const combinedCandidates = combinedFiltered.map(normalizePptCard);
-        const foundExactNumber = combinedCandidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
-        if (foundExactNumber) {
-          filtered = filtered.concat(combinedFiltered);
-          candidates = filtered.map(normalizePptCard);
-          console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search surfaced the missing number — re-scoring, total candidates=", candidates.length);
-          ({ best, bestScore, tieCount, bestDetail, tiedCandidates } = pickBestCandidate(candidates, read, `[lookup:combined][requestId=${requestId}]`));
-        } else {
-          console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search returned results but still no exact number match — keeping prior best");
+    // FIX (2026-09-27, Mewtwo/Nidoking Base Set 2): try the unpadded
+    // number exactly as read first (unchanged from before), and ONLY if
+    // that fails to surface an exact match, retry once with a
+    // zero-padded variant (see buildZeroPaddedNumberVariant above). For
+    // any card whose number doesn't parse a total, or whose numerator is
+    // already the same/greater width than its total (every case that
+    // already worked before this fix — modern sets, promo codes, and any
+    // vintage set Gemini happens to read already-padded), the padded
+    // variant is null or identical to the original and this loop runs
+    // exactly once, exactly as before — purely additive.
+    const paddedNumberVariant = buildZeroPaddedNumberVariant(read.cardNumber);
+    const numberVariantsToTry = [read.cardNumber];
+    if (paddedNumberVariant && paddedNumberVariant !== read.cardNumber) {
+      numberVariantsToTry.push(paddedNumberVariant);
+    }
+    for (const numberVariant of numberVariantsToTry) {
+      const combinedQuery = `${read.cardName} ${numberVariant}`;
+      console.log(`[requestId=${requestId}]`, `[lookup] number still missing after page1+2 — trying combined name+number search= "${combinedQuery}"`);
+      const combinedResult = await fetchPokemonPriceTracker(combinedQuery, { language: read.language });
+      if (combinedResult && combinedResult.error === "rate-limited") return { error: "rate-limited", retryAfter: combinedResult.retryAfter, isDailyLimit: combinedResult.isDailyLimit };
+      const combinedList = combinedResult
+        ? Array.isArray(combinedResult.data)
+          ? combinedResult.data
+          : Array.isArray(combinedResult)
+          ? combinedResult
+          : []
+        : [];
+      console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search raw candidate count=", combinedList.length);
+      if (combinedList.length > 0) {
+        const combinedFiltered = combinedList.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
+        if (combinedFiltered.length > 0) {
+          const combinedCandidates = combinedFiltered.map(normalizePptCard);
+          const foundExactNumber = combinedCandidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
+          if (foundExactNumber) {
+            filtered = filtered.concat(combinedFiltered);
+            candidates = filtered.map(normalizePptCard);
+            console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search surfaced the missing number — re-scoring, total candidates=", candidates.length);
+            ({ best, bestScore, tieCount, bestDetail, tiedCandidates } = pickBestCandidate(candidates, read, `[lookup:combined][requestId=${requestId}]`));
+            break;
+          } else {
+            console.log(`[requestId=${requestId}]`, "[lookup] combined name+number search returned results but still no exact number match — keeping prior best");
+          }
         }
       }
     }
