@@ -7036,6 +7036,134 @@ thin 1-in-27 real-traffic rate found during investigation. Worth normal
 continued log-watching for `[lookup] NULL CARDNUMBER, INSUFFICIENT
 CORROBORATION` lines, not a dedicated follow-up test.
 
+## Test #94 — Mewtwo and Nidoking, both Base Set 2, failed to match despite the correct card number being read: real, fixable zero-padding bug in the combined-search query, not a PPT catalog gap (2026-09-27)
+
+User flagged a live Base Set 2 Mewtwo scan: the panel showed Read
+"Mewtwo", card number "10/130" read correctly, but "didn't match any
+printing in our database" — price withheld by the weak-signal floor
+(see the 2026-09-27 null-cardNumber-floor entry above; this is the
+*card-number-present* sibling case, gated by the separate `if
+(read.cardNumber && best.number)` block). User also flagged this might
+be the same root cause as an older, unresolved "Base Set 2 dropdown
+option missing" Nidoking report — **checked first, per explicit
+instruction, and confirmed there is no trace of that report anywhere in
+this repo** (git log `--all --grep`, CLAUDE.md, this file, ROADMAP.md,
+and the build-status doc all came back empty for "Nidoking" and "Base
+Set 2" outside this entry and one unrelated Chansey example) — it must
+have only ever existed in the chat-assistant side's own context, never
+logged here per this project's own "project facts belong in this repo"
+rule. Its exact original symptoms can't be recovered, but the mechanism
+found below reproduces identically for a real Nidoking Base Set 2 case,
+so it's very likely the same bug recurring, not confirmed identical.
+
+**Real log for the Mewtwo scan** (`requestId=648bc57c-...`,
+`dpl_38yxWCmJEVTQxQkC2R5A8sm2ndCT`): Gemini's read was fully correct —
+`cardName: "Mewtwo"`, `cardNumber: "10/130"`, `setName: "Base Set 2"`,
+`hp: "60"`. The plain `search=Mewtwo` pool (161 total Mewtwo printings
+in PPT) didn't surface Base Set 2 in page 1 or page 1+2 (60 candidates,
+all modern promos). The combined-search fallback then ran
+`search="Mewtwo 10/130"` and got 0 results, so the code correctly fell
+through to the honest "no number match" withhold-price path — nothing
+malfunctioned in scoring, the candidate simply never reached the pool.
+
+**Direct PPT queries confirmed the record genuinely exists** and found
+the real, fixable cause: `GET /api/v2/cards?search=Mewtwo&setName=Base
+Set 2` returns the real card with `cardNumber: "010/130"` — zero-padded.
+Reproduced live: `search="Mewtwo 10/130"` → 0 results;
+`search="Mewtwo 010/130"` → 1 result, the correct card. Same mechanism
+reproduced for Nidoking: real record `cardNumber: "011/130"`,
+`search="Nidoking 11/130"` → 0 results, `search="Nidoking 011/130"` → 1
+result. **Padding width is not fixed at 3 digits** — pulled a broad
+sample directly from PPT to confirm the real rule before building
+anything: numerators are padded to match the TOTAL's own digit width.
+Base Set 2 (total "130", 3 digits) pads every numerator to 3 digits,
+including single digits (`"001/130"`, confirmed across the full
+001-130 range); Base Set (Shadowless) does the same for its 102-total
+range. Jungle and Fossil (2-digit totals, "64"/"62") pad to 2 digits
+only (`"01/64"`, `"09/64"`), never 3. This rules out hardcoding a fixed
+width — the correct width has to be derived from the read's own parsed
+total.
+
+**Confirmed NOT a scoring bug**: `normalizeNumber()`'s regex
+(`0*(\d+)`) already strips leading zeros on both sides before
+comparison, so `numbersMatch("10/130", "010/130")` already returns an
+exact match today. The entire bug is that the padded candidate never
+gets fetched into the pool in the first place — a pure query-
+construction gap in the combined-search fallback (`api/identify.js`,
+the `stillMissingAfterPage2` block), which built its query from
+`read.cardNumber` verbatim, unpadded.
+
+**Fix, built and verified locally before deploying** (see the "Go
+ahead" conversation turn for the full real-data test trace — not
+repeated in full here): a new `buildZeroPaddedNumberVariant()` derives
+the correct padded variant from the read's own parsed total/numerator
+widths (`padStart`), and the combined-search fallback now loops over
+`[unpadded, padded]`, trying the padded variant only when the unpadded
+attempt already failed to find an exact match, and only when a padded
+variant is actually derivable and different from the original — purely
+additive, same "strict exact-match only" discipline as the existing
+fallback. 11 real test cases run through the actual unmodified
+`handler()` against **live** PPT data (Gemini mocked with real read
+shapes, PPT calls hitting the real API): Mewtwo, Nidoking, Charizard
+(241 total Charizard printings — the strongest stress test of deep
+pagination + the new retry), Blastoise, and Gyarados all resolved
+correctly (4 of the 5 via the new padded-retry path, independently
+cross-checked against direct PPT queries for the exact right
+tcgPlayerId each time); Chansey, Alakazam, Clefable (Jungle, 2-digit
+padding), and Pikachu XY95 (modern, no total) all resolved via existing
+pre-fix paths, completely unaffected; a genuine non-existent
+`"999/999"` number correctly still withheld with no false positive; and
+Eevee SVP 173 (a bare promo number with no total) confirmed the loop
+makes exactly one attempt when no padded variant is derivable — the
+same behavior as before this fix, by construction.
+
+**Deployed and live-confirmed 2026-09-27**
+(`dpl_EtmUPtwASxVkkmkQssMwA38KaERv`, `READY`, aliased to
+`whatnot-pokemon-identify.vercel.app`, `aliasError: null`). Deploy
+checklist followed in full: all 5 files freshly read this same turn;
+`api/identify.js` (184,030 bytes, past this project's documented
+danger threshold) was comment-stripped via `strip-comments`
+(→74,107 bytes) and diff-verified via an automated script — 3333/3333
+lines matched (1661 identical + 1672 whole-line-blanked comment lines,
+**0 suspicious partial diffs**) — with both historically-fragile
+diacritic-regex occurrences and the new fix's code separately spot-
+checked byte-identical pre/post-strip. `api/flag.js`, `api/price.js`,
+`vercel.json`, `package.json` all transmitted with a deployment-file
+`uid` matching their local `shasum` exactly.
+
+**Honestly-flagged and now resolved, same class of gap as prior
+deploys**: `api/identify.js`'s own deployment-file `uid`
+(`cf17281f...`) did not match the local stripped file's sha1
+(`4ee78087...`). A manual attempt to re-paste and diff
+`get_deployment_file_contents`' truncated prefix produced a noisy,
+inconclusive result (the copy itself was cut off mid-identifier, an
+artifact of the paste, not evidence of a real divergence) — flagged
+honestly as inconclusive rather than treated as confirmation either
+way. Resolved decisively instead, the same way this project always
+has when a byte-level check can't reach far enough: the live `GET
+/api/identify` debug endpoint's runtime-computed `sourceHash` exactly
+equals the deployed `uid` (internal consistency — the file running IS
+the file listed); `normalizeDiacriticTest` returns the correct
+`"pokemon collector"`. Most decisively: **two real end-to-end
+production scans using the actual Base Set 2 Mewtwo and Nidoking card
+photos** (fetched from TCGplayer's own public CDN, run through real
+Gemini vision, not mocked) both resolved correctly — Mewtwo
+`matchConfidence: "High"`, `tcgPlayerId: "42445"`, `total: 2005ms`;
+Nidoking `matchConfidence: "High"`, `tcgPlayerId: "42448"`,
+`total: 1791ms` — both inside the 1-3s target. The real production
+runtime logs for the Mewtwo request show the exact new code path
+firing as designed: `combined name+number search= "Mewtwo 10/130"` →
+raw candidate count 0 → `combined name+number search= "Mewtwo
+010/130"` → raw candidate count 1 → `surfaced the missing number —
+re-scoring` → `best={name:'Mewtwo', number:'010/130', ...} bestScore=33
+tieCount=1`. This is the fix demonstrably working end-to-end on real
+production traffic, not just a local test. `get_runtime_errors` clean
+for the post-deploy window; `POST {}` returns the real `400
+{"error":"Missing imageBase64"}`.
+
+Committed and pushed to GitHub (commit `b01b257`, `62a1d8f..b01b257`,
+`main`) per explicit go-ahead.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

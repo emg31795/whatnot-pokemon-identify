@@ -70,6 +70,71 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
+**Update, 2026-09-27, later same day: Mewtwo/Nidoking Base Set 2
+zero-padded-number combined-search bug — investigated, BUILT, DEPLOYED,
+PUSHED, AND LIVE-CONFIRMED on real production scans of the actual
+triggering cards.** Eric flagged a live Base Set 2 Mewtwo scan: card
+number "10/130" read correctly but "didn't match any printing in our
+database," price withheld. He also flagged this might be the same root
+cause as an old, unresolved "Base Set 2 dropdown option missing"
+Nidoking report from the chat-assistant side — **checked first, per
+explicit instruction: no trace of that report exists anywhere in this
+repo** (git log, this file, ROADMAP.md, test-cases.md, build-status doc
+all came back empty for "Nidoking") — it was apparently never logged
+here, a real instance of the "project facts belong in this repo, not
+chat" rule being missed once, now closed by logging this entry.
+
+**Root cause, confirmed via real logs + direct PPT queries, NOT a
+catalog gap**: the real Base Set 2 Mewtwo record genuinely exists in
+PPT (`cardNumber: "010/130"`, zero-padded to match the set's 3-digit
+total) but `lookupCardPPT`'s combined name+number search fallback
+(`api/identify.js`) built its query from Gemini's unpadded read
+verbatim ("Mewtwo 10/130"), which PPT's search treats as a
+non-matching token against the padded stored value — confirmed live:
+`search="Mewtwo 10/130"` → 0 results, `search="Mewtwo 010/130"` → 1
+result, the correct card. Reproduced identically for Nidoking (real
+record `"011/130"`). Pulled a broad sample directly from PPT before
+building anything to confirm the real padding rule (numerator padded
+to match the TOTAL's digit width, not a fixed 3 — Base Set/Base Set 2
+pad to 3, Jungle/Fossil, 2-digit totals, pad to 2 only) — this ruled
+out hardcoding a width. Confirmed via `normalizeNumber()`'s own regex
+that the SCORING layer already strips leading zeros correctly, so this
+was purely a query-construction gap, not a scoring bug.
+
+**Fix**: new `buildZeroPaddedNumberVariant()` derives the correct
+padded variant from the read's own parsed total/numerator widths; the
+combined-search fallback now tries it as a second attempt, only after
+the unpadded query already failed to find an exact match — purely
+additive, same strict exact-match-only discipline as the existing
+fallback. 11 real test cases run against the real unmodified
+`handler()` and live PPT data confirmed the fix works for the two
+triggering cards plus 3 more real Base Set 2 cards via the new retry
+path (including a 241-total-printing stress test, Charizard), while 5
+other cases (Jungle's own 2-digit padding, a modern no-total promo, and
+a genuine non-match) confirmed zero behavior change for every
+already-working case.
+
+**Deployed and live-confirmed 2026-09-27**
+(`dpl_EtmUPtwASxVkkmkQssMwA38KaERv`, `READY`, aliased to
+`whatnot-pokemon-identify.vercel.app`, `aliasError: null`), following
+the full deploy checklist — fresh read of all 5 files this turn,
+`api/identify.js` comment-stripped and diff-verified (0 suspicious
+lines out of 3333). One honestly-flagged verification gap (the
+deployed file's `uid` didn't match the local stripped file's sha1, and
+a manual re-paste of the truncated `get_deployment_file_contents`
+prefix was itself inconclusive) was resolved as decisively as this
+project ever has: **two real end-to-end production scans using the
+actual Base Set 2 Mewtwo and Nidoking card photos** (fetched from
+TCGplayer's public CDN, run through real Gemini vision, not mocked)
+both resolved correctly (`High` confidence, correct `tcgPlayerId` for
+each, 2005ms/1791ms — both inside the 1-3s target), and the real
+production runtime log for the Mewtwo request shows the exact new
+retry logic firing as designed (`"Mewtwo 10/130"` → 0 results →
+`"Mewtwo 010/130"` → 1 result → re-scored to the correct card).
+`get_runtime_errors` clean for the post-deploy window. Committed and
+pushed to GitHub (commit `b01b257`, `62a1d8f..b01b257`, `main`) per
+explicit go-ahead. Full trace in `docs/test-cases.md` test #94.
+
 **Update, 2026-09-27: null-cardNumber weak-signal floor — investigated,
 BUILT, DEPLOYED, PUSHED, AND LIVE-CONFIRMED, with real before/after
 numbers reported (thinner than hoped) and one honestly-resolved
@@ -1928,6 +1993,24 @@ checklist before reporting something as finished:
   they do not auto-reload (caused real confusion in test #43).
 
 ## Recent / in-flight work
+
+- **Mewtwo/Nidoking Base Set 2 zero-padded-number combined-search fix —
+  BUILT, DEPLOYED, PUSHED, AND LIVE-CONFIRMED, 2026-09-27** (commit
+  `b01b257`, `62a1d8f..b01b257`, `main`;
+  `dpl_EtmUPtwASxVkkmkQssMwA38KaERv`). A real card number match failed
+  not because the PPT catalog was missing the card, but because the
+  combined-search fallback queried PPT with Gemini's unpadded read
+  ("Mewtwo 10/130") against a zero-padded stored value ("010/130") —
+  PPT's search treats these as non-matching tokens. New
+  `buildZeroPaddedNumberVariant()` derives the correct padding width
+  from the read's own parsed total (Base Set/Base Set 2 pad to 3
+  digits, Jungle/Fossil to 2 — not a fixed width) and the fallback
+  retries with it only after the unpadded attempt already failed —
+  purely additive, zero behavior change for any already-working case.
+  See the full investigation, fix, and deploy trace (including two real
+  end-to-end production scans of the actual Mewtwo/Nidoking card photos
+  that confirm the fix live) in the dedicated "Current priority" entry
+  above and `docs/test-cases.md` test #94.
 
 - **Medicham misidentification fix (legacy-model number rescue +
   weak-signal floor) — BUILT, DEPLOYED, PUSHED, AND LIVE-CONFIRMED,
