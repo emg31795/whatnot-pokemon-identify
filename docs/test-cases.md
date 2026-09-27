@@ -6547,6 +6547,17 @@ recurs on other cards with similar flavor-text layout, it's worth a
 targeted prompt tweak explicitly distinguishing "Pokédex number" from
 "print number." Not built, not urgent.
 
+**Second confirmed occurrence, 2026-09-27 (test #95)**: a real Japanese
+Typhlosion scan's `[legacy-model-shadow-test]` line read
+`cardNumber: "No.157"` — 157 is Typhlosion's National Pokédex number,
+not a print number, the identical failure shape as the Azumarill case
+above. This time only the LEGACY model produced it (the primary read
+`cardNumber: null` on that same request), so it never reached the
+weak-signal floor's decision at all — contained by construction, not
+by luck. Still just 2 data points total, still not enough to justify a
+prompt change on its own, but now confirmed recurring rather than a
+one-off. See test #95 for the full trace.
+
 **Watch item 2 — SV4a: Shiny Treasure ex has legitimately low prices on
 base-numbered "ex" cards.** The same check-in's Charizard ex - 115/190
 (Holofoil, Japanese) rescue returned $2.31, which looked suspicious
@@ -7163,6 +7174,71 @@ for the post-deploy window; `POST {}` returns the real `400
 
 Committed and pushed to GitHub (commit `b01b257`, `62a1d8f..b01b257`,
 `main`) per explicit go-ahead.
+
+## Test #95 — Japanese Typhlosion, 4 real attempts, cardNumber never captured: investigated per explicit instruction, confirmed as a genuine legibility limit, not a fixable pattern — no code changed (2026-09-27)
+
+User flagged a live Japanese Typhlosion scan (Read: High, price withheld
+by the null-cardNumber weak-signal floor) and asked whether this was a
+real limit or another fixable gap in the same family as the Mewtwo/
+Nidoking case above, before accepting it as-is. Investigated per
+explicit instruction; nothing built.
+
+**Real logs pulled for "Typhlosion" found 4 independent scan attempts**
+in the same short window (23:41:35–23:44:34), not just the one
+screenshot — `requestId`s `fce750b8`, `ded093d1`, `4dbb210a`,
+`8c2c8622` (the screenshot's own scan). Every single one returned
+`cardNumber: null` from the primary model, each with a distinct but
+physically plausible `reason`: "card number area blurry and obscured",
+"number area obscured by glare", "card number area too small/blurry in
+frame", "cardNumber area obscured by card stand and angle" — consistent
+with the actual screenshot (a small card propped in a clear display
+stand, viewed at an angle, a good distance from the camera, most of the
+frame taken up by background).
+
+**Cross-checked against 2 other independent reads per attempt** (the
+`[legacy-model-shadow-test]` model and the Haiku shadow test — 12 total
+independent reads across the 4 attempts): only one, on attempt 3,
+produced a non-null number at all — the legacy model read
+`cardNumber: "No.157"`, which is Typhlosion's real National Pokédex
+number, not a print number — the identical failure shape as the
+previously-logged Azumarill "No. 184" case (see that watch item, this
+file and CLAUDE.md, now updated with this as a second confirmed
+occurrence). It never reached the null-cardNumber floor's decision,
+since that rescue path is gated on the *primary* read having a number
+at all (this one didn't). Haiku's shadow reads guessed four different,
+all-wrong species across the four attempts (Charizard, Cyndaquil,
+Ho-Oh, Moltres) with `cardNumber: null` every time — confirming Haiku
+simply isn't a reliable corroboration source on this particular frame,
+not a new finding on its own.
+
+**HP/attackName varied noticeably across the 4 attempts** (80/"Ember"
+on the first, 100/"Flame Wheel" or "Fire Boost" on the other three) —
+plausibly several different real Typhlosion printings being scanned
+back-to-back in the same live-stream session (a legitimate use
+pattern), not necessarily 4 repeat attempts at one identical physical
+card. Either way, the number was never captured on any of them.
+
+**Checked whether the listing's own text ("PROMO or EX!!") could help
+narrow this down — confirmed architecturally out of scope, not just
+unused.** Read `extension/content.js`'s `captureFrame()` directly: it
+draws only the `<video>` element's pixels onto a canvas and returns a
+JPEG data URL; `identifyDirect()` sends only `{imageBase64, game}` to
+the backend. No page text, listing title, or other DOM content is ever
+captured or transmitted — there is no existing code path where listing
+context could reach Gemini/Haiku even in principle. Using it would be
+new functionality, not a fix for this gap, and wasn't proposed.
+
+**Conclusion: a genuine legibility limit, not a fixable bug.** Unlike
+the Mewtwo/Nidoking case (test #94), where the number was read cleanly
+and consistently and the failure was entirely downstream in a search
+query, here the raw vision read itself never produced a usable number
+across 4 real attempts and 3 different models, with consistently
+plausible physical obstruction reasons matching what the screenshot
+actually shows. No fix proposed or built; the withheld-price behavior
+(the null-cardNumber weak-signal floor) is working exactly as designed
+for this case. The one actionable byproduct is logged as a second data
+point on the existing Azumarill Pokédex-number watch item above, not as
+new work.
 
 ## Related docs
 

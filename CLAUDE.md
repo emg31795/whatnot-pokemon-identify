@@ -513,7 +513,15 @@ BOTH the primary and legacy shadow model agree on reading
 actually Azumarill's Pokédex number, not a print number; the floor
 correctly withheld the price, but if this recurs on other cards with
 similar flavor-text layout it may be worth a prompt tweak distinguishing
-"Pokédex number" from "print number." (2) A real Charizard ex - 115/190
+"Pokédex number" from "print number." **Second confirmed occurrence,
+2026-09-27**: a real Japanese Typhlosion investigation (see the
+2026-09-27 entry below and test #95, `docs/test-cases.md`) found the
+legacy shadow model reading `cardNumber: "No.157"` — Typhlosion's real
+Pokédex number — on one of 4 real scan attempts; the primary model's
+own read was `null` on that request, so it never reached the
+weak-signal floor's decision. Still only 2 data points, still no prompt
+change made — but now a confirmed recurring pattern, not a one-off.
+(2) A real Charizard ex - 115/190
 (SV4a: Shiny Treasure ex, Japanese) rescue returned $2.31, which looked
 suspicious next to pricier alt-art variants in the same pool but is very
 likely correct — SV4a is a high-print-run set where base-numbered "ex"
