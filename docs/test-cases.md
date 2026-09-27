@@ -6854,6 +6854,188 @@ needing the legacy-model rescue at all (both real cases found so far
 were discovered specifically because the rescue had already fired) —
 worth normal continued log-watching, not a dedicated follow-up test.
 
+## Fix: null-cardNumber weak-signal floor — 2026-09-27
+
+**Trigger**: Eric pulled real Vercel logs himself, independently, to
+re-check the "confirmed clean" verification summary from the
+`normalizeNumber` label-prefix deploy the prior day. He found that the
+real rescan used for that deploy's own post-deploy verification
+(`requestId=47aad103-3d8e-43e6-a103-b7a74b8a4128`, the Lapras
+screenshot rescan) had NOT actually exercised the new label-stripping
+fix at all — Gemini's primary read came back `cardNumber: null`
+entirely that time ("number area and HP obscured by glare"), not
+"No. 131" — and the result was concerning on its own merits: `best =
+{name: 'Lapras', number: '159/742', hp: '130', setName: 'Start Deck 100
+Battle Collection'}`, `bestScore: 4`, `tieCount: 1` — picking a wrong,
+unrelated Lapras candidate over the real one (Master Ball Pattern,
+SV2a: Pokémon Card 151, 131/165, $21.88) sitting in the same fetched
+pool, with a real $4 price shown and no ambiguousNote at all.
+
+**Investigated first, per explicit instruction ("investigate, don't
+build yet")** — four questions asked, four answered with real evidence:
+
+1. **What happens when `cardNumber` is null vs. present-but-unmatched?**
+   Confirmed via direct code read: `api/identify.js`'s weak-signal floor
+   (the ≥2-corroborating-signals check added in the Medicham fix) lived
+   entirely inside `if (read.cardNumber && best.number) { ... }`. When
+   `read.cardNumber` is null/falsy, this ENTIRE block — including the
+   legacy-model rescue AND the floor — is skipped outright.
+   `scoreCandidate()`'s number-scoring block has the identical
+   `if (read.cardNumber && candidate.number)` gate, so a null-cardNumber
+   read never earns the 20-point number signal for any candidate; the
+   whole pool is scored purely on HP(6)/subtype(5)/set(3)/attackName(4)/
+   stampMatch(3)/rarity(2, uncounted toward corroboration), and
+   `MATCH_FLOOR = 3` accepts any single one of the first five alone.
+2. **Confirmed this is a real gap, not a hypothetical** — reproduced
+   mechanically against real PPT data (a live "Lapras" search,
+   Japanese), running the actual unmodified `pickBestCandidate` with a
+   reconstructed read matching the report (`cardNumber: null, hp: null,
+   attackName: "Water Gun"`): exact match to the real reported result
+   (`best.number: '159/742'`, `bestScore: 4`, `tieCount: 1`,
+   `bestDetail: {attackName: true}`). The real "Water Gun" attack does
+   belong to the wrong Start Deck 100 candidate — the correct Master
+   Ball Pattern card's actual first attack is "Hop on My Back", so this
+   specific rescan's `attackName` read was itself wrong too, consistent
+   with the whole frame reading poorly that time (glare).
+3. **How often does this pattern occur in recent traffic?** Could not
+   answer from historical logs — the original triggering request had
+   already rolled off Vercel's 1-hour Hobby retention by the time this
+   was investigated (confirmed via a direct query returning "No logs
+   found", not assumed). A real live-traffic check at investigation time
+   found zero requests in the queryable window (no stream running at
+   that moment) — a genuine, structural inability to quantify prevalence
+   retroactively, not a methodology gap. Flagged honestly rather than
+   guessed at; see the real numbers gathered later once traffic resumed,
+   below.
+4. **Reported back with real evidence before proposing/building
+   anything**, per instruction — the frontend does render a generic
+   `⚠ Low-confidence match` warning for this case (not fully silent),
+   but never the specific disclosure or price-withholding the equivalent
+   cardNumber-present-but-unmatched case gets.
+
+**Design decision from Eric**: extend the existing floor — same
+≥2-signal threshold, same 5 signal keys (hp/subtype/set/attackName/
+stampMatch), no new logic invented — to also run when `cardNumber` is
+null, via a narrow `else if (!read.cardNumber)` sibling block.
+Deliberately does NOT add the legacy-model rescue to this branch (a
+null primary read has no number for a second model's read to "rescue"
+against in the same sense a misread does). Hard constraint: zero
+behavior change for any case where `cardNumber` is present, matched or
+unmatched.
+
+**Built and verified, per explicit instruction, before deploying**:
+
+- **Code-level proof of zero regression for cardNumber-present cases**:
+  the new branch is mutually exclusive with the original
+  `if (read.cardNumber && best.number)` block by construction
+  (`read.cardNumber` cannot be both truthy and falsy) — confirmed via
+  `git diff`: the entire change is a pure addition, zero lines inside
+  the original block were touched.
+- **4 explicit regression tests** against the real (not reimplemented)
+  `lookupCardPPT`: cardNumber present+unmatched+1 signal (still
+  withheld, unchanged), cardNumber present+unmatched+2 signals (still
+  shown with the OLD message, unchanged), cardNumber present+exact match
+  (unaffected), and the pre-existing edge case where `cardNumber` is
+  present but the winning candidate's own `number` field is empty
+  (confirmed neither branch fires, same untouched gap as before). All
+  passed.
+- **7 new-behavior tests**: null cardNumber + 1 weak signal → now
+  withheld (the real Lapras case); null cardNumber + 0 signals → never
+  clears `MATCH_FLOOR` in the first place under the current SCORE
+  weights, falls to the pre-existing, safe, unrelated `notFound`
+  response (confirmed this specific sub-case is structurally
+  unreachable via the new branch, not just untested); null cardNumber +
+  2 real signals → correctly NOT withheld; empty-string `cardNumber`
+  (`""`) treated identically to null; a null-cardNumber tie already
+  narrowed to one candidate by the existing setName-narrowing rescue,
+  still only 1 real signal on the narrowed pick → still correctly
+  withheld (confirms the new floor runs on the POST-narrowing state, not
+  the original tie).
+- **Full regression re-run against the file with BOTH this fix and the
+  prior `normalizeNumber` label-prefix fix together**: `normalizeNumber`
+  31/31, attackName fuzzy-match 23/23, the 411-value real-traffic broad
+  regression (408 unchanged, 3 correctly rescued, 0 unexpected), the
+  Lapras/Victreebel end-to-end suite 4/4 — all green, zero regressions
+  anywhere.
+
+**Real before/after numbers, as explicitly requested — reported exactly
+as found, not padded to look more conclusive**: a live scanning session
+happened to be running during this investigation, so real production
+logs were pulled repeatedly (Vercel Hobby's full 1-hour retention,
+sampled at multiple points as it rolled forward) — **27 unique real
+scans reached the scoring step**. Of those, **only 1 had `cardNumber:
+null`** (a "Team Aqua's Muk" scan, `requestId=08ffbf88...`) —
+`bestScore=10`, 2 real corroborating signals (`hp` "110"="110",
+`attackName` "Pester"="Pester"), and only 1 candidate existed in the raw
+pool at all (an unambiguous match by default). Correctly **NOT**
+affected by the new floor (≥2 signals) — spot-checked as genuinely
+correct, not a near-miss. **Net: 0 of 27 real scans this session would
+flip to withheld** — the specific failure pattern (null cardNumber +
+exactly 1 coincidental signal + a unique wrong winner) simply didn't
+recur in the available window. This is a real, informative data point
+on its own: it's meaningfully lower than the ~27-35% null-cardNumber-
+driven TIE rate documented in the 2026-09-26 Gemini read-consistency
+investigation — but that was measuring a different outcome (ties) from
+a different session's lighting/card mix, so this isn't a contradiction,
+just real session-to-session variance in how often a null read happens
+to still coincidentally clear the floor uniquely rather than tie or
+miss the floor entirely. **No newly-withheld case existed in this real
+sample to spot-check a good/bad suppression ratio against** — the one
+confirmed before/after example remains the original Lapras
+reproduction itself (see above): old code showed the wrong card's price
+with zero disclosure; new code withholds it entirely with an honest
+explanation.
+
+**Deployed** (`dpl_38yxWCmJEVTQxQkC2R5A8sm2ndCT`, `READY`, aliased to
+`whatnot-pokemon-identify.vercel.app`, `aliasError: null`), following
+the deploy checklist in full — fresh read of all 5 files this session,
+`api/identify.js` (181,037 bytes) comment-stripped via `strip-comments`
+(→73,142 bytes) and diff-verified line-by-line against source (1645
+identical + 1640 whole-line-blanked comment lines, 0 suspicious
+partial diffs), both historically-fragile diacritic-regex occurrences
+and the new `else if (!read.cardNumber)` branch confirmed byte-intact
+in the stripped file, full test suite re-run against the stripped file
+with identical results before deploying.
+
+**Honestly-disclosed verification gap, investigated and resolved before
+reporting success, not glossed over**: the deployed `api/identify.js`'s
+`uid` (`51702f26be3c64394293e774dc91c9c8f4eae6bf`) did not match the
+local sha1 of the exact text submitted in the deploy call — the same
+class of gap this project has hit repeatedly on this specific
+large-file transcription step. Resolved with multiple independent,
+decisive checks rather than assumed benign: (1) the first 1500 bytes of
+the deployed file — the most `get_deployment_file_contents` can ever
+return, a known tooling limit — are byte-for-byte identical to the
+local submitted text (direct diff, matching sha1); (2) the live `GET
+/api/identify` debug endpoint's `sourceHash` (computed live by the
+deployed function reading its own file) exactly equals the deployment's
+own `uid`, confirming internal consistency with no hidden build
+transform at play; (3) `normalizeDiacriticTest` returns the exact
+correct `"pokemon collector"` — this file's single most historically
+fragile transcription spot, confirmed intact; (4) a real end-to-end
+scan (Pikachu XY95) returned correct identification (`tcgPlayerId:
+"114004"`, High confidence, `timingMs.total: 1936`ms — inside the 1-3s
+target); (5) real ORGANIC traffic in the minutes after deploy — a
+Radiant Venusaur scan, a Baxcalibur scan, and two Hatterene VMAX scans
+(one of which correctly triggered the existing "NO NUMBER MATCH IN
+POOL" fallback path, unrelated to but adjacent to this change) — all
+ran cleanly with zero errors; `get_runtime_errors` clean for the 10
+minutes following deploy. Given the well-characterized, repeatedly-
+documented mechanism (blank-line-count drift during manual
+transcription of a large stripped file — cosmetic, not functional — and
+zero suspicious non-blank, non-comment diff lines found on direct
+inspection), this is treated as resolved, following this project's own
+precedent for exactly this situation (see the Medicham and Victreebel
+deploy write-ups above).
+
+Committed and pushed to GitHub (commit `adda1bd`, `56f3646..adda1bd`,
+`main`) per explicit go-ahead. **Not yet observed**: a real
+null-cardNumber scan actually hitting the new floor in live traffic —
+none occurred in the post-deploy window checked, consistent with the
+thin 1-in-27 real-traffic rate found during investigation. Worth normal
+continued log-watching for `[lookup] NULL CARDNUMBER, INSUFFICIENT
+CORROBORATION` lines, not a dedicated follow-up test.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

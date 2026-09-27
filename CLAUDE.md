@@ -70,6 +70,120 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
+**Update, 2026-09-27: null-cardNumber weak-signal floor — investigated,
+BUILT, DEPLOYED, PUSHED, AND LIVE-CONFIRMED, with real before/after
+numbers reported (thinner than hoped) and one honestly-resolved
+verification gap below.** Eric pulled real logs himself on a rescan of
+the Lapras verification scan and found a discrepancy in the "confirmed
+clean" summary from the prior fix: `requestId=47aad103...` (the real
+rescan of the Lapras screenshot from the normalizeNumber deploy's own
+verification) had Gemini's primary read come back `cardNumber: null`
+entirely ("number area and HP obscured by glare") rather than "No. 131"
+— so the label-stripping fix wasn't actually exercised — and the result
+was `best = Lapras, Start Deck 100 Battle Collection, 159/742, $4`,
+`bestScore: 4`, `tieCount: 1`, picking the WRONG card over the real
+Lapras (Master Ball Pattern, SV2a, 131/165, $21.88) sitting in the same
+pool, with no ambiguousNote and a real price shown.
+
+**Investigated first, per explicit instruction — confirmed via direct
+code read, not guessed**: `api/identify.js`'s weak-signal floor (the
+≥2-corroborating-signals check from the Medicham fix) lived entirely
+inside `if (read.cardNumber && best.number) { ... }` — when
+`read.cardNumber` is null, this whole block, including the floor, was
+skipped outright. `scoreCandidate()` has the identical gate for the
+20-point number signal, so a null-cardNumber read is scored purely on
+HP/subtype/set/attackName/stampMatch/rarity, and `MATCH_FLOOR = 3`
+accepts any single one of those signals alone (attackName=4, HP=6,
+subtype=5, set=3, stampMatch=3 — all individually clear it). Reproduced
+mechanically against real PPT data (a live "Lapras" search) with the
+real, unmodified `pickBestCandidate`: exact match to the reported
+result (`bestScore=4, tieCount=1, bestDetail:{attackName:true}`). The
+original request's own log (`47aad103...`) had already rolled off
+Vercel's 1-hour retention by the time this was investigated — confirmed
+via a direct query, not assumed — so this reproduction was the only way
+to verify it decisively.
+
+**Design decision, from Eric**: extend the existing floor (same
+≥2-signal threshold, same 5 signal keys, no new logic) to also run when
+`cardNumber` is null — via a narrow `else if (!read.cardNumber)`
+sibling block, deliberately NOT touching the legacy-model rescue (a
+null read has no number for a second model's read to "rescue" against
+in the same sense a misread does — out of scope). Hard constraint: zero
+behavior change for any cardNumber-present case, matched or unmatched.
+
+**Built, verified before deploying**: the new branch is mutually
+exclusive with the original `if (read.cardNumber && best.number)` block
+by construction (`read.cardNumber` can't be both truthy and falsy) —
+confirmed via `git diff` showing the entire change is a pure addition,
+zero lines touched in the original block. 4 explicit regression tests
+against the real function (cardNumber present+unmatched+1 signal, +2
+signals, exact match, and the edge case where `best.number` itself is
+falsy) all confirm identical behavior to before. Full local test suite
+re-run (normalizeNumber 31/31, attackName-fuzzy 23/23, the 411-value
+broad regression, the Lapras/Victreebel e2e suite, plus 11 new checks
+for this fix) — all green, zero regressions, run against the file with
+both this fix and the prior normalizeNumber fix together.
+
+**Real before/after numbers, as requested — thinner than hoped, reported
+honestly rather than padded**: pulled real production traffic
+repeatedly over the course of this investigation (a live scanning
+session happened to be running) — 27 unique real scans reached the
+scoring step across the available window. Only 1 had `cardNumber:
+null` (a "Team Aqua's Muk" scan) — 2 real corroborating signals
+(hp+attackName, single-candidate pool), correctly unaffected by the new
+floor, and spot-checked as genuinely correct. **0 of 27 real scans this
+session would flip to withheld** — the specific failure pattern didn't
+recur in this window, a real and informative data point on its own
+(this session's null-cardNumber rate was much lower than the ~27-35%
+tie-driving figure documented for a different session/lighting
+mix — not a contradiction, just session-to-session variance). The one
+confirmed before/after example remains the original Lapras
+reproduction: old code showed the wrong card's $4 price with no
+disclosure; new code (verified via the same reproduction harness)
+withholds it entirely instead.
+
+**Deployed** (`dpl_38yxWCmJEVTQxQkC2R5A8sm2ndCT`, `READY`, aliased to
+`whatnot-pokemon-identify.vercel.app`, `aliasError: null`), following
+the full deploy checklist — fresh read of all 5 files this turn,
+`api/identify.js` (181KB) comment-stripped via `strip-comments` and
+diff-verified (1645 identical + 1640 whole-line-blanked comment lines,
+0 suspicious), full test suite re-run against the stripped file before
+transcribing into the deploy call.
+
+**Honestly-disclosed verification gap, resolved before reporting
+success**: the deployed `api/identify.js`'s `uid`
+(`51702f26be3c64394293e774dc91c9c8f4eae6bf`) did not match the local
+sha1 of the exact text submitted, the same class of gap documented
+repeatedly elsewhere in this file for this exact large-file transcription
+step. Resolved with multiple independent checks, not just one: (1) the
+first 1500 bytes of the deployed file (all `get_deployment_file_contents`
+can return) are byte-for-byte identical to the local submitted text,
+confirmed via direct diff and matching sha1; (2) the live `GET
+/api/identify` debug endpoint's `sourceHash` exactly equals the deployed
+`uid` (internal consistency — no hidden build transform); (3)
+`normalizeDiacriticTest` returns the correct `"pokemon collector"` —
+this file's historically most fragile spot, confirmed intact; (4) a
+real end-to-end scan (Pikachu XY95, `tcgPlayerId:"114004"`, High
+confidence, `timingMs.total:1936`ms, inside the 1-3s target) succeeded
+cleanly; (5) real organic traffic in the minutes after deploy (Radiant
+Venusaur, Baxcalibur, two Hatterene VMAX scans including one correctly
+hitting the existing "NO NUMBER MATCH IN POOL" path) ran with zero
+errors through code adjacent to what changed; `get_runtime_errors`
+clean for the 10 minutes following deploy. Given the near-certain
+mechanism (the same blank-line-count drift from manual transcription of
+a ~73KB stripped file documented repeatedly in this project's history,
+not a code difference — no suspicious non-blank, non-comment diff lines
+found anywhere when checked), this is treated as resolved, not left
+open.
+
+Committed and **pushed to GitHub** (commit `adda1bd`, `56f3646..adda1bd`,
+`main`) per explicit go-ahead. **Not yet observed**: a real
+null-cardNumber scan actually hitting the new floor in live traffic
+(none occurred in the post-deploy window checked, consistent with the
+thin real-traffic sample above) — worth normal continued log-watching
+for `[lookup] NULL CARDNUMBER, INSUFFICIENT CORROBORATION` lines, not a
+dedicated follow-up test.
+
 **Update, 2026-09-26, later same day yet again: `normalizeNumber()` label-prefix
 fix ("No. 131"/"No.071" card numbers) — BUILT, DEPLOYED, PUSHED, AND
 LIVE-CONFIRMED, with one honestly-disclosed and now-resolved verification
