@@ -918,9 +918,33 @@ async function runLegacyModelShadowTest(timedCurrentPromise, timedLegacyPromise,
 // Fates Shiny Vault, first in the raw list) instead of the actual promo.
 // Now captures an optional leading letter prefix on both the number and
 // the total, and requires the prefix to match too (case-insensitive).
+// FIX (2026-09-26, live scans — Lapras "No. 131" / Victreebel "No.071"):
+// this regex required the number to start with an optional letter PREFIX
+// immediately adjacent to the digits (for "SM91"-style promo codes), but
+// had no tolerance for a "No. "/"No."/"#"-style LABEL in front of the
+// digits — a real, recurring print convention (confirmed live: SV2a:
+// Pokemon Card 151 prints its card number as "No. XXX" rather than the
+// more common "XXX/165" fraction). "No. 131" doesn't start with a digit
+// or "0", so the whole match failed and normalizeNumber returned null —
+// not a partial/weak parse, a TOTAL parse failure, meaning numbersMatch's
+// `if (!a || !b) return {match:false...}` guard threw the read away
+// before ever comparing it to any candidate, even though the real
+// candidate ("131/165") was sitting in the pool the whole time. This is
+// distinct from a genuine legibility/Pokédex-number-confusion case (see
+// the Azumarill "No. 184" investigation, docs/test-cases.md) — there the
+// real candidate's own PPT record has an empty cardNumber, so this fix
+// doesn't change that outcome; it only fixes cases where a real numeric
+// candidate exists and the label was the sole reason the read couldn't
+// reach it. The label is stripped as a throwaway prefix, NOT captured
+// into `prefix` (which participates in the cross-side equality check) —
+// deliberately, so a "No. 131" read still correctly has prefix "" and
+// can match a plain, unprefixed candidate number, exactly as a bare
+// "131" read already does.
+const NUMBER_LABEL_PATTERN = /^\s*(?:no\.?\s*|#\s*)?/i;
+
 function normalizeNumber(raw) {
   if (raw == null) return null;
-  const str = String(raw).trim();
+  const str = String(raw).trim().replace(NUMBER_LABEL_PATTERN, "");
   const m = str.match(/^([A-Za-z]*)0*(\d+)(?:\s*\/\s*([A-Za-z]*)0*(\d+))?/);
   if (!m) return null;
   return {
