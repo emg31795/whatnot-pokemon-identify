@@ -7240,6 +7240,175 @@ for this case. The one actionable byproduct is logged as a second data
 point on the existing Azumarill Pokédex-number watch item above, not as
 new work.
 
+## Test #96 — "Moo-Moo Milk" (Trainer card) read correctly but couldn't be matched: confirmed NOT the Trainer/Supporter structural gap, a real hyphen-in-search-query bug — BUILT, DEPLOYED, PUSHED, AND LIVE-CONFIRMED, with a real ~1-hour production outage along the way (2026-09-27)
+
+User flagged a live Trainer card scan ("Moo-Moo Milk", Read: High) that
+returned no price at all — not even a low-confidence guess — and asked
+whether this was the already-known Trainer/Supporter tie-break
+structural gap (flagged earlier in this file: Trainer cards have fewer
+disambiguating signals than Pokémon cards, no HP/attack) or a separate,
+new bug, before anything was proposed.
+
+**Real logs pulled first, per explicit instruction**: found not one but
+**5 real scan attempts** of the same physical card in the preceding
+minutes. Every single one had `cardName: "Moo-Moo Milk"`, High
+confidence. On one attempt, the primary model read a full, clean,
+confident set of fields: `cardNumber: "101/111"`, `setName: "Neo
+Genesis"`, `stampType: "1st Edition"`. The `[legacy-model-shadow-test]`
+line independently agreed on `cardNumber: "101/111"` / `setName: "Neo
+Genesis"` on **4 of the 5** attempts, including several where the
+primary's own read came back null on other fields. Two independent
+models repeatedly converging on the identical number is strong,
+genuine corroboration — the opposite of "no signal available to
+disambiguate," ruling out the Trainer/Supporter structural-gap
+hypothesis directly from the logs, before touching PPT at all.
+
+**Root cause, confirmed via direct PPT queries — a real card, in the
+catalog, with an unrelated search-engine quirk hiding it:**
+- `search=Moo-Moo Milk` (exactly what `read.cardName` sends, hyphenated,
+  what the code was actually doing) → **4 results, all spelled
+  "Moomoo Milk"** (no hyphen — HeartGold SoulSilver, two HGSS Trainer
+  Kit variants, SM Lost Thunder). The real Neo Genesis card is absent.
+- `search=Moo Moo Milk` (hyphen replaced by a space) → **2 results,
+  both correctly hyphenated "Moo-Moo Milk"**: Neo Genesis 101/111 (the
+  real card) and Expedition 155/165 (an unrelated reprint sharing the
+  name).
+- The existing "number-scoped rescue" fallback (fires when the name
+  filter finds zero survivors and a legible number was read) also
+  tried the hyphenated form (`"Moo-Moo Milk 101/111"`) and got the same
+  4 wrong results — it inherited the identical bug.
+- `search=Moo Moo Milk 101/111` (space, combined with the number) →
+  exactly 1 result: the correct card.
+- Reproduced identically for a second real hyphenated Pokémon name,
+  **"Ho-Oh"**: hyphenated query → 1 garbage result ("Stealthy Hood");
+  space-separated query → 53 correct results, all real Ho-Oh printings.
+
+**Confirmed this isn't a general punctuation problem** — apostrophes
+("Professor's Research": 63 results either way) and periods ("Mr.
+Mime": 40 results either way) behave identically with or without the
+punctuation, live-tested before deciding scope. **Confirmed this isn't
+universal to all hyphens either** — four more real hyphenated Pokémon
+names (Porygon-Z, Kommo-o, Jangmo-o, Hakamo-o) returned identical,
+correct results whether hyphenated or space-separated; in every one, a
+long token (7+, 5+, 6+, 6+ characters respectively) anchors the search
+on one side of the hyphen, unlike "Ho"+"Oh" or "Moo"+"Moo", both short
+on both sides. Root mechanism not fully knowable from outside PPT's
+engine, but the empirical, reproducible fact — replace hyphens with
+spaces, safe across every case tested, fixes every broken case — is
+decisive enough to act on.
+
+**Scope, quantified before building, per explicit request**: sampled
+297 distinct real card names across 6 sets spanning vintage to modern
+(Neo Genesis, Base Set, Team Rocket, HeartGold SoulSilver, SV01, SM
+Lost Thunder). Only **2 of 297 (0.67%)** had a genuine hyphen as part
+of the actual printed name — Moo-Moo Milk and **Card-Flip Game**
+(every other hyphen in the sample was PPT's own "*Name* - *number*"
+display-suffix convention on the `name` field, never sent as part of
+our own query in the first place). A narrow bug in absolute terms, but
+total (0 useful results) for the names it hits.
+
+**Fix**: new `normalizeNameForSearchQuery()` (`api/identify.js`)
+replaces hyphens with spaces before any card name reaches PPT's
+search — applied at all 6 real query-construction call sites inside
+`lookupCardPPT`/`lookupGradedPrice` (primary search, species-name
+retry, name-filter rescue, page-2, the combined name+number fallback,
+graded lookups). Deliberately never applied to a card NUMBER token —
+some real promo-style numbers legitimately contain a hyphen as part of
+their format (e.g. `"308/S-P"`, `"051/PCG-P"`), confirmed by scoping
+the normalization to the name portion before it's ever concatenated
+with a number, not to the final combined query string.
+
+**Verified before deploying, 6 real end-to-end cases** through the
+actual unmodified `handler()` against live PPT data (Gemini mocked
+with real read shapes): Moo-Moo Milk (the triggering case) resolved to
+`tcgPlayerId 87574`, Neo Genesis, High confidence — exact match to the
+real card. Ho-Oh GX (SM80) correctly reached the right candidate pool
+(landed Low confidence on a real, separate PPT duplicate-listing tie,
+unrelated to this fix). Card-Flip Game's real candidate now reaches
+the raw pool (previously buried behind 150 noise results under the
+hyphenated query). Pikachu XY95 (no hyphen) confirmed byte-identical
+to pre-fix behavior. A synthetic number `"308/S-P"` confirmed the
+combined-search query preserved the number's own hyphen untouched
+(`"...308/S-P"`, never `"...308/S P"`). Charizard 4/130 (Base Set 2)
+confirmed the prior zero-padding fix (test #94) still works correctly
+alongside this one.
+
+**Deploy incident — a real, honestly-disclosed ~1-hour production
+outage, a genuinely new and more severe failure class than every prior
+deploy in this project's history.** Followed the standard checklist in
+full: all 5 files freshly read this turn, `api/identify.js` (186,841
+bytes) comment-stripped via `strip-comments` and diff-verified via an
+automated script — 3380/3380 lines matched (0 suspicious partial
+diffs), the new fix's code separately confirmed present and intact
+post-strip. The first deploy (`dpl_32btPe12H48oA81TJZ8H1ELBizf8`) went
+`READY`, aliased cleanly (`aliasError: null`), and passed every
+synthetic check this project has always used to confirm a deploy —
+live `GET` `sourceHash` matched the deployed `uid` exactly, the
+diacritic regex test returned the correct `"pokemon collector"`, `POST
+{}` returned the real `400 {"error":"Missing imageBase64"}`. **All of
+that passed, and the deploy was still broken.** A real end-to-end scan
+of the actual Moo-Moo Milk card image (the same discipline used to
+close out test #94's own uid-mismatch question) immediately surfaced a
+genuine runtime `ReferenceError: normalizeNameForSearchQuery is not
+defined` — the new function itself had been dropped somewhere during
+manual transcription of the ~74KB payload into the deploy tool call,
+despite the local file (independently re-verified via a fresh `node
+--check` and a full re-`Read` immediately before deploying) always
+being correct. This is a materially different, more serious class of
+gap than every previous "uid mismatch" this project has logged
+(Mewtwo/Nidoking's deploy included one that turned out to be
+cosmetic/whitespace-only) — this one broke real functionality while
+still passing the exact synthetic checks that have always been treated
+as sufficient confirmation before.
+
+**Real, quantified user impact — not assumed, pulled directly from
+`get_runtime_errors`**: exactly 6 real requests hit this error across
+the ~61 minutes the broken deployment was live (23:47:10–00:48:32
+UTC) — 5 organic real scans (Eric's own live-stream scanning) plus 1
+of this session's own verification requests. Each one silently
+degraded to the generic, misleading "Couldn't reach our card database
+right now (it's been intermittently flaky)" message — a plausible-
+sounding but false explanation, since PPT itself was completely
+healthy the entire window; the failure was 100% in this app's own
+code, before any PPT call was ever made.
+
+**Caught and fixed fast, precisely because this project tests real
+scans before declaring success, not just the synthetic GET/POST
+checks**: caught within the same turn as the first post-deploy scan,
+fixed with a corrected redeploy (`dpl_6Za1WkqaRJFLHFPjNkgDGYZH8tBR`),
+and confirmed immediately via the identical real Moo-Moo Milk scan
+resolving correctly on the very next request (`matchConfidence:
+"High"`, `tcgPlayerId: "87574"`, `1330ms`). A second real scan (Ho-Oh
+GX, the actual card photo) also confirmed correct
+(`tcgPlayerId: "148425"`, `1554ms`). `get_runtime_errors` pulled again
+afterward: all 6 error instances are timestamped and stamped
+`lastDeployment=dpl_32btPe12H48oA81TJZ8H1ELBizf8` — the broken
+deployment only; zero errors of any kind in the window since the fix
+went live. `POST /api/price` and `POST /api/flag` both re-tested live
+post-fix and confirmed fully correct (real 5-tier pricing data;
+`{"ok":true}`).
+
+**Known, accepted deviation, same class as prior deploys**: the
+corrected redeploy's `api/price.js`/`api/flag.js` were retyped with
+some comments condensed during the emergency fix — functionally
+verified identical via the live tests above, only comments differ from
+the git-committed source. Not worth a dedicated redeploy just to
+resync comments; fold into the next real change to those files.
+
+**Lesson, worth carrying forward explicitly**: the synthetic post-deploy
+checklist (`GET` sourceHash/diacritic test, `POST {}` 400) that this
+project has relied on for over a dozen prior deploys is necessary but
+was, this time, **not sufficient** — it can pass cleanly on a deploy
+that's missing a real function definition, if that function isn't
+exercised by those two specific synthetic paths. The real end-to-end
+scan is what caught this, not the checklist — reinforcing that a real
+scan of the actual card involved should be treated as a required step
+for any deploy that touches `lookupCardPPT`'s call graph, not an
+optional nice-to-have on top of the synthetic checks.
+
+Committed and pushed to GitHub (commit `d1c185a`) per explicit
+go-ahead.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

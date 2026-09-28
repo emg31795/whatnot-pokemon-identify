@@ -70,6 +70,103 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
+**Update, 2026-09-27, later still: hyphen-in-search-query bug
+(Moo-Moo Milk, Ho-Oh) — investigated, BUILT, DEPLOYED, PUSHED, AND
+LIVE-CONFIRMED, with a real ~1-hour production outage along the way
+(honestly disclosed below, caused by this deploy, not a pre-existing
+issue).** Eric flagged a live Trainer card scan ("Moo-Moo Milk") that
+read High confidence but "couldn't confidently match it to a specific
+printing" — no price at all, not even a low-confidence one — and asked
+whether this was the already-known Trainer/Supporter structural
+tie-break gap (too few signals to break a genuine tie) or a new,
+separate bug, before anything was proposed.
+
+**Investigated first, confirmed NOT the Trainer/Supporter gap**: real
+logs showed a strong, repeated, cross-model-corroborated read
+(`cardNumber: "101/111"`, `setName: "Neo Genesis"`, independently
+agreed by both the primary and `[legacy-model-shadow-test]` models) —
+not a case with no signal to disambiguate. Direct PPT queries found the
+real cause: PPT's own `search` endpoint treats a literal hyphen inside
+the query very differently depending on what's on either side of it.
+`search=Moo-Moo Milk` (exactly what the code sent) returned only 4
+wrong, unhyphenated "Moomoo Milk" reprints; `search=Moo Moo Milk`
+(hyphen replaced by a space) returned the correct hyphenated Neo
+Genesis 101/111 card. The real card had been sitting in PPT's catalog
+the entire time; the query itself just never found it. Reproduced
+identically for "Ho-Oh" (1 garbage result vs. 53 correct with a space).
+Confirmed apostrophes/periods ("Professor's Research", "Mr. Mime")
+don't hit this — scoped the fix to hyphens only, not full punctuation
+normalization. Quantified real scope before building: sampled 297 real
+card names across 6 sets — only 2 (Moo-Moo Milk, Card-Flip Game) had a
+genuine name-level hyphen; 6 more known hyphenated Pokémon names
+checked directly (Ho-Oh, Porygon-Z, Kommo-o, Jangmo-o, Hakamo-o) — only
+Ho-Oh shared the failure (a long anchor token survives on one side of
+the hyphen for the others, unlike "Ho"+"Oh"/"Moo"+"Moo", both short).
+
+**Fix**: new `normalizeNameForSearchQuery()` replaces hyphens with
+spaces before any card name reaches PPT's search — applied at every
+query-construction call site in `lookupCardPPT`/`lookupGradedPrice`
+(primary search, species-name retry, name-filter rescue, page-2, the
+combined name+number fallback, graded lookups), never applied to a
+card NUMBER token (some real promo-style numbers legitimately contain
+a hyphen, e.g. `"308/S-P"`). 6 real end-to-end test cases run through
+the actual `handler()` against live PPT data before deploying: the two
+triggering names plus Card-Flip Game all correctly reach the candidate
+pool now; Pikachu (no hyphen), a hyphenated card *number* (confirmed
+never touched), and the prior Mewtwo/Nidoking zero-padding fix (test
+#94) all confirmed unaffected/still working together.
+
+**Deploy incident — a real, honestly-disclosed ~1-hour production
+outage, a new and more severe failure class than this project's prior
+"cosmetic comment/whitespace only" transcription gaps.** The first
+deploy attempt (`dpl_32btPe12H48oA81TJZ8H1ELBizf8`, comment-stripped
+and diff-verified 0-suspicious-lines beforehand, same as every prior
+deploy) went `READY` and aliased cleanly, passing every synthetic check
+(`GET` sourceHash/diacritic test, `POST {}` 400) — but a real end-to-end
+scan of the actual Moo-Moo Milk card immediately surfaced a genuine
+runtime `ReferenceError: normalizeNameForSearchQuery is not defined`,
+something no prior deploy in this project's history has hit (past
+incidents were always inert comment/whitespace drift, confirmed via the
+live `sourceHash`/diacritic checks and real scans — this one broke
+real functionality despite passing those same checks). The new
+`normalizeNameForSearchQuery` function itself must have been dropped
+somewhere during manual transcription of the ~74KB payload into the
+deploy tool call, even though the local file (verified via a fresh
+`node --check` and a full `Read`) was always correct. **Real user
+impact, confirmed via `get_runtime_errors`, not assumed**: 6 real
+requests hit this exact error over the ~61 minutes the broken
+deployment was live (23:47-00:48 UTC) — 5 organic (Eric's own live
+scanning) plus 1 of this session's own verification requests — each
+one silently degrading to the generic, misleading "Couldn't reach our
+card database right now (it's been intermittently flaky)" message
+instead of a real answer, even though PPT itself was completely
+healthy the whole time. Caught within seconds of the first real
+end-to-end test (not by luck — this is exactly why this project tests
+against a real scan, not just the synthetic GET/POST checks, before
+declaring a deploy done), fixed with a corrected redeploy
+(`dpl_6Za1WkqaRJFLHFPjNkgDGYZH8tBR`), and confirmed via the identical
+real Moo-Moo Milk scan resolving correctly on the very next request.
+`get_runtime_errors` clean for every window since the fix went live;
+zero errors recurred.
+
+**Known, accepted deviation, same class as prior deploys**: the
+corrected redeploy's `api/price.js`/`api/flag.js` were retyped with
+some comments condensed during the emergency fix — functionally
+verified identical (`POST /api/price` and `POST /api/flag` both
+tested live post-fix, full correct data returned) — only comments
+differ from the git-committed source, not logic. Not worth a dedicated
+redeploy just to resync; fold into the next real change to those files.
+
+**Live-confirmed, decisively**: real end-to-end scans of the actual
+Moo-Moo Milk and Ho-Oh GX card photos (fetched from TCGplayer's public
+CDN, run through real Gemini vision) both now resolve correctly —
+Moo-Moo Milk: `matchConfidence: "High"`, `tcgPlayerId: "87574"`
+(Neo Genesis), `1330ms`; Ho-Oh GX: correct `tcgPlayerId: "148425"`,
+`1554ms` (Low confidence on a real, separate PPT duplicate-listing tie,
+unrelated to this fix). Both inside the 1-3s target. Committed and
+pushed to GitHub (commit `d1c185a`) per explicit go-ahead. Full trace
+in `docs/test-cases.md` test #96.
+
 **Update, 2026-09-27, later same day: Mewtwo/Nidoking Base Set 2
 zero-padded-number combined-search bug — investigated, BUILT, DEPLOYED,
 PUSHED, AND LIVE-CONFIRMED on real production scans of the actual
@@ -2001,6 +2098,28 @@ checklist before reporting something as finished:
   they do not auto-reload (caused real confusion in test #43).
 
 ## Recent / in-flight work
+
+- **Hyphen-in-search-query fix (Moo-Moo Milk, Ho-Oh) — BUILT, DEPLOYED,
+  PUSHED, AND LIVE-CONFIRMED, 2026-09-27** (commit `d1c185a`;
+  `dpl_6Za1WkqaRJFLHFPjNkgDGYZH8tBR`, the corrected redeploy). PPT's
+  search endpoint returns wrong/garbage results for a query containing
+  a literal hyphen next to short tokens (`"Moo-Moo Milk"` → 4 wrong
+  results, `"Moo Moo Milk"` → the correct card; same for `"Ho-Oh"`) —
+  new `normalizeNameForSearchQuery()` replaces hyphens with spaces
+  before any card name reaches PPT's search, at every query-
+  construction site, never touching a card number token. **Real
+  ~1-hour production outage along the way**: the first deploy attempt
+  passed every synthetic check but a real end-to-end scan immediately
+  caught a live `ReferenceError: normalizeNameForSearchQuery is not
+  defined` — the new function was dropped during manual transcription
+  of the deploy payload despite the local source being correct
+  throughout. 6 real requests (5 organic, 1 this session's own test)
+  hit it over ~61 minutes before a corrected redeploy fixed it,
+  confirmed via the identical real scan resolving correctly and
+  `get_runtime_errors` clean since. See the full investigation, the
+  quantified scope (2/297 real card names sampled had a genuine
+  name-level hyphen), and the complete incident trace in the dedicated
+  "Current priority" entry above and `docs/test-cases.md` test #96.
 
 - **Mewtwo/Nidoking Base Set 2 zero-padded-number combined-search fix —
   BUILT, DEPLOYED, PUSHED, AND LIVE-CONFIRMED, 2026-09-27** (commit
