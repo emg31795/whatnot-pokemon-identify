@@ -1513,6 +1513,41 @@ const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracke
 // in this file (confirmed via grep). Halves the credit cost of every PPT
 // call (60→30) and every fallback (page-2/combined-search each drop the
 // same way) with no behavior change.
+// FIX (2026-09-28, live test — Moo-Moo Milk, Neo Genesis 101/111): a
+// real card's own printed name contains a hyphen, but PPT's `search`
+// query param treats a literal hyphen very differently depending on
+// what's on either side of it — confirmed live against the real API,
+// not guessed. "Moo-Moo Milk" (exactly what read.cardName sends
+// verbatim) returns 0 useful results (4 wrong, unhyphenated "Moomoo
+// Milk" reprints only); "Moo Moo Milk" (hyphen replaced by a space)
+// returns exactly the 2 real hyphenated "Moo-Moo Milk" printings,
+// including the correct Neo Genesis 101/111 card that both the primary
+// and legacy shadow models independently and repeatedly read off the
+// physical card. Same failure confirmed for "Ho-Oh" (1 garbage result)
+// vs. "Ho Oh" (53 correct results). Deliberately NOT the same fix as
+// normalizeNameForMatch's full punctuation-to-space treatment — tested
+// apostrophes ("Professor's Research") and periods ("Mr. Mime") live
+// and both already return identical, correct result counts whether the
+// punctuation is present or not, so broadening this beyond hyphens
+// would be unjustified scope creep. Also confirmed hyphens aren't
+// universally broken — "Porygon-Z", "Kommo-o", "Jangmo-o", "Hakamo-o"
+// all return identical, correct results whether hyphenated or
+// space-separated (a long token survives on at least one side of the
+// hyphen in all of those; "Ho-Oh"/"Moo-Moo" are pathological because
+// BOTH sides are short) — so replacing every hyphen with a space is safe
+// across every real case tested, not just the ones that were broken.
+// Scoped to the card NAME only (see call sites below) — never applied
+// to a card NUMBER token, since some real promo-style numbers
+// legitimately contain a hyphen as part of their format (e.g.
+// "308/S-P", "051/PCG-P") and space-separating those was never tested
+// or needed.
+function normalizeNameForSearchQuery(name) {
+  return String(name || "")
+    .replace(/-/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 async function fetchPokemonPriceTracker(name, { graded = false, language = "English", offset = null } = {}) {
   const params = new URLSearchParams({ search: name, limit: "30" });
   if (graded) params.set("includeEbay", "true");
@@ -2228,12 +2263,21 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     }
   }
 
-  let data = await fetchPokemonPriceTracker(read.cardName, { language: read.language });
+  // See normalizeNameForSearchQuery above — every PPT search built from
+  // the read's card name in this function uses this hyphen-normalized
+  // form, never read.cardName directly. read.cardName itself is left
+  // untouched for every other use below (matchName/wantedName, via
+  // normalizeNameForMatch, already handles hyphens fine for local
+  // filtering) — this only ever changes what gets sent to PPT's own
+  // search endpoint.
+  const searchCardName = normalizeNameForSearchQuery(read.cardName);
+
+  let data = await fetchPokemonPriceTracker(searchCardName, { language: read.language });
   if (!data) return { error: "card-db-unavailable" };
   if (data.error === "rate-limited") return { error: "rate-limited", retryAfter: data.retryAfter, isDailyLimit: data.isDailyLimit };
 
   let rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
-  console.log(`[requestId=${requestId}]`, "[lookup] search=", read.cardName, "language=", read.language, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
+  console.log(`[requestId=${requestId}]`, "[lookup] search=", searchCardName, "language=", read.language, "raw candidate count=", rawList.length, "sample=", JSON.stringify(rawList.slice(0, 3)).slice(0, 2500));
 
   let matchName = read.cardName;
 
@@ -2241,7 +2285,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     const stripped = stripSubtypeSuffix(read.cardName);
     if (stripped && stripped.toLowerCase() !== String(read.cardName || "").toLowerCase()) {
       console.log(`[requestId=${requestId}]`, "[lookup] zero raw results for full name, retrying search with base species name=", stripped);
-      const retryData = await fetchPokemonPriceTracker(stripped, { language: read.language });
+      const retryData = await fetchPokemonPriceTracker(normalizeNameForSearchQuery(stripped), { language: read.language });
       if (retryData) {
         rawList = Array.isArray(retryData.data) ? retryData.data : Array.isArray(retryData) ? retryData : [];
         console.log(`[requestId=${requestId}]`, "[lookup] retry search=", stripped, "raw candidate count=", rawList.length);
@@ -2286,7 +2330,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     console.log(`[requestId=${requestId}]`, "[lookup] zero candidates survived the name filter for name=", read.cardName);
 
     if (read.cardNumber) {
-      const rescueQuery = `${read.cardName} ${read.cardNumber}`;
+      const rescueQuery = `${searchCardName} ${read.cardNumber}`;
       console.log(`[requestId=${requestId}]`, `[lookup] zero name-filter survivors but a legible cardNumber was read — trying number-scoped rescue search= "${rescueQuery}"`);
       const rescueResult = await fetchPokemonPriceTracker(rescueQuery, { language: read.language });
       if (rescueResult && rescueResult.error === "rate-limited") return { error: "rate-limited", retryAfter: rescueResult.retryAfter, isDailyLimit: rescueResult.isDailyLimit };
@@ -2360,7 +2404,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         ? "[lookup] no match above the floor and page 1 came back full — fetching page 2 via offset=30"
         : `[lookup] best=${best.name} cleared the floor on other signals but read number=${read.cardNumber} matches nothing on page 1, which came back full — fetching page 2 via offset=30`
     );
-    const page2 = await fetchPokemonPriceTracker(read.cardName, { language: read.language, offset: 30 });
+    const page2 = await fetchPokemonPriceTracker(searchCardName, { language: read.language, offset: 30 });
     if (page2 && page2.error === "rate-limited") return { error: "rate-limited", retryAfter: page2.retryAfter, isDailyLimit: page2.isDailyLimit };
     const page2List = page2 ? (Array.isArray(page2.data) ? page2.data : Array.isArray(page2) ? page2 : []) : [];
     console.log(`[requestId=${requestId}]`, "[lookup] page 2 raw candidate count=", page2List.length);
@@ -2417,7 +2461,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
       numberVariantsToTry.push(paddedNumberVariant);
     }
     for (const numberVariant of numberVariantsToTry) {
-      const combinedQuery = `${read.cardName} ${numberVariant}`;
+      const combinedQuery = `${searchCardName} ${numberVariant}`;
       console.log(`[requestId=${requestId}]`, `[lookup] number still missing after page1+2 — trying combined name+number search= "${combinedQuery}"`);
       const combinedResult = await fetchPokemonPriceTracker(combinedQuery, { language: read.language });
       if (combinedResult && combinedResult.error === "rate-limited") return { error: "rate-limited", retryAfter: combinedResult.retryAfter, isDailyLimit: combinedResult.isDailyLimit };
@@ -2917,7 +2961,10 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
 // ---------------------------------------------------------------------------
 
 async function lookupGradedPrice(read) {
-  const data = await fetchPokemonPriceTracker(read.cardName, { graded: true, language: read.language });
+  // See normalizeNameForSearchQuery above — same hyphen-in-search fix as
+  // lookupCardPPT, applied here too since graded lookups hit the same
+  // PPT search endpoint with the same read.cardName.
+  const data = await fetchPokemonPriceTracker(normalizeNameForSearchQuery(read.cardName), { graded: true, language: read.language });
   if (!data || data.error) return null;
 
   const rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
