@@ -7240,7 +7240,7 @@ for this case. The one actionable byproduct is logged as a second data
 point on the existing Azumarill Pokédex-number watch item above, not as
 new work.
 
-## Test #96 — "Moo-Moo Milk" (Trainer card) read correctly but couldn't be matched: confirmed NOT the Trainer/Supporter structural gap, a real hyphen-in-search-query bug — BUILT, DEPLOYED, PUSHED, AND LIVE-CONFIRMED, with a real ~1-hour production outage along the way (2026-09-27)
+## Test #96 — "Moo-Moo Milk" (Trainer card) read correctly but couldn't be matched: confirmed NOT the Trainer/Supporter structural gap, a real hyphen-in-search-query bug — BUILT, DEPLOYED, PUSHED, AND LIVE-CONFIRMED, with a real ~6.5-minute production outage along the way (2026-09-27)
 
 User flagged a live Trainer card scan ("Moo-Moo Milk", Read: High) that
 returned no price at all — not even a low-confidence guess — and asked
@@ -7333,7 +7333,7 @@ combined-search query preserved the number's own hyphen untouched
 confirmed the prior zero-padding fix (test #94) still works correctly
 alongside this one.
 
-**Deploy incident — a real, honestly-disclosed ~1-hour production
+**Deploy incident — a real, honestly-disclosed ~6.5-minute production
 outage, a genuinely new and more severe failure class than every prior
 deploy in this project's history.** Followed the standard checklist in
 full: all 5 files freshly read this turn, `api/identify.js` (186,841
@@ -7363,14 +7363,31 @@ as sufficient confirmation before.
 
 **Real, quantified user impact — not assumed, pulled directly from
 `get_runtime_errors`**: exactly 6 real requests hit this error across
-the ~61 minutes the broken deployment was live (23:47:10–00:48:32
-UTC) — 5 organic real scans (Eric's own live-stream scanning) plus 1
-of this session's own verification requests. Each one silently
-degraded to the generic, misleading "Couldn't reach our card database
-right now (it's been intermittently flaky)" message — a plausible-
-sounding but false explanation, since PPT itself was completely
-healthy the entire window; the failure was 100% in this app's own
-code, before any PPT call was ever made.
+the ~6.5 minutes the broken deployment was live
+(00:42:00.926–00:48:32.898 UTC, confirmed directly from Vercel's own
+`get_deployment` `ready` timestamps for `dpl_32btPe12H48oA81TJZ8H1ELBizf8`
+and `dpl_6Za1WkqaRJFLHFPjNkgDGYZH8tBR` respectively) — 5 organic real
+scans (Eric's own live-stream scanning) plus 1 of this session's own
+verification requests. Each one silently degraded to the generic,
+misleading "Couldn't reach our card database right now (it's been
+intermittently flaky)" message — a plausible-sounding but false
+explanation, since PPT itself was completely healthy the entire
+window; the failure was 100% in this app's own code, before any PPT
+call was ever made.
+
+**Correction, same day**: this entry originally reported the outage as
+"~1 hour"/"~61 minutes" (23:47:10–00:48:32 UTC), derived from
+`createdAt`/`ready` timestamps that turned out to belong to a
+*different* deployment (`dpl_EtmUPtwASxVkkmkQssMwA38KaERv`, the
+earlier Mewtwo/Nidoking deploy from the same session) rather than the
+actual broken deployment. Independent re-verification pulled the real
+`ready` timestamps for the two deployments genuinely involved in this
+incident and found the true gap is **~6.5 minutes**
+(00:42:00.926–00:48:32.898 UTC) — consistent with the error cluster
+itself, which spans only 00:42:30–00:43:01 (31 seconds), not something
+spread across an hour. Corrected here and in CLAUDE.md; no other part
+of this write-up (root cause, fix, real request count, live
+confirmation) was affected.
 
 **Caught and fixed fast, precisely because this project tests real
 scans before declaring success, not just the synthetic GET/POST

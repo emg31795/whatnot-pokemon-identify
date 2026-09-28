@@ -72,7 +72,7 @@ star, and definition of done.
 
 **Update, 2026-09-27, later still: hyphen-in-search-query bug
 (Moo-Moo Milk, Ho-Oh) — investigated, BUILT, DEPLOYED, PUSHED, AND
-LIVE-CONFIRMED, with a real ~1-hour production outage along the way
+LIVE-CONFIRMED, with a real ~6.5-minute production outage along the way
 (honestly disclosed below, caused by this deploy, not a pre-existing
 issue).** Eric flagged a live Trainer card scan ("Moo-Moo Milk") that
 read High confidence but "couldn't confidently match it to a specific
@@ -116,7 +116,7 @@ pool now; Pikachu (no hyphen), a hyphenated card *number* (confirmed
 never touched), and the prior Mewtwo/Nidoking zero-padding fix (test
 #94) all confirmed unaffected/still working together.
 
-**Deploy incident — a real, honestly-disclosed ~1-hour production
+**Deploy incident — a real, honestly-disclosed ~6.5-minute production
 outage, a new and more severe failure class than this project's prior
 "cosmetic comment/whitespace only" transcription gaps.** The first
 deploy attempt (`dpl_32btPe12H48oA81TJZ8H1ELBizf8`, comment-stripped
@@ -134,9 +134,13 @@ somewhere during manual transcription of the ~74KB payload into the
 deploy tool call, even though the local file (verified via a fresh
 `node --check` and a full `Read`) was always correct. **Real user
 impact, confirmed via `get_runtime_errors`, not assumed**: 6 real
-requests hit this exact error over the ~61 minutes the broken
-deployment was live (23:47-00:48 UTC) — 5 organic (Eric's own live
-scanning) plus 1 of this session's own verification requests — each
+requests hit this exact error over the ~6.5 minutes the broken
+deployment was live (00:42:00.926–00:48:32.898 UTC, confirmed
+directly from Vercel's own deployment `ready` timestamps — an earlier
+draft of this write-up misattributed a different deployment's
+timestamp and overstated this as "~1 hour"/"~61 minutes," caught and
+corrected same-day via independent re-verification) — 5 organic (Eric's
+own live scanning) plus 1 of this session's own verification requests — each
 one silently degrading to the generic, misleading "Couldn't reach our
 card database right now (it's been intermittently flaky)" message
 instead of a real answer, even though PPT itself was completely
@@ -2108,13 +2112,14 @@ checklist before reporting something as finished:
   new `normalizeNameForSearchQuery()` replaces hyphens with spaces
   before any card name reaches PPT's search, at every query-
   construction site, never touching a card number token. **Real
-  ~1-hour production outage along the way**: the first deploy attempt
-  passed every synthetic check but a real end-to-end scan immediately
-  caught a live `ReferenceError: normalizeNameForSearchQuery is not
-  defined` — the new function was dropped during manual transcription
-  of the deploy payload despite the local source being correct
-  throughout. 6 real requests (5 organic, 1 this session's own test)
-  hit it over ~61 minutes before a corrected redeploy fixed it,
+  ~6.5-minute production outage along the way**: the first deploy
+  attempt passed every synthetic check but a real end-to-end scan
+  immediately caught a live `ReferenceError: normalizeNameForSearchQuery
+  is not defined` — the new function was dropped during manual
+  transcription of the deploy payload despite the local source being
+  correct throughout. 6 real requests (5 organic, 1 this session's own
+  test) hit it over ~6.5 minutes (confirmed directly from Vercel's
+  deployment `ready` timestamps) before a corrected redeploy fixed it,
   confirmed via the identical real scan resolving correctly and
   `get_runtime_errors` clean since. See the full investigation, the
   quantified scope (2/297 real card names sampled had a genuine
