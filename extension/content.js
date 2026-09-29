@@ -744,7 +744,7 @@
   //   nothing or falling back to a different number under the same
   //   label, per explicit instruction.
   // - `suggestedBid` IS a real number but <= $0 (fees + shipping eat the
-  //   whole assumed sale price even after the 1.2x markup — real,
+  //   whole assumed sale price even after the listing markup — real,
   //   correct math, not a bug) -> FIX (2026-09-26, user report: a bare
   //   "(Bid: -$0.62)" reads as broken output mid-auction, not as "don't
   //   bid") show a plain-language "(Bid: Skip)" flag instead of the raw

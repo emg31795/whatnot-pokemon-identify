@@ -123,24 +123,75 @@ const GEMINI_TIMEOUT_MS = 5000;
 const CARDDB_TIMEOUT_MS = 2500;
 const CARDDB_RETRY_TIMEOUT_MS = 1200;
 
-// ADDED (2026-09-20, break-even/Suggested Bid markup): Eric lists cards at
-// this multiple of live TCGplayer market price, not at market price itself
-// — see computeBreakEvenMaxBid below, the only place this is used.
-const LISTING_MARKUP_MULTIPLIER = 1.2;
+// ADDED (2026-09-20, break-even/Suggested Bid markup): the multiplier Eric's
+// eBay listing template applies to live TCGplayer market price to get his
+// actual list price — see computeBreakEvenMaxBid below, the only place this
+// is used.
+// CHANGED (2026-09-29): was 1.2 ("1.2x market"). Eric switched his listing
+// template to "market + $1.00" for all NEW listings, so the multiply step is
+// now a no-op (1.0) and LISTING_ADD_AMOUNT below carries the whole markup.
+// THIS IS A TEST, running until roughly mid-October 2026 — his older
+// listings stay on the 1.2x template so the two can be compared. Switching
+// back is exactly these two constants and nothing else: set
+// LISTING_MARKUP_MULTIPLIER back to 1.2 and LISTING_ADD_AMOUNT back to 0.
+const LISTING_MARKUP_MULTIPLIER = 1.0;
+
+// ADDED (2026-09-29, "market + $1.00" listing-template test): the flat dollar
+// amount added AFTER the multiply above and BEFORE the tier overrides below.
+// See the LISTING_MARKUP_MULTIPLIER comment for the test window and how to
+// revert. Used only by computeBreakEvenMaxBid.
+const LISTING_ADD_AMOUNT = 1.0;
 
 // ADDED (2026-09-26, break-even/Suggested Bid tier overrides): Eric's real
 // eBay repricer template runs these pricing-tier overrides AFTER the
-// LISTING_MARKUP_MULTIPLIER markup above — if the marked price lands
-// inside a tier's [min, max] range, the repricer pins the actual list
-// price to that tier's newPrice instead of the raw multiplied figure.
+// LISTING_MARKUP_MULTIPLIER / LISTING_ADD_AMOUNT steps above — if the marked
+// price lands inside a tier's [min, max] range, the repricer pins the actual
+// list price to that tier's newPrice instead of the raw computed figure.
 // Ordered array (not an object) so tiers are checked in order, first
 // match wins, same as the real template — and so Eric can add/reorder/
 // edit tiers later if his template changes. See computeBreakEvenMaxBid
 // below, the only place this is used.
+// UNCHANGED by the 2026-09-29 "+ $1.00" switch — the bands themselves are
+// the same, but the MARKET prices that reach them moved: the $20-$25.58 band
+// is now hit by market $19.00-$24.58 (was roughly $16.67-$21.32 under 1.2x),
+// and the $0-$2.48 band by market <= $1.48 (was market <= $2.06).
 const LISTING_PRICE_TIERS = [
   { min: 0.0, max: 2.48, newPrice: 2.49 },
   { min: 20.0, max: 25.58, newPrice: 19.99 },
 ];
+
+// ADDED (2026-09-29, real fee model): Eric's actual eBay setup, replacing the
+// flat 13.25% no-Store rate computeBreakEvenMaxBid used to assume.
+//   - Basic eBay Store subscription -> final value fee is 12.35% in Toys &
+//     Hobbies > Collectible Card Games (the no-Store rate is 13.25%).
+//   - Promoted Listings Standard at a 2.2% ad rate. Deliberately applied to
+//     EVERY sale even though not every sale actually closes through a
+//     promotion — per Eric, this is intentionally conservative (it can only
+//     understate his bid room, never overstate it).
+//   - Both fees are charged on the TOTAL amount of the sale, which includes
+//     sales tax — verified 2026-09-29 against eBay's own current help pages
+//     (Store selling fees id=4122 for the 12.35% Basic Store CCG rate and
+//     the "total amount of the sale" definition; Promoted Listings fees
+//     id=5295, which since 2022-06-01 bills the ad rate on "an item's total
+//     sale amount (including item price shipping, taxes, and any other
+//     applicable fees)"). So the effective rate on the LIST price is
+//     (0.1235 + 0.022) * 1.07 = 0.155685, i.e. ~15.57%.
+// NOTE: the exact product 0.155685 is used, not a rounded 15.57% — rounding
+// the rate first shifts the break-even by a cent on larger cards (a $100
+// market price gives $79.07 at 0.1557 but $79.08 at 0.155685, and $79.08 is
+// the figure Eric verified in CardUploader's own preview).
+// NOTE: "total amount of the sale" also includes buyer-paid shipping, but
+// these listings ship free — the buyer pays no shipping, so shipping enters
+// the math below only as a seller COST, never as part of the fee base.
+// The monthly Store subscription fee is deliberately NOT modeled here: it's
+// a fixed monthly cost, not a per-sale one, so it has no place in a
+// per-card break-even.
+const EBAY_FINAL_VALUE_FEE_RATE = 0.1235;
+const EBAY_PROMOTED_LISTINGS_RATE = 0.022;
+const ASSUMED_SALES_TAX_RATE = 0.07;
+const EBAY_FEE_RATE_ON_LIST_PRICE =
+  (EBAY_FINAL_VALUE_FEE_RATE + EBAY_PROMOTED_LISTINGS_RATE) *
+  (1 + ASSUMED_SALES_TAX_RATE);
 
 // FIX (2026-09-03): these were stale for the model active at the time
 // (gemini-3.6-flash, $0.75 input / $3.75 output per MTok — confirmed live
@@ -1819,50 +1870,64 @@ async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
 // mid-auction as "bid up to this").
 //
 // CHANGED (2026-09-20): the assumed sale price is Eric's real listing
-// price, not raw market price — Eric lists at LISTING_MARKUP_MULTIPLIER
-// (1.2x) times live TCGplayer market price, so break-even/Suggested Bid
-// were understating his real bid room by assuming he'd sell at market.
+// price, not raw market price — he lists at a markup over live TCGplayer
+// market price, so break-even/Suggested Bid were understating his real
+// bid room by assuming he'd sell at market.
 // This only affects the internal break-even math below — the displayed
 // Market Price / per-condition prices (`conditions` in
 // buildLivePriceVariantsFromTCGPlayer) are untouched, still raw market.
 //
-// Formula, all-in eBay + shipping costs (fee model itself unchanged):
+// Formula, all-in eBay + shipping costs:
 //   Step 1 (markup):  marked price = market price * LISTING_MARKUP_MULTIPLIER
-//   Step 2 (tiers):   walk LISTING_PRICE_TIERS in order; if marked price
+//   Step 2 (add):     marked price += LISTING_ADD_AMOUNT
+//   Step 3 (tiers):   walk LISTING_PRICE_TIERS in order; if marked price
 //                      falls in a tier's [min, max] range, first match
 //                      wins and marked price is REPLACED by that tier's
 //                      newPrice. No match -> marked price is unchanged
 //                      (this is the whole pre-2026-09-26 behavior).
-//   Assumed sale price = marked price after step 2
-//   eBay fee = 13.25% of assumed sale price + a fixed fee ($0.30 if
+//   Assumed sale price = marked price after step 3
+//   eBay fee = EBAY_FEE_RATE_ON_LIST_PRICE (~15.57%: a 12.35% Basic-Store
+//              final value fee plus a 2.2% Promoted Listings ad rate, both
+//              billed on the sale total including 7% sales tax) of the
+//              assumed sale price, plus a fixed per-order fee ($0.30 if
 //              assumed sale price <= $10, else $0.40)
 //   Shipping = $0.955 (single-card eBay Standard Envelope, all-in) if
 //              assumed sale price < $20, else $5.80 (Ground Advantage)
 //   Max Bid  = Assumed Sale Price - eBay Fee - Shipping
 //
-// Verified against Eric's own hand-calculated example before wiring the
-// markup step into any response: market price=$5.29 -> assumed sale
-// price = 5.29*1.2 = 6.348 (no tier match, both tiers are far below
-// $6.35) -> fee = 0.1325*6.348 + 0.30 = 1.14111 -> shipping 0.955 ->
-// maxBid = 6.348 - 1.14111 - 0.955 = 4.25189 -> rounds to $4.25.
-// (Superseded the earlier pre-markup example of $3.33 off raw $5.29 —
-// see CLAUDE.md/test-cases.md for that original verification and this
-// feature's own markup verification, including the Chansey NM case that
-// prompted this change.)
+// CHANGED (2026-09-29, two separate changes landing together):
+//   (a) Listing template: "1.2x market" -> "market + $1.00" (steps 1-2
+//       above) for all NEW listings. THIS IS A TEST running until roughly
+//       mid-October 2026 — older listings stay on 1.2x for comparison, and
+//       this tool tracks the NEW template because that's what Eric will
+//       list cards bought today at. Reverting is exactly two constants:
+//       LISTING_MARKUP_MULTIPLIER back to 1.2, LISTING_ADD_AMOUNT back to
+//       0. Nothing in this function needs to change to switch back.
+//   (b) Fee model: the flat 13.25% no-Store final value fee this used to
+//       assume is replaced by Eric's real setup — see the
+//       EBAY_FINAL_VALUE_FEE_RATE block near the top of this file for the
+//       rates, the eBay help-page verification that both fees really are
+//       billed on the tax-inclusive sale total, and why the 2.2% ad rate
+//       is applied to every sale on purpose.
+//
+// Worked example, re-verified for the new formula: market price=$5.29 ->
+// marked price = 5.29*1.0 + 1.00 = 6.29 (no tier match, both tiers are
+// far from $6.29) -> fee = 0.155685*6.29 + 0.30 = 1.27924... -> shipping
+// 0.955 -> maxBid = 6.29 - 1.27924 - 0.955 = 4.05576 -> rounds to $4.06.
+// (Superseded the 1.2x-era $4.25 figure, which itself superseded the
+// pre-markup $3.33 — see CLAUDE.md/test-cases.md for each.)
 //
 // ADDED (2026-09-26): the tier-override step mirrors Eric's real eBay
 // repricer template, which pins the computed list price to a fixed
 // value whenever it lands in one of two bands ($0-$2.48 -> $2.49,
 // $20.00-$25.58 -> $19.99) rather than actually listing at the raw
-// marked price. Before this, a market price whose marked price
-// (market * 1.2) landed in the $20-$25.58 band — roughly market
-// $16.67-$21.32 — had its break-even computed off a sale price up to
-// ~$5 higher than what Eric will actually list at, overstating safe
-// bid room in that band; the $0-$2.48 band is a smaller, opposite-
-// direction miss. See docs/test-cases.md for the tier-boundary
-// verification (a marked price inside each band, and one clearly
-// outside both — the untouched Chansey $64.47 NM example — all
-// hand-checked before deploy).
+// marked price. Before this, a market price whose marked price landed in
+// the $20-$25.58 band had its break-even computed off a sale price up to
+// ~$5 higher than what Eric will actually list at, overstating safe bid
+// room in that band; the $0-$2.48 band is a smaller, opposite-direction
+// miss. Under the "+ $1.00" template that upper band is reached by market
+// $19.00-$24.58 (it was roughly $16.67-$21.32 under 1.2x). See
+// docs/test-cases.md for the tier-boundary verification.
 //
 // Computed independently per condition (never once off NM and reused) —
 // market price, and therefore the assumed sale price and both fees,
@@ -1876,13 +1941,14 @@ async function fetchTCGPlayerPriceHistory(tcgPlayerId) {
 // them" design principle.
 function computeBreakEvenMaxBid(salePrice) {
   if (salePrice == null || !Number.isFinite(salePrice)) return null;
-  let assumedSalePrice = salePrice * LISTING_MARKUP_MULTIPLIER;
+  let assumedSalePrice =
+    salePrice * LISTING_MARKUP_MULTIPLIER + LISTING_ADD_AMOUNT;
   const tier = LISTING_PRICE_TIERS.find(
     (t) => assumedSalePrice >= t.min && assumedSalePrice <= t.max
   );
   if (tier) assumedSalePrice = tier.newPrice;
   const fixedFee = assumedSalePrice <= 10 ? 0.3 : 0.4;
-  const ebayFee = 0.1325 * assumedSalePrice + fixedFee;
+  const ebayFee = EBAY_FEE_RATE_ON_LIST_PRICE * assumedSalePrice + fixedFee;
   const shipping = assumedSalePrice < 20 ? 0.955 : 5.8;
   return Math.round((assumedSalePrice - ebayFee - shipping) * 100) / 100;
 }
