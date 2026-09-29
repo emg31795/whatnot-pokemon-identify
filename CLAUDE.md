@@ -70,6 +70,42 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
+**Update, 2026-09-27, later still yet again: Base Set Ninetales
+Shadowless-tie investigated — confirmed genuine, no code changed, one
+narrow fixable gap flagged but not built.** Eric flagged a live scan
+(Ninetales, 12/102, Read: High / Match: Low, the Shadowless-vs-non-
+Shadowless ambiguous-tie warning) and asked whether this was really the
+documented data-tie limit or something else presenting the same way —
+same standard as the Typhlosion case (test #95). Real logs (4 attempts)
+confirmed a clean, consistent read on every core field
+(name/number/hp/attack) and confirmed the lookup pipeline itself worked
+correctly (NOT a parsing/search-query bug — yesterday's zero-padding fix
+from test #94 correctly surfaced both real candidates). A direct live
+PPT query confirmed the tie is genuine: both candidates share the same
+`externalCatalogId` (literally the same physical card design) and are
+identical on every field PPT provides except catalog/commerce metadata;
+spot-checked a second card (Charizard 004/102) and found the same
+structural split, confirming this is systematic to Base Set, not a
+one-card fluke. **One real, narrow, fixable gap found along the way,
+not built**: `candidateStampType()` (`api/identify.js`) never checks a
+candidate's own `_rawVariants`/printingsAvailable for "1st Edition"
+availability — only the `"(Shadowless)"` catalog row ever has a "1st
+Edition Holofoil" printing (confirmed on 2 real cards), so a
+confidently-read `stampType: "1st Edition"` could in principle resolve
+this exact tie for free, but doing it safely needs narrow scoping to
+just the Shadowless-tie case (folding it into the general stampMatch
+signal would wrongly penalize ordinary 1st-Edition-eligible cards from
+other sets, which model both printings under one row, not two). Also
+wouldn't have changed today's specific result anyway — the screenshot's
+own read was stamp-inconclusive ("none"), and this session's two "1st
+Edition" reads were each uncorroborated by both shadow models. The
+deeper "no stamp legible" ambiguity was confirmed (via a full field
+diff, not just trusting the panel's own text) to have no other
+queryable signal — the only real difference (a drop-shadow border) is
+purely visual and was already considered and explicitly declined as a
+new Gemini-detected signal on 2026-08-28 to avoid latency/runtime risk.
+Full trace in test #97, `docs/test-cases.md`.
+
 **Update, 2026-09-27, later still: hyphen-in-search-query bug
 (Moo-Moo Milk, Ho-Oh) — investigated, BUILT, DEPLOYED, PUSHED, AND
 LIVE-CONFIRMED, with a real ~6.5-minute production outage along the way

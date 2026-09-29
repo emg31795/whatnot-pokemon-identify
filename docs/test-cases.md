@@ -7426,6 +7426,123 @@ optional nice-to-have on top of the synthetic checks.
 Committed and pushed to GitHub (commit `d1c185a`) per explicit
 go-ahead.
 
+## Test #97 — Base Set 2 (actually Base Set) Ninetales, Read: High / Match: Low, "two identical print runs" warning: confirmed a genuine Shadowless-vs-non-Shadowless data tie, PLUS one real, narrow, fixable dead-signal gap found along the way (not built) — no code changed (2026-09-27)
+
+Eric flagged a live scan (Ninetales, 12/102) that came back Read: High /
+Match: Low with the Shadowless-vs-non-Shadowless ambiguous-tie warning,
+and asked — same standard as the Typhlosion case (test #95) — whether
+this was really the documented Shadowless data-tie limit or something
+else (a parsing gap, a search-query bug like Moo-Moo Milk, a scoring
+gap) presenting the same way. Investigated first; nothing built.
+
+**Real logs pulled for "Ninetales" found 4 real scan attempts** in the
+same ~20-second window (00:53:05–00:53:26 UTC), all of the same
+physical card. All 4 agree cleanly on the core identifying fields:
+`cardName: "Ninetales"`, `cardNumber: "12/102"`, `hp: "80"`,
+`attackName: "Lure"`, `setName: "Base Set"` (when read) — this is a
+clean, consistent, high-quality read, not an OCR-instability case.
+`stampType` was the one inconsistent field: 2 of 4 attempts read "1st
+Edition", 2 read "none" — and on both "1st Edition" attempts, the
+`[legacy-model-shadow-test]` line and the Haiku shadow test both
+independently disagreed and read "none" — an uncorroborated split, not
+a confident cross-model agreement either way.
+
+**Confirmed the lookup pipeline itself worked correctly — this is NOT a
+parsing/search-query bug like Moo-Moo Milk.** A plain `search=Ninetales`
+page-1 fetch (30 candidates) and page-2 (40 merged) both came back full
+but contained no candidate matching `12/102` — the real Base Set/Base
+Set (Shadowless) rows simply weren't ranked into PPT's top 40 results
+for the bare species name (the same "common name crowds out the real
+card" pattern already documented for Eevee/Tyranitar/Zoroark, not a new
+issue). The combined name+number fallback then correctly used
+yesterday's zero-padding fix (test #94): `"Ninetales 12/102"` → 0
+results, `"Ninetales 012/102"` → exactly 2 results, both correctly
+surfaced and scored. This is the fix from test #94 working as intended
+on a third real card, not a new gap.
+
+**Directly queried PPT's live API for both surfaced candidates to check
+the tie is real, not just trusting the panel's own warning text.** Both
+rows share `externalCatalogId: "base1-12"` — literally the same
+underlying physical card design — and are identical across every field
+PPT provides: name, number, hp, attacks (`Lure`/`Fire Blast`), rarity
+(`Holo Rare`), weakness, resistance, retreatCost, artist
+(`Ken Sugimori`), pokemonType, energyType, flavorText. The only
+differences are catalog/commerce metadata (`id`, `tcgPlayerId`,
+`setId`, `setName` — `"Base Set (Shadowless)"` vs plain `"Base Set"`,
+image URLs, and `prices`/`printingsAvailable`). Spot-checked a second,
+unrelated Base Set card (Charizard 004/102) live and found the exact
+same structural split — confirming this is a systematic PPT catalog
+modeling choice for Base Set specifically (Shadowless is a real,
+distinct WOTC print run only within Base Set's own printing history,
+never within Base Set 2/Jungle/Fossil/etc.), not a one-card coincidence.
+**Eric's own description named "Base Set 2," but the actual read and
+both PPT candidates all say plain "Base Set"** — a minor recall slip,
+not a discrepancy worth chasing further.
+
+**One real, fixable gap found along the way, but scoped narrowly — not
+proposed as a fix for today's specific result.** `candidateStampType()`
+(`api/identify.js`, feeds the existing `stampMatch`/`stampMismatch`
+scoring signal) only pattern-matches promo keywords (Pokemon
+Center/Staff/Prerelease/Winner/Worlds) against a candidate's
+name/setName text — it never checks "1st Edition" against data already
+fetched on every candidate (`_rawVariants`, PPT's own `variants`/
+`printingsAvailable` field). Confirmed live on both Ninetales and
+Charizard: only the `"(Shadowless)"` catalog row ever has a `"1st
+Edition Holofoil"` printing available; the plain row never does — so a
+confidently-read `stampType: "1st Edition"` could, in principle,
+unambiguously resolve this exact tie (1st Edition Base Set cards were
+never printed with the drop-shadow border) for zero added latency or
+cost, since `stampType` is already read on every scan. This is the same
+family of bug as the historical attackName/Trainer-subtype/rarity
+dead-signal fixes — a signal already being collected but not reaching
+its full scoring potential.
+
+**Deliberately not proposed as today's fix, for two reasons.** (1) It
+would need to be scoped narrowly to the Shadowless-tie case
+specifically (e.g. inside `isShadowlessVsPlainTie`'s tie-break), not
+folded into the general `candidateStampType()`/`stampMatch` scoring
+signal used on every card — blindly extending that signal to check
+`_rawVariants` for "1st Edition" availability would risk a real
+regression: most WOTC-era sets (Jungle, Fossil, Team Rocket, etc.) offer
+"1st Edition Holofoil" and "Unlimited Holofoil" as two printings of the
+*same single candidate row* (unlike Base Set's Shadowless split into two
+separate rows), so treating 1st-Edition-availability as a fixed
+per-candidate "stamp" would incorrectly penalize the ordinary, common
+case (an Unlimited copy reading `stampType: "none"`) via the existing
+`stampMismatch` penalty. (2) Even scoped narrowly, it would not have
+changed today's specific result — the screenshot's own "none stamp"
+badge, and the fact that neither of this session's two "1st Edition"
+reads was corroborated by either shadow model, means this exact live
+tie wasn't actually resolvable by a stamp signal today regardless.
+
+**Confirmed the deeper "no stamp legible" ambiguity is a genuine,
+already-decided architectural limit, not a bug in disguise — did not
+just take the panel's own warning text at face value.** Diffed the full
+JSON of both real PPT rows field-by-field: with `stampType` inconclusive
+(the common case — most copies are Unlimited, with or without a stamp
+read at all), literally nothing else PPT returns differs between the
+Shadowless and non-Shadowless rows. The one real physical difference
+(absence vs. presence of a drop-shadow on the picture-frame border) is
+purely visual and was already identified, considered, and explicitly
+declined as a new Gemini-detected signal on 2026-08-28 (see the
+`stripShadowlessSuffix`/`isShadowlessSetName` FIX comment in
+`api/identify.js`), specifically to avoid the added runtime/latency risk
+of a new visual-detection prompt ask — a deliberate prior trade-off,
+not an oversight. Same standard as test #95: confirmed via direct
+evidence (a full field diff against live data) that no other signal
+exists, not inferred from the warning's own claim.
+
+**Conclusion**: the ambiguous-tie warning shown to Eric is accurate and
+working as designed for this specific scan (no stamp confidently/
+corroborated read). No code changed. One real, narrow, buildable
+improvement was found (teach the Shadowless tie-break specifically to
+prefer the Shadowless row when `stampType: "1st Edition"` is read) that
+could help a *future* scan where the stamp is legibly and consistently
+read as "1st Edition" across models — flagging it here, not building it
+without explicit go-ahead, since it wouldn't have changed today's result
+and needs the narrow scoping described above to avoid a regression on
+ordinary 1st-Edition-eligible cards from other sets.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
