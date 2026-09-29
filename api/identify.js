@@ -179,7 +179,11 @@ const LISTING_PRICE_TIERS = [
 // NOTE: the exact product 0.155685 is used, not a rounded 15.57% — rounding
 // the rate first shifts the break-even by a cent on larger cards (a $100
 // market price gives $79.07 at 0.1557 but $79.08 at 0.155685, and $79.08 is
-// the figure Eric verified in CardUploader's own preview).
+// the break-even worked out by hand when this change was planned).
+// CardUploader's own preview is NOT a check on this number — that preview
+// only shows LIST prices (market 10 -> $11.00, 1.20 -> $2.49, 20 -> $19.99,
+// 30 -> $31.00, all confirmed there); it knows nothing about eBay fees,
+// shipping, or break-even.
 // NOTE: "total amount of the sale" also includes buyer-paid shipping, but
 // these listings ship free — the buyer pays no shipping, so shipping enters
 // the math below only as a seller COST, never as part of the fee base.
