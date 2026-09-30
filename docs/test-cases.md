@@ -7543,6 +7543,177 @@ without explicit go-ahead, since it wouldn't have changed today's result
 and needs the narrow scoping described above to avoid a regression on
 ordinary 1st-Edition-eligible cards from other sets.
 
+## Feature: Whatnot purchase costs folded into Suggested Bid only (sales tax + a per-card shipping constant) — BUILT AND VERIFIED LOCALLY, NOT YET DEPLOYED (2026-09-30)
+
+**Request**: Suggested Bid was the margin-adjusted break-even and nothing
+else, so it silently ignored what Eric pays *on top of* a winning Whatnot
+bid. Sales tax is charged on every Whatnot purchase, which means a bid of
+$X actually costs $X x 1.06625 — quietly eating part of the intended
+margin. Fold Whatnot purchase costs into Suggested Bid only.
+`computeBreakEvenMaxBid` explicitly stays as it is: break-even is defined
+here as the **eBay-side zero-profit figure**, and the tooltip that shows
+it keeps showing the same numbers as before.
+
+### What changed (`api/identify.js`)
+
+Two new constants, next to the existing listing/eBay-fee constants:
+
+- `WHATNOT_PURCHASE_TAX_RATE = 0.06625` — New Jersey's statewide rate.
+  Logged in the code comment as an **assumption to check against a real
+  receipt**, not a verified figure (see the research section below, which
+  found a real reason it may not be exact on every order).
+- `WHATNOT_SHIPPING_PER_CARD = 0.00` — deliberately zero. Eric's real
+  Whatnot shipping is $0.78/card and caps around $6/order, and because he
+  batches, he pays that cap once rather than per card. Starting at zero
+  because at realistic batch sizes the per-card share of one ~$6 cap is
+  small, and understating a cost can only make the suggested bid more
+  conservative, never less. The comment records how to turn it on later
+  (roughly $6 / typical cards per order).
+
+`computeSuggestedBid` is now:
+
+```
+suggested bid = (BE / (1 + margin) - WHATNOT_SHIPPING_PER_CARD)
+                / (1 + WHATNOT_PURCHASE_TAX_RATE)
+```
+
+rounded to cents **once, at the end**. The margin-adjusted figure is now
+the target for TOTAL money out the door, and the bid is worked backwards
+from it, so the required margin applies to what Eric actually pays rather
+than to the bid alone. Null/missing handling is unchanged (still `null`
+when break-even or the tier is missing).
+
+`computeBreakEvenMaxBid` is untouched — confirmed by the diff, which
+contains no changes to that function at all. `extension/content.js` is
+untouched too, so the `(Bid: Skip)` rule (`bid <= 0`) and the break-even
+tooltip are unchanged. Worth noting the sign can never flip as a result
+of this change: a positive figure divided by 1.06625 stays positive, and
+shipping is 0.00, so exactly the same rows show "Skip" as before.
+
+### Verification, against the real function (not a reimplementation)
+
+A harness extracts the **real source text** of `computeSuggestedBid`,
+`REQUIRED_MARGIN_BY_TIER` and both new constants out of `api/identify.js`
+by regex and evaluates it. Both numbers named in the request match
+exactly:
+
+| Break-even | Tier | Margin | Expected | Got |
+|---|---|---|---|---|
+| $79.08 | Fast-flip | 15% | 79.08 / 1.15 / 1.06625 = **$64.49** | **$64.49** |
+| $3.81 | Stagnant | 100% | 3.81 / 2 / 1.06625 = **$1.79** | **$1.79** |
+
+Plus: the other two tiers on the same break-even ($79.08 Normal $57.05,
+Slow $49.44, both matching a hand calc); all five null/missing cases
+still returning `null`; a negative break-even (-$0.62) still flowing
+through as a real signed number (-$0.45) rather than being clamped; and
+break-even exactly $0 returning $0. Against the old formula the new
+number is always lower, never higher, by a consistent ~6.2% (= 1 -
+1/1.06625) across every tier tested.
+
+**Temporary `WHATNOT_SHIPPING_PER_CARD = 0.78` check** (harness override
+only — the real file was never edited, confirmed by the harness printing
+the live extracted value as `0`): every case dropped by exactly $0.73,
+matching 0.78 / 1.06625 = $0.7315. $79.08 Fast-flip $64.49 -> $63.76;
+$21.19 Slow $13.25 -> $12.52; $3.81 Stagnant $1.79 -> $1.06.
+
+**End-to-end, against real live TCGplayer data**: a second harness drove
+the real exported `buildLiveVariantsForCandidate` from BOTH the
+pre-change file and the post-change file against the same live data, for
+3 real cards (Pikachu XY95 / 114004, Charizard Base Set / 42382, Lotad
+Shiny SH4 / 86838) — 15 condition rows total. Every row: raw
+`conditions` identical, `conditionsBreakEven` **identical**, and
+`conditionsSuggestedBid` exactly the single-rounded new formula.
+
+**One real methodology bug caught in the harness itself, not the code**:
+the first e2e run reported 3 "failures" that turned out to be the
+harness double-rounding (deriving its expectation from the
+already-rounded old bid, `o / 1.06625`, instead of from the unrounded
+margin step). Checked directly rather than assumed: on all 3 divergent
+rows the function matches the single-round value and the harness matched
+the double-round value, confirming the function rounds once at the end as
+specified. Harness expectation corrected; all 15 rows then passed.
+
+### Research (no code): Whatnot's current buyer-side fees
+
+Read from Whatnot's own help center in a real browser (their pages return
+HTTP 403 to plain fetches, so this is the primary source, not a
+third-party fee-calculator blog).
+
+1. **No buyer protection fee and no per-order buyer fee.** Every fee
+   Whatnot documents is seller-side: a tiered commission on GMV (rate
+   structure changed 2026-09-21, now as low as 3%) plus separate payment
+   processing. A help-center search for "buyer fee" returns 246 articles
+   and not one buyer-fee article. The buyer pays item price + shipping +
+   tax. **Nothing to add to the formula here** — unlike eBay/Mercari/
+   Depop, Whatnot has no buyer-side fee to model.
+2. **Tax on the item: confirmed.** "Sale price is exclusive of applicable
+   U.S. sales and use taxes" — Whatnot charges US buyers sales & use tax
+   at checkout and remits it. Their own worked example uses 7%
+   ($100 item -> $7.00 tax -> $107 total). So the tax gross-up is
+   correct in principle.
+3. **The 6.625% NJ figure has a real caveat worth knowing.** Whatnot
+   says some states are origin-sourced: "In origin states we're
+   responsible for applying the sales and use tax rate determined by the
+   **ship-from** address on all taxable sales." So on some purchases the
+   rate is the *seller's* rate, not Eric's NJ rate — and Eric buys from
+   many sellers in many states, so the effective rate varies per order.
+   6.625% is a reasonable single-number stand-in, but it will not be
+   exact on every order. Checking two or three real receipts from
+   *different* sellers would show the spread, which is more useful than
+   checking one.
+4. **Tax DOES apply to shipping in New Jersey.** NJ is explicitly on
+   Whatnot's list of states that "generally charge sales tax on shipping"
+   where the buyer pays shipping. Consequence for the formula: the
+   implemented form, `(target - shipping) / (1 + tax)`, treats shipping
+   as untaxed. If shipping is taxed, the strictly correct form is
+   `target / (1 + tax) - shipping`. **This is a no-op today** — the two
+   are identical at `WHATNOT_SHIPPING_PER_CARD = 0.00` — and the
+   difference is only shipping x tax/(1+tax), about $0.05 on $0.78. Built
+   as specified rather than silently changed; flagged here so it's a
+   deliberate decision whenever the shipping constant is turned on.
+5. **$0.78 is real, and it's a floor, not a flat rate.** It's Whatnot's
+   published First-Class Mail Letter rate for eligible cards, quoted as
+   "$0.78-$1.36 depending on weight, plus fees."
+6. **The "~$6 cap" is really Smart Bundling(TM), and it works PER SELLER,
+   not per order.** Ground Advantage is a flat $7.75 for 1-5 lbs, and
+   adding an item to an existing shipment often adds $0 — but "orders can
+   only be bundled if they're from the same seller." Since Eric buys
+   across many sellers in one night, he pays a separate shipment cost per
+   seller. So "$6 / typical cards per order" is the wrong unit: the real
+   figure is per-shipment cost / cards bought **from that one seller**.
+   That makes effective per-card shipping *higher* than a naive division
+   if he takes 1-2 cards from many sellers, and lower if he takes many
+   from one. Worth deciding on that basis rather than on an order-level
+   average.
+
+### Status
+
+Built, `node --check` clean, verified locally as above. **Not deployed**
+— see the deploy blocker in CLAUDE.md's matching entry (the Vercel CLI is
+logged out in this session and the project has no `.vercel` link, so the
+from-disk CLI deploy path can't run without an interactive
+`vercel login`).
+
+**Also found while checking production state, and material**: production
+is **not** running commit `13cc351` (the "market + $1.00" template and
+Eric's real 12.35%-Basic-Store + 2.2%-Promoted fee model). Confirmed two
+independent ways, not assumed — (a) a live `POST /api/price` for
+productId 114004 (market $207.44) returned `conditionsBreakEven.NM:
+209.75`, which reproduces exactly under the OLD 1.2x/13.25% model
+(207.44 x 1.2 = 248.93, fee 33.38, shipping 5.80 -> $209.75) and not at
+all under the new one (which gives $169.79, exactly what the local code
+returns for the same market price); and (b) the live `sourceHash`
+(`42c8abf6...`) matches neither git HEAD (`1b660f67...`) nor the working
+tree. So whenever this deploys, it will carry **two** changes, and the
+numbers move a lot on the same card:
+
+| | Production now | After deploy |
+|---|---|---|
+| Break-even (NM) | $209.75 | $169.79 |
+| Suggested Bid (NM, Slow) | $139.83 | $106.16 |
+
+---
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

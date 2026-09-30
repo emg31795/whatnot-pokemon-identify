@@ -70,6 +70,116 @@ serve a specific roadmap item, not just whatever a live scan happens to
 surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
+**Update, 2026-09-30: Whatnot purchase costs folded into Suggested Bid
+only — BUILT AND VERIFIED LOCALLY, NOT DEPLOYED, AND TWO THINGS NEED
+ERIC'S DECISION (a real deploy blocker, and a heads-up about what the
+deploy would actually change).**
+
+Suggested Bid was the margin-adjusted break-even and nothing else, so it
+ignored what Eric pays *on top of* a winning Whatnot bid — a bid of $X
+actually costs $X x 1.06625 once Whatnot's sales tax lands, quietly
+eating part of the intended margin. Two new constants in
+`api/identify.js`, next to the existing listing/eBay-fee constants:
+`WHATNOT_PURCHASE_TAX_RATE = 0.06625` (New Jersey's statewide rate,
+commented as an **assumption to check against a real receipt**) and
+`WHATNOT_SHIPPING_PER_CARD = 0.00` (Eric's real Whatnot shipping is
+$0.78/card capping around $6/order, and he batches so he pays that cap
+once — started at zero on purpose, with the comment recording how to turn
+it on later as roughly $6 / typical cards per order).
+`computeSuggestedBid` is now
+`(BE / (1 + margin) - WHATNOT_SHIPPING_PER_CARD) / (1 + WHATNOT_PURCHASE_TAX_RATE)`,
+rounded to cents once at the end, so the required margin applies to what
+Eric actually pays in total rather than to the bid alone.
+
+**`computeBreakEvenMaxBid` is deliberately untouched** — break-even stays
+the eBay-side zero-profit figure (confirmed by the diff containing no
+changes to that function), and `extension/content.js` isn't touched
+either, so the `(Bid: Skip)` rule and the break-even tooltip show exactly
+the same numbers as before. The sign can never flip from this change (a
+positive number divided by 1.06625 stays positive, shipping is 0.00), so
+the same rows show "Skip" as before.
+
+**Verified against the real function, not a reimplementation**: a harness
+extracts the actual source text of `computeSuggestedBid`, the margin
+table and both new constants out of `api/identify.js` and evaluates it.
+Both required numbers match exactly — BE $79.08 at 15% -> **$64.49**
+(79.08 / 1.15 / 1.06625) and BE $3.81 at 100% -> **$1.79** — plus the
+other two tiers against a hand calc, all five null/missing cases still
+returning `null`, and a negative BE still flowing through as a real
+signed number rather than being clamped. The temporary
+`WHATNOT_SHIPPING_PER_CARD = 0.78` check (harness override only; the real
+file was never edited, confirmed by printing the live extracted value as
+`0`) dropped every case by exactly $0.73 = 0.78 / 1.06625, as expected.
+End-to-end, a second harness drove the real exported
+`buildLiveVariantsForCandidate` from both the pre- and post-change files
+against the same live TCGplayer data for 3 real cards / 15 condition
+rows: raw `conditions` identical, `conditionsBreakEven` **identical**,
+`conditionsSuggestedBid` exactly the new formula. One methodology bug was
+caught in the harness itself (it double-rounded its own expectation) and
+checked directly rather than waved off — the function rounds once at the
+end, as specified.
+
+**DEPLOY BLOCKER, not a choice**: the from-disk CLI deploy path can't run
+in this session. `npx vercel whoami` returns "Logged out", there's no
+`.vercel` project link in the repo, and no `VERCEL_TOKEN` anywhere — a
+real `npx vercel deploy` attempt fails with
+`Error: No existing credentials found`. `vercel login` is interactive
+(browser/email), so it needs Eric. Deliberately did NOT fall back to the
+MCP `create_deployment` inline-content path — that's exactly the manual-
+transcription route this project moved away from on 2026-09-29 (and the
+route that caused the ~6.5-minute Moo-Moo Milk outage), so silently
+reverting to it to get a deploy out would undo the point of the switch.
+
+**Also found while checking production state, and material enough that
+Eric should see it before promoting**: production is **not** running
+commit `13cc351` (the "market + $1.00" template and Eric's real
+12.35%-Basic-Store + 2.2%-Promoted fee model). Confirmed two independent
+ways rather than assumed — (a) a live `POST /api/price` for productId
+114004 (market $207.44) returned `conditionsBreakEven.NM: 209.75`, which
+reproduces exactly under the OLD 1.2x/13.25% model and not at all under
+the new one (which gives $169.79, exactly what the local code returns for
+that same market price), and (b) the live `sourceHash` (`42c8abf6...`)
+matches neither git HEAD (`1b660f67...`) nor the working tree. So the
+next deploy carries **two** changes, and on that one card break-even goes
+$209.75 -> $169.79 and Suggested Bid goes $139.83 -> $106.16. That's the
+intended effect of both changes, but it's a big move to land without
+saying so first.
+
+**Research (no code), Whatnot buyer-side fees** — read from Whatnot's own
+help center in a real browser (their pages 403 plain fetches, so this is
+the primary source, not a fee-calculator blog). (1) **No buyer protection
+fee and no per-order buyer fee** — every documented Whatnot fee is
+seller-side (tiered GMV commission, restructured 2026-09-21, plus
+payment processing); a help-center search for "buyer fee" returns 246
+articles and no buyer-fee article. Nothing to add to the formula.
+(2) Tax on the item is confirmed: "Sale price is exclusive of applicable
+U.S. sales and use taxes," with Whatnot's own example using 7%.
+(3) **The 6.625% figure has a real caveat**: Whatnot applies *origin*
+sourcing in some states — "the sales and use tax rate determined by the
+ship-from address" — so on some purchases the rate is the seller's, not
+Eric's NJ rate, and he buys from sellers in many states. 6.625% is a fine
+single-number stand-in but won't be exact per order; checking two or
+three receipts from *different* sellers is more informative than one.
+(4) **NJ does tax shipping** — it's explicitly on Whatnot's list of
+states that charge sales tax on buyer-paid shipping. The implemented form
+treats shipping as untaxed; if shipping is taxed the strictly correct
+form is `target / (1 + tax) - shipping`. A no-op today (identical at
+shipping 0.00, and worth ~$0.05 on $0.78), built as specified rather than
+silently changed — flagged so it's a deliberate call whenever the
+shipping constant is turned on. (5) $0.78 is real but is a *floor*:
+Whatnot publishes First-Class Mail Letter for eligible cards as
+"$0.78-$1.36 depending on weight, plus fees." (6) **The "~$6 cap" is
+Smart Bundling(TM), and it bundles PER SELLER, not per order** — "orders
+can only be bundled if they're from the same seller." Since Eric buys
+across many sellers in a night, he pays a separate shipment cost per
+seller, so "$6 / cards per order" is the wrong unit; the real figure is
+per-shipment cost / cards bought from that one seller. That pushes
+effective per-card shipping *up* if he takes 1-2 cards from many sellers
+and down if he takes many from one.
+
+Full trace, tables and the harness details in `docs/test-cases.md`'s
+matching entry. `claude/session-handoff.md` deliberately not touched.
+
 **Update, 2026-09-27, later still yet again: Base Set Ninetales
 Shadowless-tie investigated — confirmed genuine, no code changed, one
 narrow fixable gap flagged but not built.** Eric flagged a live scan
