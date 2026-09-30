@@ -197,6 +197,36 @@ const EBAY_FEE_RATE_ON_LIST_PRICE =
   (EBAY_FINAL_VALUE_FEE_RATE + EBAY_PROMOTED_LISTINGS_RATE) *
   (1 + ASSUMED_SALES_TAX_RATE);
 
+// ADDED (2026-09-30, Whatnot purchase costs): what Eric actually pays ON TOP
+// of his winning bid when he buys a card on Whatnot. These belong to the BUY
+// side, not the sell side, so they are used ONLY by computeSuggestedBid below
+// — computeBreakEvenMaxBid above is deliberately untouched, because break-even
+// is defined here as the eBay-side zero-profit figure (what a card can be
+// bought for and still break even on resale, before any Whatnot-specific
+// purchase costs).
+//
+// Sales tax: Eric pays sales tax on every Whatnot purchase. 6.625% is New
+// Jersey's statewide rate.
+// ASSUMPTION, NOT YET VERIFIED: this is NJ's published rate, not a figure read
+// off one of Eric's real Whatnot receipts. Worth checking against an actual
+// receipt — if Whatnot charges a different effective rate (a different
+// ship-to state, or tax applied to a different base than the item price),
+// this is the one constant to correct.
+const WHATNOT_PURCHASE_TAX_RATE = 0.06625;
+
+// Whatnot shipping, per card. Eric's real Whatnot shipping is $0.78 per card
+// and caps at roughly $6 per order — and because he batches many cards into
+// one order, he pays that cap once rather than $0.78 per card. Starting at
+// ZERO on purpose: at realistic batch sizes the per-card share of a single
+// ~$6 cap is small enough that charging $0.78 to every card would overstate
+// his real cost substantially, and understating a cost can only make the
+// suggested bid more conservative, never less.
+// To turn it on later, set this to roughly $6 divided by his typical number
+// of cards per order (e.g. 20 cards/order -> 0.30). It is subtracted from the
+// margin-adjusted figure BEFORE the tax division in computeSuggestedBid,
+// since Whatnot shipping is not itself taxed as part of the item price.
+const WHATNOT_SHIPPING_PER_CARD = 0.0;
+
 // FIX (2026-09-03): these were stale for the model active at the time
 // (gemini-3.6-flash, $0.75 input / $3.75 output per MTok — confirmed live
 // against Google's own pricing page) — see CLAUDE.md/test-cases.md for
@@ -2135,6 +2165,30 @@ function computeSellThrough(totalSold) {
 //   Slow:      21.19 / 1.50 = 14.126666.. -> $14.13 (spec's own example, match)
 //   Stagnant:  21.19 / 2.00 = 10.595      -> $10.60 (spec's own example, match)
 //   Fast-flip: 21.19 / 1.15 = 18.426086.. -> $18.43
+//
+// CHANGED (2026-09-30, Whatnot purchase costs): the margin-adjusted figure is
+// no longer the suggested bid itself. Eric pays sales tax (and, in principle,
+// shipping) ON TOP of his winning bid, so that figure is the target for TOTAL
+// money out the door, and the bid is worked backwards from it:
+//
+//   suggested bid = (BE / (1 + margin) - WHATNOT_SHIPPING_PER_CARD)
+//                   / (1 + WHATNOT_PURCHASE_TAX_RATE)
+//
+// rounded to cents once, at the end. This keeps the required margin applied
+// to what Eric actually pays in total rather than to the bid alone — under
+// the old formula, a 15%-margin bid of $X actually cost $X * 1.06625 once
+// Whatnot's tax landed, quietly eating part of the intended margin.
+// WHATNOT_SHIPPING_PER_CARD is 0.00 today (see its own comment near the fee
+// constants for why, and for how to turn it on), so the tax division is the
+// only term doing real work right now.
+// computeBreakEvenMaxBid is deliberately NOT touched by this — break-even
+// stays the eBay-side zero-profit figure, and the tooltip that shows it keeps
+// showing exactly the same numbers as before.
+//
+// Worked examples, hand-verified against the real function (2026-09-30, with
+// shipping at 0.00):
+//   Fast-flip: 79.08 / 1.15 = 68.765217.. / 1.06625 = 64.49329.. -> $64.49
+//   Stagnant:   3.81 / 2.00 =  1.905      / 1.06625 =  1.78665.. ->  $1.79
 const REQUIRED_MARGIN_BY_TIER = {
   "Fast-flip": 0.15,
   Normal: 0.3,
@@ -2146,7 +2200,16 @@ function computeSuggestedBid(breakEven, tier) {
   if (breakEven == null || !Number.isFinite(breakEven)) return null;
   const margin = tier != null ? REQUIRED_MARGIN_BY_TIER[tier] : null;
   if (margin == null) return null;
-  return Math.round((breakEven / (1 + margin)) * 100) / 100;
+  // Margin-adjusted target for TOTAL money out the door on Whatnot, then
+  // worked backwards to the bid itself: subtract per-card Whatnot shipping
+  // (a flat cost, not taxed with the item), then divide by (1 + tax rate)
+  // so that bid + tax on that bid lands on the target. Rounded to cents
+  // once, at the very end.
+  const afterShipping =
+    breakEven / (1 + margin) - WHATNOT_SHIPPING_PER_CARD;
+  return (
+    Math.round((afterShipping / (1 + WHATNOT_PURCHASE_TAX_RATE)) * 100) / 100
+  );
 }
 
 // Fetches + builds live price variants for one candidate (identified by
