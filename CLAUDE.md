@@ -233,6 +233,45 @@ per-shipment cost / cards bought from that one seller. That pushes
 effective per-card shipping *up* if he takes 1-2 cards from many sellers
 and down if he takes many from one.
 
+**CONFIRMED, 2026-09-30 (same day, by Eric against real receipts —
+this closes the one open assumption in this change)**:
+`WHATNOT_PURCHASE_TAX_RATE = 0.06625` is correct, verified across **48
+real orders spanning 7 different sellers**, and **tax is applied to item
+price plus shipping**. No code change needed — the rate stands as
+deployed.
+
+Two things that follow from it, worth recording rather than
+re-deriving later:
+1. **The origin-sourcing worry raised in this session's research is
+   answered empirically.** Whatnot does apply ship-from-based rates in
+   some states, which raised the possibility that the effective rate
+   would vary per seller — but holding at 6.625% across 7 different
+   sellers is real evidence that it does not vary in practice for
+   Eric's purchases. Treat the rate as verified, not as a stand-in.
+2. **The shipping term's placement is now known to be the less-correct
+   form, and should be switched if `WHATNOT_SHIPPING_PER_CARD` is ever
+   turned on.** `computeSuggestedBid` currently computes
+   `(target - shipping) / (1 + tax)`, which treats shipping as
+   untaxed. Eric's receipts confirm shipping IS taxed, so the correct
+   form is `target / (1 + tax) - shipping`. **This is a no-op today** —
+   the two are identical while shipping is `0.00`, and the gap is only
+   shipping x tax/(1+tax), about $0.05 on $0.78 — so nothing is wrong
+   in production right now. But whoever sets that constant to a real
+   value must flip the shipping term outside the division at the same
+   time, or the suggested bid will be a few cents too generous per
+   card.
+
+**Known, accepted comment drift, same class as prior precedents in this
+file**: the code comment on `WHATNOT_PURCHASE_TAX_RATE` still reads
+"ASSUMPTION, NOT YET VERIFIED", which the receipts above have now
+disproved. Deliberately NOT edited in this session, because
+`api/identify.js` on disk currently hashes byte-for-byte to what is
+deployed (`4ae2cc28...`) and a comment-only edit would break that
+parity for zero functional gain. Per this file's own established rule
+for exactly this situation: **fold the comment correction into the next
+real code change to this file** — including the shipping-term flip
+above, if that happens at the same time.
+
 Committed as two commits (`66fb6bf` code, `1d320ab` docs) and **pushed to
 GitHub** (`e4ff81c..1d320ab`, `main`) per explicit go-ahead.
 

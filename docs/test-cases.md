@@ -7754,6 +7754,37 @@ already closed on 2026-09-10 for `requestId=740a66cc`. Noting it plainly
 so it isn't re-investigated as a client bug later: a hand-built `curl`
 scan test must strip the `data:` prefix.
 
+### Tax rate CONFIRMED against real receipts (2026-09-30, by Eric)
+
+`WHATNOT_PURCHASE_TAX_RATE = 0.06625` is confirmed correct across **48
+real orders spanning 7 different sellers**, with **tax applied to item
+price plus shipping**. No code change needed.
+
+This settles both open questions from the research section above:
+
+- **Research item 3 (origin sourcing) is answered empirically.** The
+  concern was that Whatnot's ship-from-based rates in some states would
+  make the effective rate vary per seller. Holding at 6.625% across 7
+  sellers is real evidence it does not vary in practice here, so the
+  rate is verified rather than a single-number stand-in.
+- **Research item 4 (does NJ tax shipping) is confirmed YES — with a
+  consequence.** The implemented form, `(target - shipping) / (1 +
+  tax)`, treats shipping as untaxed. Since shipping IS taxed, the
+  correct form is `target / (1 + tax) - shipping`. **No-op today** (the
+  two are identical at `WHATNOT_SHIPPING_PER_CARD = 0.00`, and the gap
+  is shipping x tax/(1+tax) ~ $0.05 on $0.78), so production is not
+  wrong right now — but **whoever sets that constant to a real value
+  must move the shipping term outside the division at the same time**,
+  or every suggested bid will run a few cents too generous.
+
+**Known comment drift, deliberately not fixed here**: the code comment
+on `WHATNOT_PURCHASE_TAX_RATE` still says "ASSUMPTION, NOT YET
+VERIFIED." Left alone on purpose — `api/identify.js` on disk currently
+hashes byte-for-byte to the deployed file (`4ae2cc28...`), and a
+comment-only edit would break that parity for no functional gain. Fold
+it into the next real code change to this file, along with the
+shipping-term flip if that lands at the same time.
+
 Committed as `66fb6bf` (code) and `1d320ab` (docs), pushed to GitHub
 (`e4ff81c..1d320ab`, `main`).
 
