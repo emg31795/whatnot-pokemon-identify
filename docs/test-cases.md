@@ -5849,6 +5849,17 @@ scanned cards classify going forward before revisiting the boundaries.
 
 ## Feature: factor Eric's 1.2x listing markup into break-even / Suggested Max Bid (2026-09-20)
 
+**SUPERSEDED 2026-09-29 — the 1.2x markup and the flat 13.25% fee rate
+described in this section are no longer what this tool computes.** The
+listing template is now `market * 1.0 + $1.00` (then the same
+`LISTING_PRICE_TIERS` overrides), and the eBay fee is now the real
+12.35% final value fee + 2.2% Promoted Listings on the tax-inclusive
+total (`0.155685`). The text below is kept exactly as written, as the
+historical record of why the 1.2x model existed and how it was verified
+at the time. For what is actually live, see **"Feature: the 2026-09-29/30
+pricing model"** below.
+
+
 **Reported by the user**: `computeBreakEvenMaxBid` assumed a card
 resells at exactly its live TCGplayer market price, but Eric actually
 lists at 1.2x market — understating his real bid room. Verified on a
@@ -5926,6 +5937,17 @@ identification (High confidence, `timingMs.total: 1367`ms — inside the
 `get_runtime_errors` clean for 15 minutes post-deploy.
 
 ## Feature: mirror eBay pricing-tier overrides in the break-even calc — BUILT, DEPLOYED, AND LIVE-CONFIRMED (2026-09-26)
+
+**SUPERSEDED 2026-09-29 — the 1.2x markup and the flat 13.25% fee rate
+described in this section are no longer what this tool computes.** The
+listing template is now `market * 1.0 + $1.00` (then the same
+`LISTING_PRICE_TIERS` overrides), and the eBay fee is now the real
+12.35% final value fee + 2.2% Promoted Listings on the tax-inclusive
+total (`0.155685`). The text below is kept exactly as written, as the
+historical record of why the 1.2x model existed and how it was verified
+at the time. For what is actually live, see **"Feature: the 2026-09-29/30
+pricing model"** below.
+
 
 Per Eric's explicit request: his real eBay repricer template applies the
 `LISTING_MARKUP_MULTIPLIER` (1.2x) markup from the entry directly above,
@@ -6093,6 +6115,17 @@ no override that should have fired and didn't (or vice versa), no
 latency regression, no suspicious pattern near either boundary.
 
 ## Feature: negative Suggested Bid shown as a plain-language flag, not a dollar figure — BUILT, COMMITTED, AND PUSHED; NOT YET LIVE-CONFIRMED (2026-09-26)
+
+**SUPERSEDED 2026-09-29 — the 1.2x markup and the flat 13.25% fee rate
+described in this section are no longer what this tool computes.** The
+listing template is now `market * 1.0 + $1.00` (then the same
+`LISTING_PRICE_TIERS` overrides), and the eBay fee is now the real
+12.35% final value fee + 2.2% Promoted Listings on the tax-inclusive
+total (`0.155685`). The text below is kept exactly as written, as the
+historical record of why the 1.2x model existed and how it was verified
+at the time. For what is actually live, see **"Feature: the 2026-09-29/30
+pricing model"** below.
+
 
 User report from the audit above: a real card (productId 478136,
 Normal-print HP condition, $0.52 raw) has a Suggested Bid that
@@ -7805,6 +7838,202 @@ numbers move a lot on the same card:
 |---|---|---|
 | Break-even (NM) | $209.75 | $169.79 |
 | Suggested Bid (NM, Slow) | $139.83 | $106.16 |
+
+---
+
+## Feature: the 2026-09-29/30 pricing model — current and authoritative (supersedes the 1.2x / 13.25% entries above)
+
+This is the live description of how list price, break-even and Suggested
+Bid are computed. Two changes landed a day apart; both are in production
+as `dpl_JAsaAKCbUMoJJwArn8sRdSn7ymcL`.
+
+### Step 1 — list price (what Eric actually lists at on eBay)
+
+```
+marked price = market price * LISTING_MARKUP_MULTIPLIER (1.0)
+                            + LISTING_ADD_AMOUNT ($1.00)
+
+then LISTING_PRICE_TIERS, in order, first match wins, replacing it outright:
+    marked price in [$0.00,  $2.48]  -> list at $2.49
+    marked price in [$20.00, $25.58] -> list at $19.99
+no tier match -> marked price stands
+```
+
+Changed 2026-09-29 from "1.2x market" to "market + $1.00" for all NEW
+listings. **This is a test running until roughly mid-October 2026** —
+older listings stay on 1.2x so the two can be compared, and this tool
+tracks the NEW template because that is what Eric lists cards bought
+today at. Reverting is exactly two constants:
+`LISTING_MARKUP_MULTIPLIER` back to `1.2`, `LISTING_ADD_AMOUNT` back to
+`0`; nothing in `computeBreakEvenMaxBid` needs to change.
+
+The tier bands are unchanged, but the MARKET prices that reach them
+moved: the $20-$25.58 band is now hit by market **$19.00-$24.58** (was
+roughly $16.67-$21.32 under 1.2x), and the $0-$2.48 band by market
+**<= $1.48** (was <= $2.06).
+
+### Step 2 — break-even (the eBay-side zero-profit figure)
+
+The flat 13.25% no-Store fee the older entries describe is gone,
+replaced by Eric's real setup:
+
+```
+eBay fee rate = (0.1235 + 0.022) * 1.07 = 0.155685    (~15.57%)
+    0.1235   Basic eBay Store final value fee, Toys & Hobbies >
+             Collectible Card Games (the no-Store rate is 13.25%)
+    0.022    Promoted Listings Standard ad rate
+    * 1.07   both fees are billed on the TOTAL sale amount, which
+             includes sales tax; 7% is the assumed tax rate
+fixed fee = $0.30 if list price <= $10, else $0.40
+shipping  = $0.955 if list price < $20 (eBay Standard Envelope, all-in)
+            else $5.80 (Ground Advantage)
+
+break-even = list price - eBay fee - fixed fee - shipping
+```
+
+Verified 2026-09-29 against eBay's own help pages (Store selling fees
+id=4122 for the 12.35% Basic Store CCG rate and the "total amount of the
+sale" definition; Promoted Listings fees id=5295, which since 2022-06-01
+bills the ad rate on an item's total sale amount including price,
+shipping, taxes and other applicable fees).
+
+Details that matter and are easy to undo by accident:
+
+- The exact product `0.155685` is used, never a rounded 15.57% —
+  rounding the rate first shifts break-even by a cent on larger cards
+  (market $100 gives $79.07 at 0.1557 but $79.08 at 0.155685).
+- The 2.2% ad rate is applied to **every** sale deliberately, even
+  though not every sale closes through a promotion. Per Eric this is
+  intentionally conservative: it can only understate his bid room, never
+  overstate it.
+- The monthly Store subscription is deliberately **not** modeled — a
+  fixed monthly cost has no place in a per-card break-even.
+- Buyer-paid shipping is $0 (these listings ship free), so shipping
+  enters only as a seller cost and never as part of the fee base.
+- Computed independently per condition, never once off NM and reused.
+- Can legitimately go negative on cheap conditions; returned as a real
+  signed number rather than clamped.
+
+Reference values: market **$5 -> $3.81**, **$10 -> $7.93**,
+**$30 -> $19.97**, **$100 -> $79.08**.
+
+### Step 3 — Suggested Bid (added 2026-09-30): the only place Whatnot purchase costs appear
+
+```
+suggested bid = (break-even / (1 + margin) - WHATNOT_SHIPPING_PER_CARD)
+                / (1 + WHATNOT_PURCHASE_TAX_RATE)
+
+margin by liquidity tier: Fast-flip 15%, Normal 30%, Slow 50%, Stagnant 100%
+WHATNOT_PURCHASE_TAX_RATE = 0.06625
+WHATNOT_SHIPPING_PER_CARD = 0.00
+```
+
+Rounded to cents **once, at the end**. The margin-adjusted figure is the
+target for TOTAL money out the door and the bid is worked backwards from
+it, so the required margin applies to what Eric actually pays rather
+than to the bid alone. Returns `null` when break-even or the tier is
+missing, which the frontend renders as `(Bid: —)`.
+
+**The 6.625% rate is CONFIRMED, not assumed**: Eric verified it against
+~48 real orders across 7 different sellers, with **tax applied to item
+price plus shipping**. That also answers the origin-sourcing concern
+raised during research — Whatnot does apply ship-from rates in some
+states, but holding at one rate across 7 sellers is real evidence it
+does not vary in practice here.
+
+`WHATNOT_SHIPPING_PER_CARD` is `0.00` because Eric's real Whatnot
+shipping is $0.78/card capping around $6/order and he batches, so he
+pays that cap once. Set it later to roughly $6 / typical cards per
+order — but note Whatnot's Smart Bundling bundles **per seller**, not
+per order, so the honest unit is per-shipment cost / cards bought from
+that one seller.
+
+### Shipping-term ordering — the one trap
+
+The formula computes `(target - shipping) / (1 + tax)`, which treats
+Whatnot shipping as UNTAXED. Eric's receipts confirm shipping IS taxed,
+so the strictly correct form is `target / (1 + tax) - shipping`.
+
+**No-op today**: the two are identical while
+`WHATNOT_SHIPPING_PER_CARD` is `0.00`, and the gap is only
+shipping x tax/(1+tax) — about $0.05 on $0.78. Production is not wrong.
+But **whoever sets that constant to a real value must move the shipping
+term outside the division at the same time**, or every suggested bid
+runs a few cents too generous per card.
+
+Related known drift: the code comment on `WHATNOT_PURCHASE_TAX_RATE`
+still reads "ASSUMPTION, NOT YET VERIFIED", which the receipts have
+disproved. Both corrections should fold into the next real code change
+to `api/identify.js` — deliberately not done as a comment-only edit, to
+preserve the byte-exact deploy hash parity described below.
+
+### Keep the break-even / Suggested Bid split straight
+
+Break-even is the **eBay-side zero-profit figure** and knows nothing
+about Whatnot. Whatnot purchase costs live **only** in Suggested Bid.
+`computeBreakEvenMaxBid` was deliberately untouched by the 2026-09-30
+change, and the break-even tooltip shows the same numbers as before.
+Displayed Market Price and per-condition prices are raw market
+throughout — no markup, tier or fee math touches them. The
+`(Bid: Skip)` rule (shown whenever suggested bid is `<= $0`) is
+unchanged; the sign cannot flip from the tax division, so exactly the
+same rows show "Skip".
+
+### Deploy — and the permanent process change
+
+Built from disk via the Vercel CLI (`npx vercel link` against
+`prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA` / team `leasedraftai`, then
+`npx vercel deploy --prod`), not the old MCP inline-content path.
+
+- Production: **`dpl_JAsaAKCbUMoJJwArn8sRdSn7ymcL`** (`READY`, aliased to
+  `whatnot-pokemon-identify.vercel.app`)
+- Preview: `dpl_HPtVxsfyY3vkm8m4znEwgHaDfYWc` (`READY`), same
+  `sourceHash`
+
+The live `GET /api/identify` `sourceHash`
+(`4ae2cc28e133fbb556b267d72d496b902522f04c`) **exactly equals
+`shasum api/identify.js` on disk — the first byte-exact deploy match in
+this project's history.** Every earlier deploy went through manual
+transcription and left an unresolvable hash gap. **That whole risk class
+is retired as long as deploys go through the CLI from disk; do not go
+back to inline-content deploys.**
+
+Two process facts worth keeping: `vercel promote` will **not** promote a
+preview deployment (it refuses with "A new deployment will be built
+using your production environment", consistent with this project's own
+env-vars-snapshotted-at-build-time precedent), so expect a separate
+preview ID and production ID per change rather than one promoted
+artifact; and a preview URL needs `npx vercel curl`, because Vercel
+Authentication 302s a plain curl.
+
+### Live-confirmed on production
+
+| (productId 114004, market $207.44) | Before | After |
+|---|---|---|
+| `sourceHash` | `42c8abf6...` | `4ae2cc28...` (= local shasum) |
+| Break-even NM | $209.75 | **$169.79** |
+| Suggested Bid NM (Slow) | $139.83 | **$106.16** |
+
+Real end-to-end scan of a real Pikachu XY95 photo: `found: true`,
+`cardName: "Pikachu"`, `setName: "XY Promos"`, `matchConfidence: "High"`,
+`visionProvider: "gemini"`, correct `tcgPlayerId: "114004"`,
+`timingMs.total: 1980`ms — inside the 1-3s target. Before promoting, 29
+real condition rows across 5 productIds (478136, 497604, 86838, 42382,
+114004) were independently recomputed from the formula above: **0
+break-even mismatches, 0 suggested-bid mismatches**, covering all four
+cost bands and 2 tier-override rows.
+
+### Commits
+
+`13cc351` (steps 1-2, the 2026-09-29 listing-template and fee-model
+change) plus comment-only `0a975a8`; `66fb6bf` (step 3, the Suggested
+Bid tax change); `1d320ab` and `16d9a45` (docs and deploy trace).
+
+**One process lesson**: `13cc351` sat **committed but undeployed for a
+day**, which is why the production numbers above moved twice at once
+rather than once. A quick live `sourceHash` vs. local `shasum` check
+after any session that commits without deploying would have caught it
+immediately.
 
 ---
 
