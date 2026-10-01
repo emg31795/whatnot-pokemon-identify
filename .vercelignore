@@ -1,0 +1,27 @@
+# .vercelignore — controls what the Vercel CLI uploads when deploying from
+# disk (`npx vercel deploy`). Only the backend needs to go up: api/,
+# package.json, package-lock.json and vercel.json.
+#
+# ADDED 2026-09-29, alongside the switch from inline-content deploys (via the
+# Vercel MCP tools) to real disk deploys through the CLI. See CLAUDE.md's
+# "Before you deploy" checklist for why that switch happened.
+
+# --- Requested exclusions: everything that isn't the backend ---
+extension/
+docs/
+CLAUDE.md
+README.md
+.claude/
+
+# --- Secrets: never upload these ---
+# .env.local holds the real POKEMONPRICETRACKER_API_KEY. Runtime env vars come
+# from Vercel's own dashboard, so nothing here is ever needed in a deployment.
+.env
+.env.*
+
+# --- Local-only noise (also ignored by Vercel's own defaults; explicit here
+# so the upload set stays obvious rather than relying on default behavior) ---
+node_modules/
+.git/
+.gitignore
+.vercel/
