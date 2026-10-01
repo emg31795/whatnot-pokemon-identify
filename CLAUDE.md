@@ -71,9 +71,9 @@ surface next. See `docs/ROADMAP.md` for the full phase breakdown, north
 star, and definition of done.
 
 **Update, 2026-09-30: Whatnot purchase costs folded into Suggested Bid
-only — BUILT AND VERIFIED LOCALLY, NOT DEPLOYED, AND TWO THINGS NEED
-ERIC'S DECISION (a real deploy blocker, and a heads-up about what the
-deploy would actually change).**
+only — BUILT, DEPLOYED FROM DISK VIA THE VERCEL CLI, PUSHED, AND
+LIVE-CONFIRMED, with the first byte-exact deploy hash match in this
+project's history.**
 
 Suggested Bid was the margin-adjusted break-even and nothing else, so it
 ignored what Eric pays *on top of* a winning Whatnot bid — a bid of $X
@@ -119,16 +119,72 @@ caught in the harness itself (it double-rounded its own expectation) and
 checked directly rather than waved off — the function rounds once at the
 end, as specified.
 
-**DEPLOY BLOCKER, not a choice**: the from-disk CLI deploy path can't run
-in this session. `npx vercel whoami` returns "Logged out", there's no
-`.vercel` project link in the repo, and no `VERCEL_TOKEN` anywhere — a
-real `npx vercel deploy` attempt fails with
-`Error: No existing credentials found`. `vercel login` is interactive
-(browser/email), so it needs Eric. Deliberately did NOT fall back to the
-MCP `create_deployment` inline-content path — that's exactly the manual-
-transcription route this project moved away from on 2026-09-29 (and the
-route that caused the ~6.5-minute Moo-Moo Milk outage), so silently
-reverting to it to get a deploy out would undo the point of the switch.
+**DEPLOYED FROM DISK VIA THE CLI — and this is the single most important
+thing to carry forward from this session.** `npx vercel link` against the
+existing project (`prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team
+`leasedraftai`) followed by `npx vercel deploy` produced a preview whose
+live `GET /api/identify` **`sourceHash` exactly equals the local
+`shasum api/identify.js`** (`4ae2cc28e133fbb556b267d72d496b902522f04c`) —
+and so does the production deployment's. **This is the first deploy in
+this project's entire history where the deployed file hash matches the
+local file byte-for-byte.** Every prior deploy went through manual
+inline-content transcription and left an unresolvable hash gap (see the
+long list of "honestly-disclosed verification gap" entries throughout
+this file, plus the ~6.5-minute Moo-Moo Milk outage caused by a function
+dropped during transcription). That whole class of risk is now gone as
+long as deploys go through the CLI from disk. **Do not go back to the MCP
+`create_deployment` inline-content path.**
+
+**One real wrinkle worth knowing: `vercel promote` cannot promote a
+preview deployment.** It refuses with "This deployment is not a
+production deployment and cannot be directly promoted. A new deployment
+will be built using your production environment." That's consistent with
+this project's own documented env-var behavior (Vercel snapshots env vars
+at build time), so a preview build genuinely cannot become the production
+deployment — production has to be built separately. `npx vercel deploy
+--prod` from the same unchanged disk state was used instead, and the
+resulting production deployment's `sourceHash` is identical to the
+preview's, so the code is provably the same even though the deployment ID
+differs. Expect two deployment IDs per change going forward, not one
+promoted artifact.
+
+**Deploy IDs**: preview `dpl_HPtVxsfyY3vkm8m4znEwgHaDfYWc`, production
+`dpl_JAsaAKCbUMoJJwArn8sRdSn7ymcL` (`READY`, target production, aliased
+to `whatnot-pokemon-identify.vercel.app`).
+
+**Live-confirmed on production, not just deployed**: `GET /api/identify`
+returns the matching `sourceHash` and `normalizeDiacriticTest: "pokemon
+collector"`; a real end-to-end scan of a real Pikachu XY95 photo fetched
+from TCGplayer's own CDN returned `found: true`, `cardName: "Pikachu"`,
+`setName: "XY Promos"`, High confidence, `visionProvider: "gemini"`,
+correct `tcgPlayerId: "114004"`, `timingMs.total: 1980`ms (inside the
+1-3s target); and a live `POST /api/price` for that card returned
+`conditionsBreakEven.NM: 169.79` with `conditionsSuggestedBid.NM: 106.16`
+at the Slow tier — the exact numbers predicted before deploying.
+
+**Verified across price bands on the preview before promoting**: 29 real
+condition rows across 5 real productIds (478136, 497604, 86838, 42382,
+114004) were independently recomputed from the documented formula (a
+deliberate second implementation, not the real function) — **0
+break-even mismatches and 0 suggested-bid mismatches**, covering all four
+cost bands (the <=$10 fixed-fee band, the <$20 shipping band, the $5.80
+shipping band, and 2 rows landing in a tier-override band) and three
+sell-through tiers (Fast-flip, Normal, Slow). The four reference
+break-even values were confirmed unchanged through that same
+independent formula: market $5 -> $3.81, $10 -> $7.93, $30 -> $19.97,
+$100 -> $79.08.
+
+**`get_runtime_errors` (1h post-deploy): 4 error groups, all
+self-inflicted, zero organic.** All four trace to exactly two
+requestIds (`9a7a39a2...`, `282b3c7a...`), both of them this session's
+own malformed verification calls, which sent `imageBase64` with a
+`data:image/jpeg;base64,` prefix that the API correctly rejects (it wants
+raw base64). **This is the identical benign pattern already documented
+and closed on 2026-09-10** for `requestId=740a66cc` — a leftover manual
+`curl` test, not a client bug. Worth remembering: a hand-built `curl`
+scan test must send RAW base64, with no `data:` URI prefix, or it will
+manufacture exactly this error group again. The successful scan
+(`689f1d35...`) produced zero errors.
 
 **Also found while checking production state, and material enough that
 Eric should see it before promoting**: production is **not** running
@@ -176,6 +232,18 @@ seller, so "$6 / cards per order" is the wrong unit; the real figure is
 per-shipment cost / cards bought from that one seller. That pushes
 effective per-card shipping *up* if he takes 1-2 cards from many sellers
 and down if he takes many from one.
+
+Committed as two commits (`66fb6bf` code, `1d320ab` docs) and **pushed to
+GitHub** (`e4ff81c..1d320ab`, `main`) per explicit go-ahead.
+
+**Two untracked/uncommitted side effects of the CLI switch, left for Eric
+to decide on rather than committed unasked**: `npx vercel link` appended
+`.vercel` and `.env*` to `.gitignore` (both redundant with entries
+already there — `.env.local` is still correctly ignored, confirmed via
+`git check-ignore`), and it added a `VERCEL_OIDC_TOKEN` line to
+`.env.local` (checked immediately: both real API keys are intact, nothing
+was clobbered). `.vercelignore` itself is still untracked from the
+2026-09-29 session even though the CLI now relies on it.
 
 Full trace, tables and the harness details in `docs/test-cases.md`'s
 matching entry. `claude/session-handoff.md` deliberately not touched.

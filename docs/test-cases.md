@@ -7543,7 +7543,7 @@ without explicit go-ahead, since it wouldn't have changed today's result
 and needs the narrow scoping described above to avoid a regression on
 ordinary 1st-Edition-eligible cards from other sets.
 
-## Feature: Whatnot purchase costs folded into Suggested Bid only (sales tax + a per-card shipping constant) — BUILT AND VERIFIED LOCALLY, NOT YET DEPLOYED (2026-09-30)
+## Feature: Whatnot purchase costs folded into Suggested Bid only (sales tax + a per-card shipping constant) — BUILT, DEPLOYED FROM DISK VIA THE VERCEL CLI, PUSHED, AND LIVE-CONFIRMED (2026-09-30)
 
 **Request**: Suggested Bid was the margin-adjusted break-even and nothing
 else, so it silently ignored what Eric pays *on top of* a winning Whatnot
@@ -7686,13 +7686,76 @@ third-party fee-calculator blog).
    from one. Worth deciding on that basis rather than on an order-level
    average.
 
-### Status
+### Deploy — first byte-exact hash match in this project's history
 
-Built, `node --check` clean, verified locally as above. **Not deployed**
-— see the deploy blocker in CLAUDE.md's matching entry (the Vercel CLI is
-logged out in this session and the project has no `.vercel` link, so the
-from-disk CLI deploy path can't run without an interactive
-`vercel login`).
+Deployed from disk via the Vercel CLI (`npx vercel link` against
+`prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA` / team `leasedraftai`, then
+`npx vercel deploy`), not the MCP inline-content path.
+
+- Preview: `dpl_HPtVxsfyY3vkm8m4znEwgHaDfYWc` (`READY`). Live
+  `sourceHash` = `4ae2cc28e133fbb556b267d72d496b902522f04c` =
+  **exactly** `shasum api/identify.js` on disk.
+- Production: `dpl_JAsaAKCbUMoJJwArn8sRdSn7ymcL` (`READY`, target
+  production, aliased to `whatnot-pokemon-identify.vercel.app`), same
+  `sourceHash`.
+
+**This is the first deploy here where the deployed hash matches local
+byte-for-byte** — every earlier deploy carried an unresolvable gap from
+manual transcription. Preview access needed `npx vercel curl` (Vercel
+Authentication returns a 302 to plain curl).
+
+**`vercel promote` will not promote a preview deployment**: it refuses
+with "This deployment is not a production deployment and cannot be
+directly promoted. A new deployment will be built using your production
+environment." Consistent with this project's own env-vars-are-snapshotted
+-at-build-time precedent. `npx vercel deploy --prod` from the same
+unchanged disk state was used instead; the production `sourceHash`
+matches the preview's, so the code is provably identical even though the
+deployment ID differs.
+
+### Verified on the preview before promoting
+
+29 real condition rows across 5 real productIds (478136, 497604, 86838,
+42382, 114004), each independently recomputed from the documented formula
+(a deliberate second implementation, not the real function): **0
+break-even mismatches, 0 suggested-bid mismatches.** Coverage included
+all four cost bands (<=$10 fixed fee, <$20 shipping, $5.80 shipping, and
+2 rows landing in a tier-override band) and three sell-through tiers
+(Fast-flip, Normal, Slow). Through that same independent formula the four
+reference break-even values are confirmed unchanged: market $5 -> $3.81,
+$10 -> $7.93, $30 -> $19.97, $100 -> $79.08.
+
+### Live-confirmed on production
+
+| | Production before | Production after |
+|---|---|---|
+| `sourceHash` | `42c8abf6...` | `4ae2cc28...` (= local shasum) |
+| Break-even NM | $209.75 | $169.79 |
+| Suggested Bid NM (Slow) | $139.83 | $106.16 |
+
+(productId 114004, market $207.44 on both calls.) Full after-state:
+BE `{NM 169.79, LP 86.84, MP 51.67, HP 46.82, DMG 24.88}`, bid
+`{NM 106.16, LP 54.30, MP 32.31, HP 29.27, DMG 15.56}`, `pricingError:
+null`.
+
+Real end-to-end scan against production, using a real Pikachu XY95 photo
+from TCGplayer's own CDN: `found: true`, `cardName: "Pikachu"`,
+`setName: "XY Promos"`, `matchConfidence: "High"`, `visionProvider:
+"gemini"`, correct `tcgPlayerId: "114004"`, `timingMs: {gemini 1614,
+lookup 366, total 1980}` — inside the 1-3s target. `requestId
+689f1d35-dee4-4b66-b4ea-cdc6f83e091e`.
+
+**`get_runtime_errors` (1h): 4 groups, all self-inflicted, zero
+organic.** All four trace to exactly two requestIds (`9a7a39a2...`,
+`282b3c7a...`), both this session's own malformed verification calls,
+which sent `imageBase64` with a `data:image/jpeg;base64,` prefix the API
+correctly rejects — it wants RAW base64. This is the same benign pattern
+already closed on 2026-09-10 for `requestId=740a66cc`. Noting it plainly
+so it isn't re-investigated as a client bug later: a hand-built `curl`
+scan test must strip the `data:` prefix.
+
+Committed as `66fb6bf` (code) and `1d320ab` (docs), pushed to GitHub
+(`e4ff81c..1d320ab`, `main`).
 
 **Also found while checking production state, and material**: production
 is **not** running commit `13cc351` (the "market + $1.00" template and
