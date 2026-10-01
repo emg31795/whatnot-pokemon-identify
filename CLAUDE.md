@@ -2499,6 +2499,108 @@ checklist before reporting something as finished:
   `sourceHash`-vs-`shasum` check after any session that commits without
   deploying.
 
+- **Set-stamped / vintage reverse-holo pricing — RESEARCHED, one real
+  24x bug found, Option B BUILT (frontend only, uncommitted-to-remote,
+  NOT DEPLOYED), 2026-09-30.** Full trace in `docs/test-cases.md`'s
+  matching entry. Eric asked what it would take to price set-stamped
+  cards (the "Crystal Guardians" logo stamped in the artwork of EX
+  Crystal Guardians Treecko 67/100), believing TCGplayer/PPT don't price
+  them separately and PriceCharting does. **Both halves of that premise
+  are wrong**, and the research surfaced a worse, already-live bug.
+
+  **The stamp IS the Reverse Holofoil printing** — PPT has one record for
+  Treecko 67/100 (`tcgPlayerId: 90038`) with
+  `printingsAvailable: ["Normal", "Reverse Holofoil"]`, and TCGplayer's
+  own product image for that ID shows the same art with **no stamp**.
+  Both printings already come back in every `/api/price` response, fully
+  priced. **We just show the wrong one.** Three real end-to-end
+  production scans of the actual card photo returned the correct card at
+  High/High confidence and then priced it as **Normal: NM $1.18,
+  Suggested Bid $0.61** — when the real card is **Reverse Holofoil: NM
+  $34.27, Suggested Bid $14.74**. A **24x** miss on the bid, with **no
+  warning of any kind**, because `pickDefaultVariantKey` follows PPT's
+  `primaryPrinting` ("Normal" for 75/100 cards in that set).
+
+  **It's a vintage reverse-holo problem, not a stamp problem.** Median
+  Reverse Holofoil / Normal multiple from live PPT set pulls: Legendary
+  Collection **104.2x**, EX Deoxys 19.7x, EX Dragon Frontiers 15.3x, EX
+  Crystal Guardians 14.4x, **EX Power Keepers 14.2x (not stamped)**, EX
+  Ruby and Sapphire 9.3x (not stamped), vs. SM Base Set 2.3x and XY Base
+  Set 2.7x for modern sets. Any fix scoped only to the 7 set-logo-stamped
+  sets would miss Legendary Collection's 104x. **17% of 77 real scans**
+  in the last hour of Eric's live scanning were in the high-premium
+  vintage band (60% were WotC-era, which has no reverse holos at all and
+  is structurally unaffected) — **n=77 from one ~1-hour window, a
+  "recurring and material" signal, not a measured long-run rate.**
+
+  **Gemini's stamp read is a SCHEMA gap, not a vision limit**:
+  `stampType` returned `"none"` on 3/3 scans, because the enum has no
+  set-logo value and the prompt says to default to `"none"` for anything
+  unlisted. Asked directly, the Haiku model already in this stack read
+  `{"setLogoStampInArt": true, "stampText": "CRYSTAL GUARDIANS",
+  "confidence": "High"}` and correctly returned `false` on an unstamped
+  control — **but that's 2 flat, well-lit catalog scans, not live-stream
+  frames with glare**, so it shows the signal is readable in principle,
+  not that it's reliable on stream.
+
+  **DECIDED — never auto-flip the default printing on a vision read.**
+  Today's error direction is *underbidding* (Eric loses an auction, loses
+  no money). Auto-switching on a stamp read inverts that: one false
+  positive says bid $14.74 on a $1.18 card, which costs real money. This
+  project already ran this experiment — the 2026-08-26
+  `pickDefaultVariantKey` change that trusted `stampType` over
+  `primaryPrinting` was reverted the next day on a physically-confirmed
+  stamp false-negative (see that function's own REVERTED comment).
+  **The default stays driven by `primaryPrinting`; a vision signal may
+  inform a warning, never the default.**
+
+  **PriceCharting — NO.** $49/mo Legendary tier (the $6 tier has no API),
+  1 req/sec, and its ToS licenses data for **internal business purposes
+  only**: "Price Data cannot be used in any software, application, or
+  system that is accessible to third parties...without express written
+  permission." A private personal extension is arguably internal use but
+  it's a real gray area — and moot, since its $20.16 "ungraded" figure
+  blends conditions and is *worse* than TCGplayer's $34.27 per-condition
+  NM. We'd pay 5x the entire PPT bill for worse data we already have.
+
+  **eBay sold data — NO.** Marketplace Insights is Limited Release
+  (business approval, routinely declined for small projects), and eBay
+  put sold/completed listings behind a sign-in wall in July 2026.
+  Third-party scrapers are paid and/or against eBay's terms. Nothing was
+  scraped and no block was worked around in this research. PPT's own
+  `includeEbay` is graded-focused and can't tell printings apart, but its
+  **ungraded** bucket for this card reads median **$34.25** — matching
+  the Reverse Holofoil price, independently confirming $1.18 is wrong.
+  **Caveat: n=2 eBay sales, and only 3 TCGplayer NM reverse-holo sales in
+  3 months** — the direction is well-supported, the exact dollar figure
+  is not.
+
+  **Built (Option B), frontend only**: `extension/content.js` now renders
+  a neutral advisory when another available printing's NM market is
+  **>= 3x the selected printing's AND >= $5**, showing that printing's NM
+  market, its NM Suggested Bid, and its 3-month sold count so a thin
+  market is obvious. Wording tells Eric to check the card against the
+  printing options, deliberately **not** asserting the card is stamped.
+  It never changes the default printing, never calls the backend, adds no
+  latency and costs nothing per scan. `api/*` untouched, and
+  `extension/content.css` untouched (reuses existing classes), so **this
+  needs no Vercel deploy** — only a `chrome://extensions` reload.
+  **Committed locally and deliberately held unpushed, not deployed, and
+  not yet live-confirmed in the real panel.**
+
+  **Open items from this research, not built:**
+  1. **`stampNote`'s wording is factually wrong for these cards** — it
+     claims "our data source doesn't track pricing for stamped promos
+     separately from the standard printing," which is false for
+     set-stamped EX cards (it does, as Reverse Holofoil). **Not fixable
+     frontend-only** — the string is built in `api/identify.js` and
+     `content.js` only renders it verbatim. Fold into the next real
+     backend change to that file (there are already two other pending
+     comment/shipping-term corrections queued the same way).
+  2. **Option C, a `setLogoStamp` vision field**, deliberately deferred —
+     only worth building if B proves insufficient in real use, and only
+     ever to rank/strengthen the warning, never to flip the default.
+
 - **Hyphen-in-search-query fix (Moo-Moo Milk, Ho-Oh) — BUILT, DEPLOYED,
   PUSHED, AND LIVE-CONFIRMED, 2026-09-27** (commit `d1c185a`;
   `dpl_6Za1WkqaRJFLHFPjNkgDGYZH8tBR`, the corrected redeploy). PPT's

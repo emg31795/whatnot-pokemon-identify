@@ -790,6 +790,93 @@
       : "(real-time data from TCGplayer)";
   }
 
+  // ADDED 2026-09-30 (set-stamped / vintage reverse-holo research — see
+  // docs/test-cases.md and CLAUDE.md's matching entry): a real, live,
+  // silent 24x mispricing. Scanning a set-stamped EX Crystal Guardians
+  // Treecko 67/100 identifies the card perfectly (High/High) and then
+  // prices it as the "Normal" printing — NM $1.18, Suggested Bid $0.61 —
+  // when the stamped card in hand is the "Reverse Holofoil" printing at
+  // NM $34.27, Suggested Bid $14.74. Both printings are already in this
+  // same priceData, fully priced; the right answer was one dropdown click
+  // away with nothing on screen suggesting the click.
+  //
+  // This is NOT specific to stamped cards. Median Reverse Holofoil /
+  // Normal multiples measured from live PPT data: Legendary Collection
+  // 104.2x, EX Deoxys 19.7x, EX Crystal Guardians 14.4x, EX Power Keepers
+  // 14.2x (not a stamped set), vs. ~2.3-2.7x for modern sets. So the
+  // trigger below is deliberately price-shaped, not stamp-shaped or
+  // set-list-shaped — a static list of the 7 set-logo-stamped EX sets
+  // would have missed Legendary Collection's 104x entirely.
+  //
+  // DELIBERATELY ADVISORY ONLY — this never changes the selected printing
+  // and never touches the backend. Today's failure direction is
+  // UNDERbidding (Eric loses an auction, loses no money); auto-switching
+  // the default on a signal that can be wrong inverts that into
+  // OVERbidding real money on a $1 card. `pickDefaultVariantKey`
+  // (api/identify.js) already tried trusting a vision stamp read over
+  // PPT's `primaryPrinting` on 2026-08-26 and was reverted the next day
+  // on a confirmed stamp false-negative. The wording below is likewise
+  // neutral on purpose: it tells Eric to CHECK the card against the
+  // printing options, and never asserts the card is stamped or is any
+  // particular printing.
+  //
+  // Both thresholds must hold, per explicit instruction:
+  //   - the alternate printing's NM market is >= 3x the selected one's
+  //     (a ratio alone would fire on noise between two cheap printings)
+  //   - AND is at least $5 in absolute terms (so a $0.30 -> $1.20 jump,
+  //     real but not worth interrupting a 10-second auction for, stays
+  //     quiet)
+  // The 3-month sold count rides along next to the price specifically so
+  // a thin market is obvious at a glance — the Treecko reverse holo above
+  // is a genuine $34 card but on only 3 NM sales in 3 months, and that
+  // belongs on screen next to the number, not buried.
+  const ALT_PRINTING_MIN_MULTIPLE = 3;
+  const ALT_PRINTING_MIN_NM = 5;
+
+  function alternatePrintingAlertHtml(priceVariants, selectedKey) {
+    if (!priceVariants || !selectedKey) return "";
+    const selected = priceVariants[selectedKey];
+    const selectedNm = selected && selected.conditions ? selected.conditions.NM : null;
+    // No NM figure for the selected printing means there is no baseline to
+    // take a multiple against. Stay silent rather than guess — same
+    // "never show a number we can't stand behind" discipline as the rest
+    // of this panel.
+    if (selectedNm == null || selectedNm <= 0) return "";
+
+    let best = null;
+    for (const key of Object.keys(priceVariants)) {
+      if (key === selectedKey) continue;
+      const v = priceVariants[key];
+      const nm = v && v.conditions ? v.conditions.NM : null;
+      if (nm == null) continue;
+      if (nm < ALT_PRINTING_MIN_NM) continue;
+      if (nm < selectedNm * ALT_PRINTING_MIN_MULTIPLE) continue;
+      if (!best || nm > best.nm) best = { v: v, nm: nm };
+    }
+    if (!best) return "";
+
+    // Same three bid states as conditionRowsHtml, kept consistent on
+    // purpose so "(Bid: Skip)"/"(Bid: —)" mean exactly what they already
+    // mean everywhere else in this panel.
+    const bid = best.v.conditionsSuggestedBid ? best.v.conditionsSuggestedBid.NM : null;
+    const bidHtml =
+      bid == null
+        ? `<span class="wnpk-be">(Bid: —)</span>`
+        : bid <= 0
+        ? `<span class="wnpk-be wnpk-be-negative">(Bid: Skip)</span>`
+        : `<span class="wnpk-be">(Bid: $${bid.toFixed(2)})</span>`;
+
+    const sold = best.v.sellThrough ? best.v.sellThrough.totalSold : null;
+    const soldHtml =
+      sold == null
+        ? `<span class="wnpk-listing-count">· sold count unavailable</span>`
+        : `<span class="wnpk-listing-count">· ${sold} sold/3mo</span>`;
+
+    return `<div class="wnpk-warning">⚠ Another printing of this card is worth much more — <strong>${escapeHtml(
+      best.v.label
+    )}</strong>: NM $${best.nm.toFixed(2)} ${bidHtml} ${soldHtml}<br>Check the card against the PRINT VARIANT options below and switch if that's the one you're holding.</div>`;
+  }
+
   // The market-price line spells out the edition/finish inline (not just
   // in the badge above) so there is never a moment where the price on
   // screen and the label describing it can visually separate and go out
@@ -972,6 +1059,10 @@
 
     section.innerHTML = `
       ${pricingWarnings}
+      <div id="wnpk-alt-printing">${alternatePrintingAlertHtml(
+        priceData.priceVariants,
+        priceData.priceVariantUsed
+      )}</div>
       <div class="wnpk-market-price" id="wnpk-market-price">
         ${
           initialVariant
@@ -1003,6 +1094,7 @@
         const variant = priceData.priceVariants[select.value];
         if (!variant) return;
         $("#wnpk-market-price").innerHTML = marketPriceLine(variant, priceData.listingCount);
+        $("#wnpk-alt-printing").innerHTML = alternatePrintingAlertHtml(priceData.priceVariants, select.value);
         $("#wnpk-sell-through").innerHTML = sellThroughBadgeHtml(variant.sellThrough, variant.conditionsBreakEven);
         $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions, variant.conditionsSuggestedBid);
         const badge = $("#wnpk-edition-badge");

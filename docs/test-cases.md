@@ -8037,6 +8037,212 @@ immediately.
 
 ---
 
+## Research: pricing set-stamped cards (EX Crystal Guardians Treecko 67/100) — the premise was wrong, and the real bug is a 24x wrong default printing (2026-09-30)
+
+**Research only, READ-ONLY, no code changed in this pass.** Eric asked
+what it would take to price set-stamped cards (the "Crystal Guardians"
+logo stamped into the artwork of EX Crystal Guardians Treecko 67/100),
+believing TCGplayer/PPT have no separate price for them and PriceCharting
+does. Both halves of that premise turned out to be wrong, and the
+investigation surfaced a materially worse, already-live bug instead.
+
+### Headline
+
+**TCGplayer and PPT DO price the stamped printing separately, we already
+fetch it, and we show the wrong one by default.** Three real end-to-end
+scans of the actual card photo against live production returned:
+
+| | Shown today | Correct |
+|---|---|---|
+| Printing | Normal | Reverse Holofoil |
+| Market (NM) | **$1.18** | **$34.27** |
+| Suggested Bid (NM) | **$0.61** | **$14.74** |
+| Warning shown | *none* | — |
+
+Both printings come back in the same `/api/price` response with
+conditions, break-even and suggested bid already computed. The correct
+answer is one dropdown click away and nothing tells Eric to click it. He
+would be told to bid **$0.61 on a ~$34 card, at High/High confidence with
+no warning at all** — the exact confidently-wrong failure mode this
+project's design principle exists to prevent.
+
+### The stamp IS the Reverse Holofoil printing
+
+Verified rather than assumed. PPT has exactly one record for Treecko
+67/100 (`tcgPlayerId: 90038`) carrying
+`printingsAvailable: ["Normal", "Reverse Holofoil"]`; TCGplayer's own
+`infinite-api` price-history endpoint returns 10 SKUs across those two
+printings, with real sales on both (Normal 79 NM sold/3mo; Reverse
+Holofoil 3 NM sold/3mo). TCGplayer's own product image for 90038 is the
+same Treecko artwork with **no stamp** — and since there are only two
+printings, the stamped one must be the other. Two independent secondary
+sources confirm EX-era reverse holos carry the set logo inside the art
+box (elitefourum.com/t/ex-sets-reverse-holos/16005, and
+jabgames13.com/collections/ex-series-reverse-holo-stamped-cards).
+
+Seven EX-era sets print the set logo in the reverse-holo artwork: EX Team
+Rocket Returns, EX Deoxys, EX Emerald, EX Unseen Forces, EX Delta
+Species, EX Crystal Guardians, EX Dragon Frontiers (~40-50 reverse-holo
+cards each in PPT samples, roughly 300 cards sampled). **That list comes
+from a user-generated forum post, not an official source** — treat it as
+indicative, not authoritative.
+
+The other two stamp classes checked are already separate PPT records and
+need nothing: prerelease (`Raichu - 27/99 (Prerelease)`) and staff
+(`Raichu - 27/99 (Prerelease) [Staff]`, `Charizard - SM158 [Staff]`).
+
+### Scope: this is a vintage reverse-holo problem, not a stamp problem
+
+Median Reverse Holofoil / Normal NM market multiple, from live PPT set
+pulls (`setName=` queries, 50-100 cards each):
+
+| Set | Set-logo stamped? | Median multiple | Max |
+|---|---|---|---|
+| Legendary Collection | no | **104.2x** | — |
+| EX Deoxys | yes | 19.7x | — |
+| EX Dragon Frontiers | yes | 15.3x | 66.7x |
+| EX Crystal Guardians | yes | 14.4x | 57.5x |
+| **EX Power Keepers** | **no** | **14.2x** | 86.3x |
+| EX Ruby and Sapphire | no | 9.3x | 48.9x |
+| SM Base Set | n/a (modern) | 2.3x | — |
+| XY Base Set | n/a (modern) | 2.7x | — |
+
+The unstamped sets show the same premium, so **the stamp is only a
+convenient visual cue in 7 sets, not the cause**. Any fix scoped
+narrowly to stamped sets would miss Legendary Collection's 104x.
+
+### Frequency on Whatnot
+
+From the last hour of Eric's real production scanning, 77 scans that
+produced a matched candidate set name (this session's own 3 test scans
+removed): **17% vintage reverse-holo era** (e-Card / Legendary
+Collection / EX), 6% DP/Platinum era, **60% WotC era** (Base/Jungle/
+Fossil/Gym/Team Rocket — reverse holos do not exist in those sets, so
+they are structurally unaffected), 17% modern/other. Roughly 1 scan in 6
+sits in the high-premium band.
+
+**Sample-size caveat, stated plainly: n=77 scans from a single ~1-hour
+window.** That is one session's card mix, not a durable rate — Eric's set
+mix varies a lot by stream. Treat 17% as "recurring and material," not as
+a measured long-run frequency.
+
+### Gemini's stamp read — a schema gap, not a vision limit
+
+`stampType` came back **`"none"` on 3/3 live scans** of a card with an
+unmistakable CRYSTAL GUARDIANS stamp. That is not a vision failure: the
+`stampType` enum has no value for a set logo stamp, and `GEMINI_PROMPT`
+explicitly instructs the model to default to `"none"` for anything not in
+the listed enum.
+
+Asked directly, the Haiku model already in this stack reads it correctly:
+
+- the stamped card photo -> `{"setLogoStampInArt": true, "stampText": "CRYSTAL GUARDIANS", "confidence": "High"}`
+- TCGplayer's unstamped product image (negative control) -> `{"setLogoStampInArt": false, "stampText": null, "confidence": "High"}`
+
+**Caveat, stated plainly: that is 2 images, one each, both flat,
+well-lit, catalog-quality scans.** A live Whatnot frame is angled, moving
+and glare-prone, and a foil stamp sits exactly where holo glare lands.
+This says the signal is *readable in principle*, not that it is reliable
+on stream.
+
+### Why auto-flipping the default printing on a vision read is REJECTED
+
+The current failure direction is **underbidding** — Eric loses an
+auction and loses no money. Auto-switching the default printing on a
+positive stamp read inverts that: a single false positive tells him to
+bid **$14.74 on a $1.18 card**, which costs real money on a card that
+cannot be resold for it.
+
+This project has already run this exact experiment. A 2026-08-26 change
+to `pickDefaultVariantKey` overrode PPT's `primaryPrinting` based on
+Gemini's `stampType` read, and was reverted the very next day when a
+physically-confirmed 1st Edition card was read as `"none"` — a stamp
+false-negative, not a code error (see the REVERTED comment block in
+`pickDefaultVariantKey`, `api/identify.js`). The same trap applies here
+with the signs flipped.
+
+**Decision: the default printing stays driven by PPT's `primaryPrinting`.
+A vision signal may inform a warning, never the default.** The dropdown
+plus an explicit advisory remain the safety net.
+
+### Data-source decisions
+
+**PriceCharting — NO.** It does list the printings separately
+(`/game/pokemon-crystal-guardians/treecko-reverse-holo-67` vs
+`/treecko-67`), at $20.16 "ungraded" — which is *worse* for our purpose
+than TCGplayer's $34.27 NM, since their ungraded figure blends conditions
+and ours is per-condition. Access is API-only on the **Legendary tier at
+$49/mo** (the $6 Collector tier has no API), token auth, hard-capped at
+**1 request/second**. Their terms of service state Price Data "cannot be
+used in any software, application, or system that is accessible to third
+parties...without express written permission," and license API/CSV data
+for **internal business purposes only**. A private, undistributed
+personal extension is arguably internal use, but it is a genuine gray
+area — and moot, because we would be paying $49/mo (5x the entire current
+PPT bill) for a worse version of data we already fetch for free.
+
+**eBay sold data — NO.** The official Marketplace Insights API (sold
+data) is a Limited Release product requiring eBay business approval and
+is routinely declined for small projects; eBay additionally put sold/
+completed listings behind a sign-in wall in July 2026, breaking
+unauthenticated access. Third-party sold-listing APIs are paid and/or
+operate against eBay's terms. Not pursued, and no scraping or block
+workaround was attempted at any point in this research.
+
+**PPT's own `includeEbay` — not useful here, but a useful corroboration.**
+It costs 2x credits and is graded-focused (`salesByGrade`: psa9/psa10/
+cgc9/cgc10/psa8/ungraded), and it cannot distinguish Normal from Reverse
+Holofoil. But its **ungraded** bucket for Treecko 67/100 reads median
+**$34.25** (min $23.50, max $45) — matching the Reverse Holofoil price,
+not the $1.18 Normal, and independently confirming $1.18 is simply the
+wrong number for a stamped copy. **Caveat: n=2 sales.** Combined with
+TCGplayer's own 3 NM reverse-holo sales in 3 months, every direct
+measurement of this specific card's real-world value rests on a very thin
+sample — the *direction* is well-supported, the exact figure is not.
+
+### Secondary finding: `stampNote`'s wording is factually wrong for these cards
+
+`api/identify.js` builds `stampNote` as `...our data source doesn't track
+pricing for stamped promos separately from the standard printing, so the
+price shown likely understates its real value.` For set-stamped EX cards
+that claim is false — the data source *does* track it separately, as the
+Reverse Holofoil printing. The note also never fires on these cards
+today anyway, because the read is `"none"`. Logged as an open item;
+**not** fixable frontend-only, since the string is produced server-side
+and `extension/content.js` only renders it verbatim.
+
+### Options considered
+
+| Option | Effort | Cost/scan | Risk | Verdict |
+|---|---|---|---|---|
+| A. Keep current warning | 0 | 0 | — | No — it never fires here, and its text is wrong when it does |
+| **B. Flag the high-premium alternate printing (frontend only)** | small | **0** | **none** | **Recommended, BUILT (see the entry below)** |
+| C. Add a `setLogoStamp` vision field | medium | ~0 | false positives on glare | Defer — only if B proves insufficient |
+| D. PriceCharting | medium | $49/mo | ToS gray area | No |
+| E. eBay sold data | large | varies | not permitted / no access | No |
+
+Option B needs no new data source, no backend change, no extra API call
+and no added latency: `renderPriceSection` already holds every variant's
+full `conditions` / `conditionsSuggestedBid` / `sellThrough`. It simply
+stops hiding a number already computed, and it covers Legendary
+Collection and every other era, not just the 7 stamped sets.
+
+### PPT credits used by this research
+
+Roughly **1,500 credits** across ~23 calls (PPT bills 1 credit per card
+returned: six 100-card `setName=` set pulls, seven 50-card pulls counting
+the stamped sets, several 30-60 card searches, and one 10-card
+`includeEbay=true` call at 2x). That is **~7.5% of the 20,000 daily
+budget**. Cross-checked rather than just tallied: the account showed
+14,028 of 20,000 remaining at the end of this session, i.e. 5,972
+consumed for the day — consistent with ~1,500 from this research plus
+~4,700 from Eric's own ~77 live scans in the same window (~61 credits
+each). One deliberate per-minute rate-limit (429) was hit and waited out
+— expected, not an incident. An earlier draft of this entry estimated
+1,100-1,200; that undercounted the per-set pulls and is corrected here.
+
+---
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
