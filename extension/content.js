@@ -843,20 +843,55 @@
   // uncertain match. So the banner now only speaks when the match itself
   // is solid.
   //
-  // `matchConfidence !== "High"` is a COMPLETE gate for both "not High
-  // confidence" and "came from a multi-candidate tie", verified against
-  // api/identify.js rather than assumed: `tieCount >= 2` always forces
-  // `matchConfidence = "Low"`, and every other branch that sets an
-  // `ambiguousNote` caps High->Medium first. So no new response field
-  // was needed — `tieCount` itself is not exposed and does not need to
-  // be. Fails CLOSED: a missing/unknown matchConfidence suppresses the
+  // GATE, as narrowed 2026-10-02 (Corphish 062/110, EX Holon Phantoms):
+  // the first version of this gate required `matchConfidence === "High"`,
+  // which over-suppressed. A real scan matched Corphish 62/110 correctly
+  // — identity confirmed, the second model's independent read of the
+  // number matched that printing EXACTLY — but landed at Medium because
+  // the primary read said "65/110". The banner was hidden, so the panel
+  // showed Normal $0.26 and never mentioned the Reverse Holofoil at
+  // $18.32 (Bid $7.02) that Eric was actually holding. That is the same
+  // size of miss the banner exists to prevent, caused by the gate.
+  //
+  // The gate now suppresses ONLY on Low. That keeps the case this gate
+  // was built for — the Burger King Chimchar same-number-different-
+  // product tie — fully covered, because `tieCount >= 2` always forces
+  // `matchConfidence = "Low"` (verified in api/identify.js, not assumed).
+  //
+  // RESIDUAL RISK, recorded honestly rather than implied away. There are
+  // five paths that produce Medium, and they are NOT equally safe:
+  //   CONFIRMED IDENTITY, imperfect read (safe to show):
+  //     - legacy-model number rescue: a second model independently read a
+  //       number matching this printing EXACTLY. This is the Corphish case.
+  //     - name-filter rescued by number: exact number match; only the NAME
+  //       is unverified (mistranslation class).
+  //   GENUINE UNCERTAINTY ABOUT WHICH PRODUCT (less safe):
+  //     - score-based Medium from confidenceForScore (5 <= score < 10):
+  //       matched on weak signals, no exact number.
+  //     - null-number tie narrowed by setName: explicitly "not confirmed
+  //       by card number".
+  //     - weak number match: numerator coincides across different
+  //       numbering schemes; digits may be coincidental.
+  // The response exposes only `matchConfidence` and the free-text
+  // `ambiguousNote`, so the frontend CANNOT tell these apart. Matching on
+  // the note's English wording would be brittle and is deliberately not
+  // done. Closing this properly needs a machine-readable reason code on
+  // the identify response (e.g. `matchBasis: "legacy-number-rescue" |
+  // "setname-narrowed" | "weak-number" | "name-rescued-by-number" |
+  // "score-only"`), which is a backend change and is NOT built here.
+  // Until then the banner is advisory, renders directly below the
+  // ambiguousNote warning that describes the uncertainty, and tells the
+  // reader to check the physical card before switching.
+  //
+  // Fails CLOSED: a missing/unknown matchConfidence suppresses the
   // banner, since this is an assertion we should only make when we can
   // positively confirm the match.
   const ALT_PRINTING_MIN_MULTIPLE = 3;
   const ALT_PRINTING_MIN_NM = 5;
+  const ALT_PRINTING_ALLOWED_CONFIDENCE = ["High", "Medium"];
 
   function alternatePrintingAlertHtml(priceVariants, selectedKey, matchConfidence) {
-    if (matchConfidence !== "High") return "";
+    if (!ALT_PRINTING_ALLOWED_CONFIDENCE.includes(matchConfidence)) return "";
     if (!priceVariants || !selectedKey) return "";
     const selected = priceVariants[selectedKey];
     const selectedNm = selected && selected.conditions ? selected.conditions.NM : null;

@@ -2637,14 +2637,37 @@ checklist before reporting something as finished:
   but that is the exposure **ceiling**, not the promo-collision rate
   (Shadowless pairs and pattern variants are in that 27% too).
 
-  **Containment BUILT (frontend only)**: the alternate-printing banner
-  is now suppressed whenever `matchConfidence !== "High"`. Verified
-  mechanically that this is a complete gate for both "not High" and
-  "came from a multi-candidate tie" — `tieCount >= 2` always forces
-  `matchConfidence = "Low"`, and every `ambiguousNote` branch caps
-  High->Medium, so **no new response field was needed** (`tieCount`
-  itself is not exposed and did not need to be). `api/*` untouched, so
-  no deploy — a `chrome://extensions` reload only.
+  **Containment BUILT (frontend only), then NARROWED 2026-10-02 — see
+  the Corphish note below for the current rule.** The first version
+  suppressed the alternate-printing banner whenever `matchConfidence !==
+  "High"`. That **over-suppressed**: a real Corphish 62/110 (EX Holon
+  Phantoms) scan was an identity-confirmed match at Medium (the second
+  model's independent read of the number matched that printing exactly)
+  and the banner was hidden, so the panel showed Normal $0.26 and never
+  surfaced the Reverse Holofoil at **$18.32 (Bid $7.02)** that Eric was
+  actually holding. **Current rule: suppress only on `Low`.** That still
+  fully covers the Burger King case this gate was built for, because
+  `tieCount >= 2` always forces `matchConfidence = "Low"` (verified in
+  `api/identify.js`, not assumed). `api/*` untouched, so no deploy — a
+  `chrome://extensions` reload only.
+
+  **Residual risk, and the one field that would close it.** Five paths
+  produce `Medium` and they are not equally safe. **Identity confirmed,
+  imperfect read** (safe): the legacy-model number rescue (exact number
+  match from a second model — the Corphish case) and the name-filter
+  rescue by exact number (only the NAME is unverified). **Genuine
+  uncertainty about which product** (less safe): score-based Medium from
+  `confidenceForScore` (5 <= score < 10), the null-number tie narrowed by
+  setName ("not confirmed by card number"), and a weak number match
+  (digits coincide across different numbering schemes). The response
+  exposes only `matchConfidence` and the free-text `ambiguousNote`, so
+  **the frontend cannot tell these apart**, and matching on the note's
+  English wording would be brittle — deliberately not done. Closing this
+  properly needs a machine-readable reason code on the identify response
+  (e.g. `matchBasis: "legacy-number-rescue" | "setname-narrowed" |
+  "weak-number" | "name-rescued-by-number" | "score-only"`), a backend
+  change that is **NOT built**. Until then the banner stays advisory and
+  renders directly below the `ambiguousNote` describing the uncertainty.
 
   **NOT built, design proposal only**: surfacing the tied *products*
   with their prices ("Possible matches"). See the proposal in
