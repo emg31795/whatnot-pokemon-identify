@@ -2168,6 +2168,24 @@ with false certainty. This is deliberately closer to pallet.trade's own
 
 ### Before you deploy — checklist (follow every step, every time)
 
+> **CLI INVOCATION — `npx vercel deploy` NEEDS `--scope leasedraftai`.**
+> Without it the CLI returns a bare `{"status":"error","reason":
+> "deploy_failed","message":"Not authorized"}` and nothing is built.
+> This is NOT an expired login: `npx vercel whoami` returns `emg31795`
+> and `npx vercel teams ls` / `npx vercel project ls --scope
+> leasedraftai` both succeed — the authenticated personal account simply
+> does not resolve the team-owned project without the explicit scope,
+> even though `.vercel/project.json` carries the right `orgId`
+> (`team_DZEpR5n7heCyZsNFjxZmxUP1`). Confirmed 2026-10-02 after the CLI
+> was re-fetched fresh by npx (62.1.0). Use it on **every** CLI
+> subcommand that touches the project:
+> ```
+> npx vercel deploy --yes --scope leasedraftai            # preview
+> npx vercel deploy --prod --yes --scope leasedraftai     # production
+> npx vercel inspect <url> --scope leasedraftai
+> npx vercel curl <preview-url>/api/identify --scope leasedraftai
+> ```
+
 This project has had **three real production incidents** and **one
 severe multi-hour stall** from rushing this exact step. Do not skip any
 of these:
@@ -2477,7 +2495,10 @@ checklist before reporting something as finished:
   `dpl_HPtVxsfyY3vkm8m4znEwgHaDfYWc` and
   `dpl_JAsaAKCbUMoJJwArn8sRdSn7ymcL`, verified to share one
   `sourceHash`), and a preview URL needs `npx vercel curl` because
-  Vercel Authentication 302s a plain curl.
+  Vercel Authentication 302s a plain curl. **A third note was added
+  2026-10-02: every CLI subcommand needs `--scope leasedraftai` or it
+  fails with a bare "Not authorized" — see the box at the top of
+  "Before you deploy" above.**
 
   **Live-confirmed on production**: a real scan of a real Pikachu XY95
   photo returned `cardName: "Pikachu"`, `setName: "XY Promos"`, High
@@ -2498,6 +2519,64 @@ checklist before reporting something as finished:
   is why the production numbers above moved twice at once; worth a quick
   `sourceHash`-vs-`shasum` check after any session that commits without
   deploying.
+
+- **`ANTHROPIC_API_KEY` rotated and redeployed to pick it up —
+  2026-10-02.** Eric rotated the key in Vercel's dashboard (Production)
+  and updated `.env.local` himself; **no key value was ever shown in
+  chat, printed, logged or committed, and the old key was deliberately
+  left in place** for him to revoke separately after confirmation.
+  Because Vercel snapshots env vars at build time (this project's own
+  documented behavior — same reason the Haiku and Flash-Lite shadow
+  tests each needed a redeploy), a rebuild was required for the new
+  value to take effect.
+
+  **Deployed from disk via the CLI, zero code change.** Preview
+  `dpl_6m5PF26cXqSW9EdW8PhmMXzXmDNG`, production
+  **`dpl_DhY7ZAQyJzd1cfR1U3wVFBJ7B3n6`** (`Ready`, target production,
+  aliased to `whatnot-pokemon-identify.vercel.app`). Both report
+  `sourceHash: 4ae2cc28e133fbb556b267d72d496b902522f04c`, **identical to
+  `shasum api/identify.js` and to what production was already serving** —
+  so this was a pure env-var pickup, not a code change. `.vercelignore`
+  excludes `.env*`, so nothing secret was uploaded.
+
+  **Which paths this affects, confirmed by reading the code rather than
+  assumed**: exactly one Anthropic call site, `identifyWithHaiku()` ->
+  `POST https://api.anthropic.com/v1/messages` (`api/identify.js`), fired
+  on every `/api/identify` request in parallel with Gemini, and consumed
+  in only two places — the active fallback (awaited **only** if Gemini
+  rejects) and the `[haiku-shadow-test]` logger (fire-and-forget via
+  `waitUntil`). **`api/price.js` and `api/flag.js` never call Anthropic**,
+  so pricing is unaffected by the key either way. A dead key would leave
+  Gemini-success scans (~94-96%) completing and pricing **identically**
+  — the rejection is caught inside `runHaikuShadowTest`'s own try/catch,
+  never reaches the response, and adds no latency because the promise is
+  never awaited on that path (and cannot become an unhandled rejection:
+  the handler is attached under the same `anthropicKey` condition that
+  creates the promise). Only a scan where Gemini ALSO fails degrades, to
+  the honest "both the primary and fallback AI failed" message — i.e.
+  exactly the pre-2026-09-03 behavior.
+
+  **Verified live, not just deployed**: a real end-to-end scan (Pikachu
+  XY95 from TCGplayer's CDN) returned the correct card,
+  `tcgPlayerId: "114004"`, High confidence, `timingMs.total: 2154`ms
+  (inside the 1-3s target), and `/api/price` returned
+  `conditionsBreakEven.NM: 169.79` / `conditionsSuggestedBid.NM: 106.16`
+  — the exact figures documented for this card, confirming the pricing
+  model is intact. **The rotated key is confirmed working by that
+  request's own `[haiku-shadow-test]` line**, which shows a genuine
+  successful Anthropic response with real billed usage
+  (`input_tokens: 2151`, `output_tokens: 91`, `service_tier: "standard"`,
+  `haikuMs: 2030`, ~$0.0026) and a read agreeing with Gemini on every
+  compared field except `subtype`. `get_runtime_errors` (1h): none.
+  Error/warning/fatal logs on the new deployment: none. Searches for
+  `x-api-key`: no hits.
+
+  **Honestly scoped limitation**: this verified the key through the
+  shadow-test call, which is the *same* `identifyWithHaiku()` promise the
+  fallback awaits — but the **fallback branch itself was not exercised**,
+  because that requires Gemini to actually fail and cannot be forced.
+  Worth normal continued log-watching for `visionProvider:
+  "haiku-fallback"` rather than a dedicated follow-up test.
 
 - **Burger King Promos Chimchar priced as the base card — a same-number
   tie across four DIFFERENT PRODUCTS, and a CORRECTION to yesterday's
