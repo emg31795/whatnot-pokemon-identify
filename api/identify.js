@@ -120,6 +120,16 @@ const crypto = require("crypto");
 // OUTPUT_USD_PER_1M comment below for the matching pricing-constant swap.
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const GEMINI_TIMEOUT_MS = 5000;
+// ADDED 2026-10-02: hard cap on how long the setName-scoped search rescue
+// will wait for the legacy shadow read just to borrow its `setName` as a
+// hint. The legacy call is fired in parallel with the primary at the top
+// of the handler and real production logs show it finishing only ~100-250ms
+// after it (primary 1519-1774ms vs legacy 1572-1991ms), so this almost
+// never bites — but it is bounded by GEMINI_TIMEOUT_MS, and a measured
+// worst case added +2161ms to a weak scan, which would blow the 1-3s
+// target on its own. Past this cap the hint is simply treated as absent
+// and the scan falls through to existing behavior.
+const LEGACY_SETNAME_HINT_TIMEOUT_MS = 500;
 const CARDDB_TIMEOUT_MS = 2500;
 const CARDDB_RETRY_TIMEOUT_MS = 1200;
 
@@ -2734,14 +2744,31 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
       let setNameHint = read.setName || null;
       setNameSearchHintSource = setNameHint ? "primary" : null;
       if (!setNameHint && legacyReadPromise) {
+        // Capped race, not a bare await — see LEGACY_SETNAME_HINT_TIMEOUT_MS.
+        // The .catch here is what keeps a rejected legacy read from becoming
+        // an unhandled rejection; the real number-rescue path below has its
+        // own try/catch and is unaffected by this derived promise. The timer
+        // is cleared either way so a resolved race never holds the function
+        // open waiting on it.
+        let hintTimer = null;
         try {
-          const legacyRead = await legacyReadPromise;
-          if (legacyRead && legacyRead.found && legacyRead.setName) {
+          const timeoutPromise = new Promise((resolve) => {
+            hintTimer = setTimeout(() => resolve({ __hintTimedOut: true }), LEGACY_SETNAME_HINT_TIMEOUT_MS);
+          });
+          const legacyRead = await Promise.race([legacyReadPromise.catch(() => null), timeoutPromise]);
+          if (legacyRead && legacyRead.__hintTimedOut) {
+            console.log(
+              `[requestId=${requestId}]`,
+              `[lookup] legacy setName hint not ready within ${LEGACY_SETNAME_HINT_TIMEOUT_MS}ms — continuing without it`
+            );
+          } else if (legacyRead && legacyRead.found && legacyRead.setName) {
             setNameHint = legacyRead.setName;
             setNameSearchHintSource = "legacy-shadow";
           }
         } catch (e) {
           console.error(`[requestId=${requestId}]`, "[lookup] legacy setName hint unavailable (treating as absent):", e && e.message);
+        } finally {
+          if (hintTimer) clearTimeout(hintTimer);
         }
       }
 
