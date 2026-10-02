@@ -1422,6 +1422,12 @@ function pickBestCandidate(candidates, read, logPrefix) {
   const pickPool = nonOddityTop.length ? nonOddityTop : topScorers;
   const best = pickPool.length ? pickPool[0].candidate : null;
 
+  // ADDED (2026-10-02): log WHICH candidates are tied, not just how many.
+  // Without this a tie cannot be reconstructed after the fact — proved on
+  // 2026-10-01, when re-querying PPT failed to reproduce the original pool
+  // and 0 of 14 real ties from a live session were recoverable. The ids
+  // are already in hand here; this is pure logging, no behavior change.
+  const tiedIdsForLog = topScorers.map((s) => s.candidate && s.candidate.tcgPlayerId).filter(Boolean);
   console.log(
     `${logPrefix} best=`,
     best ? { name: best.name, number: best.number, hp: best.hp, setName: best.setName } : null,
@@ -1429,6 +1435,8 @@ function pickBestCandidate(candidates, read, logPrefix) {
     bestScore,
     "tieCount=",
     tieCount,
+    "tiedIds=",
+    tiedIdsForLog.join(","),
     "read=",
     { cardName: read.cardName, cardNumber: read.cardNumber, hp: read.hp, subtype: read.subtype, setName: read.setName, attackName: read.attackName, attackNameEnglish: read.attackNameEnglish }
   );
@@ -1626,6 +1634,29 @@ const PPT_BASE_URL = process.env.PPT_BASE_URL || "https://www.pokemonpricetracke
 // legitimately contain a hyphen as part of their format (e.g.
 // "308/S-P", "051/PCG-P") and space-separating those was never tested
 // or needed.
+// ADDED 2026-10-02 (Southern Islands Mew, Options 1+2): set-name
+// comparison used ONLY by the setName-scoped search rescue in
+// lookupCardPPT. Folds case, punctuation and "&"/"and" so a read of
+// "Diamond & Pearl" compares equal to PPT's "Diamond and Pearl" and
+// "Southern Islands" survives whatever spacing a model emits.
+//
+// DELIBERATELY NOT wired into scoreCandidate's `set` signal. Per the
+// Burger King Chimchar entry in CLAUDE.md, making that comparison
+// succeed in isolation would hand the BASE card +3 while a promo
+// reprint sharing the number gets nothing, collapsing an honest tie
+// into a confident wrong answer. That change is blocked until the
+// tie-surfacing work lands.
+function normalizeSetNameForMatch(name) {
+  return String(name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
 function normalizeNameForSearchQuery(name) {
   return String(name || "")
     .replace(/-/g, " ")
@@ -2625,6 +2656,156 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     }
   }
 
+  // ADDED 2026-10-02 (Southern Islands Mew 01/18, $624 — see
+  // docs/test-cases.md): OPTIONS 1 + 2. Ten consecutive scans failed on a
+  // $624 card because its PPT record was NEVER RETRIEVED, not mis-scored.
+  // Every search above is keyed on card NAME, and `search=Mew&limit=30` at
+  // offsets 0/30/60 does not contain tcgPlayerId 46466 anywhere in the
+  // first 90 results — the Mew catalog crowds it out. Page 2 and the
+  // combined name+number fallback cannot reach it either (the models never
+  // read the real number, 1/18), and the legacy number rescue only searches
+  // the already-fetched pool rather than re-querying.
+  //
+  // But the answer was already in the data: the legacy shadow model read
+  // `setName: "Southern Islands"` on several of those scans while the
+  // primary read it as null every time, and `search="Mew Southern Islands"`
+  // returns EXACTLY ONE result — the correct card. So:
+  //   OPTION 2: take the set name from the primary read if present, else
+  //     from the legacy shadow read (already in flight for the number
+  //     rescue — no new model call, no new cost). It is a HINT, never a
+  //     fact: it only chooses a query and must then survive the exact-match
+  //     rules below.
+  //   OPTION 1: one extra PPT search, `"<cardName> <setName>"`, accepted
+  //     only under strict rules.
+  //
+  // Acceptance is deliberately strict because PPT returns unrelated FILLER
+  // results (not an empty array) for multi-word queries that match nothing
+  // — documented in test #63. A nonzero result count proves nothing. A
+  // candidate qualifies only if ALL hold:
+  //   - its name passes the same name filter used everywhere else;
+  //   - its setName equals the read set name after normalization;
+  //   - if a number was read AND parses, the candidate's number matches it.
+  // EXACTLY ONE qualifier is accepted. Several or none -> do nothing at
+  // all, existing behavior. Confidence is capped at Medium with an explicit
+  // disclosure, same honesty bar as every other rescue path here.
+  //
+  // Scope guards, so this can never make an already-good answer worse:
+  //   - never runs when the current best already has a confirmed exact
+  //     number match (that path is strictly better evidence);
+  //   - never runs when the read supplied no usable set name;
+  //   - never replaces a High-confidence normal-path match, because it
+  //     only runs when no number-confirmed best exists and it caps at
+  //     Medium.
+  //
+  // NOTE on "&" vs "and": normalizeSetNameForMatch folds "&" to "and" so
+  // "EX Team Magma vs Team Aqua" style names and "Diamond & Pearl" vs
+  // "Diamond and Pearl" compare equal. This is used ONLY for the
+  // acceptance check in this block. It deliberately does NOT touch
+  // scoreCandidate's `set` signal — per the Burger King Chimchar entry in
+  // CLAUDE.md, fixing that comparison in isolation would make the BASE
+  // card win more firmly and bury a promo reprint further.
+  let setNameSearchRescued = false;
+  let setNameSearchHintSource = null;
+  let setNameSearchHintValue = null;
+  // WEAKNESS GATE (added 2026-10-02 after review): the first draft of this
+  // block ran on any scan whose best match was not number-confirmed, which
+  // silently included scans that had already resolved WELL on a null
+  // cardNumber — the real Meditite 56/100 scan is exactly that shape
+  // (cardNumber null, bestScore 10 = hp 6 + attackName 4, tieCount 1,
+  // Match: High). Those scans would have paid an extra PPT call, an extra
+  // ~30 credits, the latency of awaiting legacyReadPromise, and risked
+  // having a perfectly good High match replaced by a Medium one. The
+  // comment claimed "never replaces a High-confidence normal-path match";
+  // the code did not enforce it. This does.
+  //
+  // Only genuinely weak results qualify: nothing matched at all, the score
+  // did not reach HIGH_THRESHOLD, or the field is tied. Evaluated BEFORE
+  // the legacyReadPromise await below, so a strong scan does zero extra
+  // work and takes zero extra latency.
+  //
+  // `numberAlreadyConfirmed` is kept as a second, redundant guard — any
+  // exact or weak number match scores at least 14, which already clears
+  // HIGH_THRESHOLD — because it states the intent directly and costs
+  // nothing.
+  const resultIsWeak = !best || bestScore < HIGH_THRESHOLD || tieCount >= 2;
+  if (!setNameSearchRescued && resultIsWeak) {
+    const numberAlreadyConfirmed = !!(read.cardNumber && best && numbersMatch(read.cardNumber, best.number).match);
+    if (!numberAlreadyConfirmed) {
+      let setNameHint = read.setName || null;
+      setNameSearchHintSource = setNameHint ? "primary" : null;
+      if (!setNameHint && legacyReadPromise) {
+        try {
+          const legacyRead = await legacyReadPromise;
+          if (legacyRead && legacyRead.found && legacyRead.setName) {
+            setNameHint = legacyRead.setName;
+            setNameSearchHintSource = "legacy-shadow";
+          }
+        } catch (e) {
+          console.error(`[requestId=${requestId}]`, "[lookup] legacy setName hint unavailable (treating as absent):", e && e.message);
+        }
+      }
+
+      if (setNameHint) {
+        const setQuery = `${searchCardName} ${normalizeNameForSearchQuery(setNameHint)}`;
+        console.log(
+          `[requestId=${requestId}]`,
+          `[lookup] no number-confirmed match — trying setName-scoped search= "${setQuery}" (setName hint from ${setNameSearchHintSource})`
+        );
+        const setResult = await fetchPokemonPriceTracker(setQuery, { language: read.language });
+        if (setResult && setResult.error === "rate-limited") {
+          return { error: "rate-limited", retryAfter: setResult.retryAfter, isDailyLimit: setResult.isDailyLimit };
+        }
+        const setList = setResult
+          ? Array.isArray(setResult.data)
+            ? setResult.data
+            : Array.isArray(setResult)
+            ? setResult
+            : []
+          : [];
+        console.log(`[requestId=${requestId}]`, "[lookup] setName-scoped search raw candidate count=", setList.length);
+
+        const wantedSet = normalizeSetNameForMatch(setNameHint);
+        const readNumberParsed = read.cardNumber ? normalizeNumber(read.cardNumber) : null;
+        const qualifiers = setList
+          .filter((c) => normalizeNameForMatch(c.name).includes(wantedName))
+          .filter((c) => normalizeSetNameForMatch(c.setName) === wantedSet)
+          .filter((c) => {
+            if (!readNumberParsed) return true;
+            return numbersMatch(read.cardNumber, c.cardNumber).match;
+          });
+
+        const distinctQualifiers = [];
+        const seenQualifierKeys = new Set();
+        for (const q of qualifiers) {
+          const key = candidateDedupKey(normalizePptCard(q));
+          if (seenQualifierKeys.has(key)) continue;
+          seenQualifierKeys.add(key);
+          distinctQualifiers.push(q);
+        }
+
+        if (distinctQualifiers.length === 1) {
+          const accepted = normalizePptCard(distinctQualifiers[0]);
+          console.log(
+            `[requestId=${requestId}]`,
+            `[lookup] SETNAME SEARCH RESCUE: accepted ${accepted.name} ${accepted.number} (${accepted.setName}, tcgPlayerId=${accepted.tcgPlayerId}) via setName hint "${setNameHint}" from ${setNameSearchHintSource}`
+          );
+          best = accepted;
+          setNameSearchHintValue = setNameHint;
+          bestScore = Math.max(bestScore, MATCH_FLOOR);
+          tieCount = 1;
+          bestDetail = null;
+          tiedCandidates = [accepted];
+          setNameSearchRescued = true;
+        } else {
+          console.log(
+            `[requestId=${requestId}]`,
+            `[lookup] setName-scoped search did not resolve to exactly one qualifying candidate (${distinctQualifiers.length} qualified) — keeping prior behavior`
+          );
+        }
+      }
+    }
+  }
+
   if (!best) return { notFound: true };
 
   // FIX (2026-09-26, Gemini read-consistency investigation — null
@@ -2673,6 +2854,15 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
 
   let matchConfidence = confidenceForScore(bestScore);
   let ambiguousNote = null;
+  // ADDED 2026-10-02 (queued item b): a machine-readable companion to
+  // `ambiguousNote`. The note's English text is the only signal clients
+  // have today, which makes anything downstream that needs to tell these
+  // paths apart brittle — notably the extension's alternate-printing
+  // banner gate, which currently has to treat every Medium alike even
+  // though some Mediums are identity-confirmed and others are genuine
+  // product uncertainty. Set alongside each path below; returned in the
+  // response. No frontend change ships with this.
+  let matchBasis = "score-only";
 
   // Companion to the narrowing rescue above: when it fully resolved the tie
   // to a single candidate, the generic `tieCount >= 2` disclosure below
@@ -2682,6 +2872,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // same honesty bar as every other rescue path in this function.
   if (nullNumberTieNarrowedToOne) {
     matchConfidence = matchConfidence === "High" ? "Medium" : matchConfidence;
+    matchBasis = "setname-narrowed";
     ambiguousNote =
       `The card number wasn't legible this scan, so this match was narrowed down using the set name that was read ("${read.setName}") instead of the number — it's our best guess based on set alone, not confirmed by card number. Verify the exact printing before trusting this match or price.`;
     console.log(`[requestId=${requestId}]`, `[lookup] NULL-NUMBER TIE RESOLVED VIA SET NAME: setName="${read.setName}" picked best=${best.name} ${best.number}`);
@@ -2759,6 +2950,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
               if (legacyMatch) {
                 best = legacyMatch;
                 matchConfidence = "Medium";
+                matchBasis = "legacy-number-rescue";
                 ambiguousNote =
                   `The card number we read ("${read.cardNumber}") didn't match anything in our database, but a second AI model's independent read of the same card ("${legacyRead.cardNumber}") matched this printing exactly — using that as a cross-check rescue. This isn't a fully confirmed read; verify the exact printing before trusting this price.`;
                 legacyRescued = true;
@@ -2824,7 +3016,22 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         }
       }
     }
-  } else if (!read.cardNumber) {
+  } else if (!read.cardNumber && !setNameSearchRescued) {
+    // EXCLUSION ADDED 2026-10-02 (Southern Islands Mew): a setName-search
+    // rescue is deliberately exempt from this floor. The floor exists for
+    // "we picked a candidate out of a broad name-search pool on one
+    // coincidental weak signal" — but a setName-search rescue is the
+    // opposite situation: the candidate was located by a targeted
+    // `"<name> <setName>"` query and then had to be the EXACTLY ONE row
+    // that passed the name filter, an exact normalized set-name equality
+    // check, and the number check. Without this exclusion the Mew case
+    // resolves correctly to 46466 and is then thrown away by a signal
+    // count of 0 (the rescue sets bestDetail to null, since the candidate
+    // was never scored against the read), which is precisely the $624
+    // miss this change exists to fix. The rescue already caps confidence
+    // at Medium and carries its own disclosure, so the honesty bar is
+    // still met.
+    //
     // FIX (2026-09-27, live scan — Lapras "Start Deck 100" false positive):
     // the weak-signal floor directly above only ever ran when
     // read.cardNumber was PRESENT but matched no candidate — a read.cardNumber
@@ -2889,8 +3096,29 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // here the number match is exact and trustworthy, but the name is
   // outright unverified, which is unusual enough to always disclose
   // regardless of how high the underlying score is.
+  if (!ambiguousNote && setNameSearchRescued) {
+    // Set outright rather than "cap at Medium from whatever the score
+    // said", matching the legacy-number-rescue precedent directly below.
+    // The rescue REPLACED `best` with a candidate that was never scored
+    // against the read, so the surviving bestScore describes a different
+    // card and carrying it forward would be meaningless — in the Mew case
+    // it yields Low purely because the synthesized floor score (3) sits
+    // under MEDIUM_THRESHOLD (5). Medium is the right level on the merits:
+    // this candidate was the exactly-one row to pass the name filter, an
+    // exact normalized set-name equality check, and the number check — but
+    // it was found via a set name that may itself be a second model's
+    // guess, so it is explicitly not High.
+    matchConfidence = "Medium";
+    matchBasis = "setname-search";
+    ambiguousNote =
+      `We couldn't find this card by name or number, so it was located using the set name "${setNameSearchHintValue}"${
+        setNameSearchHintSource === "legacy-shadow" ? ", which came from a second AI model's independent read of the card" : " read from the card"
+      }. Exactly one printing in that set matched the name and number we had. This isn't a fully confirmed match; verify the exact set and printing before trusting this price.`;
+  }
+
   if (!ambiguousNote && nameFilterRescuedByNumber) {
     matchConfidence = matchConfidence === "High" ? "Medium" : matchConfidence;
+    matchBasis = "name-rescued-by-number";
     ambiguousNote =
       `The card name we read ("${read.cardName}") didn't match anything in our database — this match was found using only the card number ("${read.cardNumber}"), which matched exactly. This may mean the name was misread or mistranslated; verify the card name/printing before trusting this match or price.`;
     console.log(`[requestId=${requestId}]`, `[lookup] NAME FILTER RESCUED BY NUMBER: read name="${read.cardName}" matched nothing, but number=${read.cardNumber} matched best=${best.name} ${best.number} exactly`);
@@ -2898,6 +3126,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
 
   if (!ambiguousNote && tieCount >= 2) {
     matchConfidence = "Low";
+    matchBasis = "tie";
     const shadowlessTie = isShadowlessVsPlainTie(tiedCandidates);
     ambiguousNote = shadowlessTie ? shadowlessAmbiguousNoteText() : ambiguousNoteText(!!read.cardNumber);
     console.log(
@@ -2914,6 +3143,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // certainty than that coincidence deserves.
   if (!ambiguousNote && bestDetail && bestDetail.numberStrength === "weak") {
     matchConfidence = matchConfidence === "High" ? "Medium" : matchConfidence;
+    matchBasis = "weak-number";
     ambiguousNote =
       "The card number that matched uses a different numbering format than this printing normally would (e.g. a promo-style number vs. a numbered-set card) — the shared digits may be coincidental rather than confirming this is the same printing. Verify the exact set/number on the physical card before trusting this match or price.";
     console.log(`[requestId=${requestId}]`, `[lookup] WEAK NUMBER MATCH: read=${read.cardNumber}, best=${best.name} ${best.number} (numbering schemes differ, digits may coincide by chance)`);
@@ -3029,6 +3259,9 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     cardImageUrl: best.cardImageUrl || null,
     matchConfidence,
     ambiguousNote,
+    // ADDED 2026-10-02 (queued item b): machine-readable companion to
+    // ambiguousNote — see the matchBasis declaration above.
+    matchBasis,
     tcgplayerUrl: best.tcgPlayerUrl || null,
     pricingLookup: {
       tcgPlayerId: best.tcgPlayerId || null,
