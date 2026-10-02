@@ -8415,6 +8415,180 @@ the matching entry below / CLAUDE.md).
 
 ---
 
+## Design proposal (NOT BUILT): surface tied candidate PRODUCTS as "Possible matches" (2026-10-01)
+
+Written per explicit instruction as a proposal only — no code written for
+this, nothing deployed. Follows the Burger King Chimchar entry above.
+
+### (a) Measure first — and the honest answer is the measurement is NOT available yet
+
+The question asked was: of the 14 multi-candidate ties in the 77-scan
+sample, how many have a >=3x NM spread between tied candidates with >=$5
+on the high side? **That cannot be answered from the data we have, and
+the attempt to answer it failed for a real, specific reason worth
+recording rather than papering over.**
+
+All 14 ties were recovered from the log dump (3-way Kabuto 51/108, 5-way
+Venomoth 49/112, 8-way Raichu RC9/RC32, 6-way Feraligatr 112/128, etc.).
+But **`pickBestCandidate` logs only `best` + `tieCount`, never the
+identities of the tied candidates**, so the tied set has to be
+reconstructed by re-querying PPT — and that does not reproduce the
+original pool. Concrete proof: re-running `search=Alakazam&limit=30`
+today returns 30 rows that **do not include Base Set Alakazam 1/102 at
+all**, even though that is exactly what the original scan matched. A
+30-row slice of a large species catalog is not stable, and the original
+scans may additionally have gone through page-2 or combined-search
+fallbacks. Reconstruction produced a same-number group of 0 or 1 for
+**all 14** ties — i.e. 0 reconstructable, not 0 qualifying. **Do not
+read "0" as a measurement.**
+
+**What would actually answer it**: one line in `pickBestCandidate`,
+which already holds `tiedCandidates` in memory — log their
+`tcgPlayerId`s alongside the existing `tieCount`. Then a single real
+scanning session yields the true scan-weighted number. That is a
+backend change needing a deploy, so it is proposed, not done.
+
+**Substitute measure, clearly labelled**: a **catalog-level** (not
+scan-weighted) measurement across 8 real species pools / 198 real PPT
+records — Kabuto, Skarmory, Raichu, Venomoth, Nidoqueen, Alakazam,
+Feraligatr, Chimchar:
+
+```
+same-number groups with >=2 priced candidates : 25
+of those, >=3x NM spread AND >=$5 high side   : 16   (64%)
+```
+
+Worked examples (all real, all live):
+
+| Card | Spread | Tied products |
+|---|---|---|
+| Alakazam 059/195 | **60.6x** | SWSH12 $1.88 vs Prize Pack Series **$113.94** |
+| Chimchar 57/100 | 44.7x | Majestic Dawn $1.09 vs Countdown Calendar **$48.68** |
+| Chimchar 76/130 | 42.5x | Diamond and Pearl $0.61 vs Burger King **$25.95** |
+| Alakazam 082/167 | 18.8x | SV06 $0.28 vs Blister Exclusives $5.26 |
+| Feraligatr 4/115 | 5.2x | Deck Exclusives $22.70 vs EX Unseen Forces **$118.92** |
+
+**This says: when a same-number collision exists, ~2 times in 3 the
+spread is material.** It does NOT say what fraction of Eric's real ties
+are number-shaped collisions — that is the gap the logging line closes.
+
+**Second finding from the same data, larger than the original framing**:
+the collision class is **not** mainly promo reprints. Qualifying groups
+came from Deck Exclusives, Blister Exclusives, Prize Pack Series Cards,
+World Championship Decks, Jumbo Cards, Battle Academy, WoTC Promo — plus
+**duplicate rows inside one set** (two SM Promos Raichu SM72 at $47.94
+and $144.99; two ME Mega Evolution Promo Alakazam 009 at $7.20 and
+$72.26; two POP Series 8 Chimchar at $2.95 and $39.99). Any design
+scoped to "promo reprints" would miss most of it.
+
+### (b) Proposed response shape and UI
+
+`/api/identify` gains one additive field, emitted only when
+`tieCount >= 2`:
+
+```jsonc
+"tiedAlternatives": [          // the non-best tied candidates, cap 3
+  { "tcgPlayerId": "155602",
+    "name": "Chimchar - 76/130 [Diamond & Pearl]",
+    "setName": "Burger King Promos",
+    "cardNumber": "076/130",
+    "primaryPrinting": "Reverse Holofoil" }
+]
+```
+Every field is already in hand — **zero extra PPT calls**.
+
+`/api/price` accepts `tiedAlternatives`, prices them with the same
+`buildLiveVariantsForCandidate` already used for the main product, and
+returns NM price, Suggested Bid and sold count per alternative. It
+surfaces them **only** when at least one clears the same bar the banner
+uses (>=3x the selected product's NM **and** >=$5), so a tie between
+four cheap printings stays quiet.
+
+UI — a compact block at the TOP of the panel, above Market Price:
+
+```
+POSSIBLE MATCHES — same card number, we can't tell these apart
+  Diamond and Pearl        $0.61   (Bid $0.61)   156 sold/3mo   ← showing
+  Burger King Promos      $26.45   (Bid $10.62)   49 sold/3mo
+  Misc Cards & Products   $19.94   (Bid $7.72)    12 sold/3mo
+```
+
+**The default selection does not change and nothing auto-switches** —
+same decision as the never-auto-flip rule recorded on 2026-09-30, and
+for the same reason: a false positive here costs real money, a false
+negative costs a lost auction. Making the rows clickable (switch the
+panel to that product's pricing) is a reasonable phase 2 but is
+deliberately NOT part of phase 1.
+
+### (c) Where it lives, cost, latency, risk
+
+| | |
+|---|---|
+| `api/identify.js` | `lookupCardPPT` already receives `tiedCandidates` from `pickBestCandidate` (it is used today only by `isShadowlessVsPlainTie` and the null-number narrowing). Map the non-best ones into `tiedAlternatives` on the response. Purely additive. |
+| `api/price.js` | Accept the array, fan out `buildLiveVariantsForCandidate` over it with `Promise.all`, apply the >=3x/>=$5 gate, return a parallel array. |
+| `extension/content.js` | Render the block in `renderPriceSection`; re-evaluate on dropdown change like the other price elements. |
+| **PPT credits** | **zero extra** — the alternatives come from the search response already paid for. |
+| **TCGplayer calls** | +1 per alternative, capped at 3, fired in parallel. Unauthenticated and free. |
+| **Latency** | Only on `/api/price`, never on `/api/identify` (decoupled since 2026-09-10, so the card ID still lands inside the 1-3s target). The 2026-09-16 measurement found parallel TCGplayer fetches add **~103-107ms regardless of count**; `/api/price` currently runs ~435-850ms. Expect ~+100-150ms. |
+| **Risk to existing scoring** | **None by construction** — `pickBestCandidate`, `scoreCandidate`, `best` and the default printing are all untouched. Real risks are UI clutter in a 260px panel and the added `/api/price` latency. |
+
+### (d) TRAP: do NOT "fix" the `"&"` vs `"and"` set-name comparison on its own
+
+Tempting, because the `set` signal scored 0 for all four Chimchar
+candidates purely because the read said `"Diamond & Pearl"` and the
+candidate says `"Diamond and Pearl"`. **Fixing that normalization alone
+makes the wrong answer strictly more confident.**
+
+The base card genuinely *is* in the Diamond & Pearl set, so it would
+gain +3 -> 33 points while the Burger King promo stays at 30. Result:
+`tieCount` collapses from 4 to 1, the base card wins outright, **the
+ambiguousNote stops firing**, `matchConfidence` rises to High — and the
+alternate-printing banner (now gated on High, see the entry above)
+**un-suppresses itself**. A 4-way honest disclosure becomes a confident
+wrong answer with a misleading banner attached. Strictly worse than
+today.
+
+If that normalization is ever fixed, it **must** land together with
+matching the read `setName` against the candidate's bracket tag
+(`"[Diamond & Pearl]"` inside PPT's `name`), so the promo scores the set
+point too and the tie is preserved. **And even that is not general**:
+Countdown Calendar Promos carries base-set numbers with **no bracket tag
+at all**, so the bracket rule covers Burger King and misses Countdown
+Calendar. Treat `"&"`/`"and"` as blocked until the tie-surfacing above
+exists to catch what it would otherwise bury.
+
+### (e) Test plan
+
+Required cases:
+1. **Chimchar 76/130**, real Burger King promo image — must emit
+   `tiedAlternatives` containing 155602 at ~$26.45 / Bid ~$10.62 / Slow;
+   default stays 84282 at $0.61; alternate-printing banner stays
+   suppressed (match is Low).
+2. **Chimchar 57/100** — the **no-bracket** Countdown Calendar case
+   ($1.09 vs $48.68); confirms the design does not secretly depend on
+   the `[Set]` bracket.
+3. **Treecko 90038** — High confidence, no tie: **no** Possible-matches
+   block, and the alternate-printing banner still fires (guards against
+   the two features interfering).
+4. **No-tie controls that must be byte-identical to today**: Pikachu
+   XY95 (114004) and Alolan Diglett 126958 — no new field, no new
+   latency beyond the parallel fetch.
+5. **Shadowless regression**: Clefairy 107001 / Chansey 106998 already
+   have dedicated sibling handling — confirm the new block does not
+   double-surface the same pair.
+6. **Latency**: measure real `/api/price` round-trips before/after on a
+   3-alternative card; `/api/identify` must be unchanged and inside the
+   1-3s target.
+
+Verification standard, per this project's own rules: local mocked-fetch
+tests against the **real** (not reimplemented) `handler()`, then a
+**real end-to-end production scan** of the actual Burger King Chimchar
+photo, and finally — because `extension/content.js` changes — a
+`chrome://extensions` reload plus a live rescan before this counts as
+confirmed. A clean deploy is not a confirmed fix.
+
+---
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
