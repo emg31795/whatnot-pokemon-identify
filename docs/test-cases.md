@@ -8243,6 +8243,178 @@ each). One deliberate per-minute rate-limit (429) was hit and waited out
 
 ---
 
+## Bug: Burger King Promos Chimchar 76/130 priced as the base Diamond & Pearl card — a same-number tie across four DIFFERENT PRODUCTS, and a correction to yesterday's "stamped = Reverse Holofoil" finding (2026-10-01)
+
+**Research only, READ-ONLY on `api/*`.** Eric scanned a Burger King
+Promos Chimchar 76/130 (a reverse-holo reprint of the Diamond & Pearl
+card with the "DIAMOND & PEARL" logo stamped into the artwork;
+TCGplayer product 155602; PriceCharting calls it "Chimchar [Stamped]
+#76"). The extension matched it to the regular Diamond & Pearl Chimchar
+76/130 and priced it at **$0.61**, then the new alternate-printing
+banner offered that base card's Reverse Holofoil at **$6.22** — a
+different product again. The real card is **$26.45**.
+
+### CORRECTION to the 2026-09-30 entry: "stamped = Reverse Holofoil printing" is SET-SPECIFIC, not general
+
+Yesterday's research concluded the set-logo stamp *is* the Reverse
+Holofoil printing of the same TCGplayer product. **That is true for EX
+Crystal Guardians Treecko 67/100 and false here.** Burger King Promos
+is a **separate TCGplayer product** (155602) with its own record, its
+own price, and `printingsAvailable: ["Reverse Holofoil"]` only — not a
+printing of the base card (84282). Both patterns exist and they need
+different handling:
+
+- **Same product, two printings** (EX Crystal Guardians) — the right
+  answer is already in `priceVariants`; the dropdown reaches it. This
+  is what the alternate-printing banner was built for and it works.
+- **Different products sharing name+number** (Burger King, Countdown
+  Calendar, Cosmos Holo, First Partner Pack) — the right answer is a
+  DIFFERENT `tcgPlayerId` that never reaches the panel at all. The
+  banner cannot help here, and actively hurts (see below).
+
+### 1. PPT does have the record — it was never a catalog gap
+
+```
+155602 | Burger King Promos | 076/130 | "Chimchar - 76/130 [Diamond & Pearl]"
+        rarity: Promo | printingsAvailable: ["Reverse Holofoil"] | externalCatalogId: null
+        PPT cached NM RH $25.95   (live TCGplayer at time of writing: $26.45)
+```
+PPT's cached $25.95 matches Eric's TCGplayer ground truth exactly.
+
+**Suggested Bid correction, worth recording.** Eric predicted ~$7.76 at
+the Stagnant tier, from the product page's "5 sold" 3-month snapshot
+(NM only). The tool's real answer is **$10.62 at the Slow tier**,
+because `buildLivePriceVariantsFromTCGPlayer` sums `totalQuantitySold`
+across all five condition tiers (the 2026-09-20 undercounting fix) —
+**49 sold/3mo = 16.3/mo**, which is Slow (5-49/mo), not Stagnant
+(<5/mo). Confirmed live via `POST /api/price` for 155602:
+`sellThrough: {monthlyPace: 16.33, tier: "Slow", totalSold: 49}`.
+Eric's reasoning was right for an NM-only figure; the discrepancy is
+entirely the all-conditions sum, not a bug.
+
+### 2. The Burger King record WAS in the pool — it lost a 4-way coin flip
+
+The original scan's log had already rolled past Vercel's 1-hour Hobby
+retention (see "Known gotchas") and there was no live traffic to sample,
+so this was reproduced mechanically against the **real, unmodified**
+scoring code: a copy of `api/identify.js` verified byte-identical for
+all 3512 lines with a single `module.exports.__probe = {...}` line
+appended, exposing `pickBestCandidate`/`scoreCandidate`/`normalizePptCard`.
+
+Against the production-equivalent pool (`search=Chimchar&limit=30`, 23
+raw candidates): **155602 was present at index 10**, survived the name
+filter (`normalizeNameForMatch("Chimchar - 76/130 [Diamond & Pearl]")`
+contains `"chimchar"`), and matched the number **exactly**
+(`076/130` -> `76/130`; `normalizeNumber` strips leading zeros). It was
+never missing and was never excluded.
+
+**Four distinct products tie at exactly 30 points:**
+
+| Score | tcgPlayerId | Set | bestDetail | NM |
+|---|---|---|---|---|
+| 30 | 84282 | Diamond and Pearl | number+hp+attackName | $0.61 / RH $6.22 |
+| 30 | **155602** | **Burger King Promos** | number+hp+attackName | **$26.45** |
+| 30 | 153231 | Misc Cards & Products (Cosmos Holo) | number+hp+attackName | $22.24 |
+| 30 | 231454 | First Partner Pack | number+hp+attackName | $1.49 |
+
+`bestScore=30, tieCount=4`. 30 = number(20) + hp(6) + attackName(4).
+The two records are identical on hp ("50"), attacks ("[0] Scratch (10)",
+"[1R] Ember (30)..."), stage, pokemonType, weakness and retreatCost —
+there is genuinely nothing in PPT's data separating them. **The base
+card won by pool order, not by scoring.**
+
+Why every remaining signal contributed zero:
+- **`set` (+3) scored 0 for ALL FOUR**, including the base card — Gemini
+  read `setName: "Diamond and Pearl"` and the base card's set is
+  literally "Diamond and Pearl", but the comparison fails on `"&"` vs
+  `"and"`. (See the trap in the design note below before "fixing" this.)
+- **`rarity` (+2) scored 0** — `NOTABLE_RARITY_PATTERN` has no `promo`
+  entry, so "Promo" is worth nothing.
+- **`stampMatch`/`stampMismatch` never fired** — `candidateStampType()`
+  has no keyword for a set-logo stamp.
+
+Counterfactual, run against the real function: feeding
+`setName: "Burger King Promos"` gives 155602 **33 pts, tieCount=1** —
+the correct winner. That read will never happen; the card says
+"DIAMOND & PEARL", not "Burger King".
+
+### 3. Scope: real, and the spreads are large
+
+Chimchar **alone** has four separate same-number collision groups:
+
+| Number | Tied products | Spread |
+|---|---|---|
+| 76/130 | $0.61 base / **$26.45 BK** / **$22.24 Cosmos Holo** / $1.49 First Partner | 43x |
+| 57/100 | $1.09 Majestic Dawn / **$48.68 Countdown Calendar** | 45x |
+| 56/100 | $0.50 base / $19.51 base-RH / $8.94 BK | 39x |
+| 012/017 | $2.95 POP 8 / $32.58 POP 8 RH / $39.99 Cracked Ice Holo | 14x |
+
+Set shape, pulled live:
+- **Burger King Promos: 24 cards, 23 with a `[Set]` bracket suffix in
+  PPT's `name`, 23 Reverse-Holofoil-only.** Highly regular.
+- **Countdown Calendar Promos: 24 cards, base-set numbers
+  (e.g. "Stunky - 102/130", "Snover - 101/123"), and ZERO bracket
+  suffixes.** Same collision class, no naming signal — so any fix keyed
+  on the bracket covers BK and misses this set.
+
+**Frequency.** Counting *matched* promo set names undercounts by
+construction (a promo that loses the tie is logged under the BASE set —
+only 1 of 77 scans showed a promo set). The honest measure is tie rate,
+from the same real 77-scan sample:
+
+```
+tieCount=1: 37   tieCount=2: 6   tieCount=3: 2
+tieCount=4: 3    tieCount=5: 1   tieCount=6: 1   tieCount=8: 1
+-> 14 of 51 scans (27%) landed in a genuine multi-candidate tie
+```
+Three scans hit `tieCount=4`, the exact Chimchar shape. This matches the
+~27-35% tie rate already documented for the cardNumber investigation.
+**Caveat: not all ties are promo collisions** (Shadowless pairs and
+holo-pattern variants are in there too), so 27% is the exposure
+**ceiling**, not the promo-collision rate.
+
+### 4. Gemini sees the stamp and files it into the wrong field
+
+Real production scans of both TCGplayer product images:
+
+| | BK promo (155602) | Base card (84282) |
+|---|---|---|
+| `setName` read | **"Diamond and Pearl"** <- the stamp text | "Diamond and Pearl" |
+| `stampType` | **"none"** | "none" |
+| Matched to | **84282 (wrong product)** | 84282 (correct) |
+| matchConfidence | Low, 4-way ambiguousNote fired | Medium |
+
+The stamp is large, high-contrast **text** in the lower artwork — far
+more legible than the EX Crystal Guardians logo — and the model reads it
+fine. But `stampType`'s enum has no value for a set-logo stamp, so the
+text lands in `setName`, where it is **evidence for the wrong product**.
+`stampType` is `"none"` on both the stamped and unstamped card, carrying
+zero discriminating information today.
+
+The honest-disclosure safety net DID work: Low confidence plus an
+accurate "Multiple different printings of this card share an identical
+card number, HP, attack, and type" note. What failed is printing a
+specific, confident, wrong number next to it.
+
+### 5. The alternate-printing banner made this case worse
+
+With the base card matched and its `primaryPrinting: "Normal"` selected
+($0.61), the banner's thresholds (another printing >= 3x AND >= $5) are
+satisfied by that same base card's Reverse Holofoil ($6.22), so it
+fired:
+
+> "Another printing of this card is worth much more — Reverse Holofoil:
+> NM $6.22 (Bid: $3.03) - 27 sold/3mo"
+
+That is a precise, authoritative-looking number bolted on top of an
+already-flagged uncertain match, and it is still **4x below** the real
+$26.45. The banner's own trigger logic remains correct for the
+vintage-reverse-holo case it was built for — this is a **scoping**
+problem, not a reason to revert it. Containment shipped same day (see
+the matching entry below / CLAUDE.md).
+
+---
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

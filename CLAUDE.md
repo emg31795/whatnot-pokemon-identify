@@ -2499,6 +2499,83 @@ checklist before reporting something as finished:
   `sourceHash`-vs-`shasum` check after any session that commits without
   deploying.
 
+- **Burger King Promos Chimchar priced as the base card — a same-number
+  tie across four DIFFERENT PRODUCTS, and a CORRECTION to yesterday's
+  "stamped = Reverse Holofoil" finding. Researched + frontend-only
+  containment built, 2026-10-01.** Full trace in `docs/test-cases.md`'s
+  matching entry. Eric scanned a Burger King Promos Chimchar 76/130
+  (TCGplayer 155602, the "DIAMOND & PEARL" logo stamped into the art).
+  The extension priced it as the base Diamond & Pearl card at **$0.61**,
+  and the new alternate-printing banner then offered that base card's
+  Reverse Holofoil at **$6.22** — a different product again. The real
+  card is **$26.45**.
+
+  **CORRECTION — "stamped = Reverse Holofoil printing" is SET-SPECIFIC,
+  not a general rule.** It is true for EX Crystal Guardians Treecko
+  67/100 (one product, two printings — the dropdown reaches the right
+  answer) and **false** for Burger King Promos, which is a **separate
+  TCGplayer product** with `printingsAvailable: ["Reverse Holofoil"]`
+  only. Two different patterns needing different handling:
+  - *Same product, two printings* -> already in `priceVariants`; the
+    alternate-printing banner was built for this and works.
+  - *Different products sharing name+number* (Burger King, Countdown
+    Calendar, Cosmos Holo, First Partner Pack) -> the right answer is a
+    different `tcgPlayerId` that never reaches the panel at all. The
+    banner cannot help, and made it worse.
+
+  **Not a catalog gap and not a scoring loss — a 4-way coin flip.**
+  Reproduced against the real, unmodified scoring code (byte-verified
+  probe copy) because the scan's log had rolled past Vercel's 1-hour
+  retention. 155602 was **in the pool** (index 10/23), passed the name
+  filter, and matched the number exactly. Four products tie at exactly
+  **30 pts** (number 20 + hp 6 + attackName 4) — base $0.61, **Burger
+  King $26.45**, Cosmos Holo $22.24, First Partner $1.49 — and are
+  identical on hp/attacks/stage/type/weakness/retreat. `tieCount=4`;
+  **the base card won by pool order.** Every remaining signal scored
+  zero: `set` (+3) failed for ALL four including the base card, on
+  `"&"` vs `"and"`; `rarity` (+2) because `NOTABLE_RARITY_PATTERN` has
+  no `promo`; stamp signals because `candidateStampType()` has no
+  set-logo keyword.
+
+  **Suggested Bid detail, corrected**: the right answer is **$10.62 at
+  the Slow tier**, not the ~$7.76 Stagnant estimated from the product
+  page's "5 sold" NM-only snapshot — our code sums `totalQuantitySold`
+  across all five conditions (the 2026-09-20 fix), giving **49 sold/3mo
+  = 16.3/mo**, which is Slow (5-49/mo). Confirmed live.
+
+  **Gemini sees the stamp and files it wrong**: on the real promo image
+  it read `setName: "Diamond and Pearl"` — the stamp text — and
+  `stampType: "none"`, identical to the unstamped base card. The one
+  feature separating the two products is captured and then routed into
+  the field that argues *for* the wrong one.
+
+  **Scope**: Burger King Promos = 24 cards, 23 with a `[Set]` bracket in
+  PPT's `name` and 23 RH-only; **Countdown Calendar Promos = 24 cards,
+  same collision class, ZERO bracket suffixes** (so a bracket-keyed fix
+  misses it). Chimchar alone has 4 collision groups, incl. 57/100 at
+  $1.09 vs **$48.68**. Exposure from the real 77-scan sample: **14 of 51
+  scans (27%) hit a multi-candidate tie**, 3 of them `tieCount=4` —
+  but that is the exposure **ceiling**, not the promo-collision rate
+  (Shadowless pairs and pattern variants are in that 27% too).
+
+  **Containment BUILT (frontend only)**: the alternate-printing banner
+  is now suppressed whenever `matchConfidence !== "High"`. Verified
+  mechanically that this is a complete gate for both "not High" and
+  "came from a multi-candidate tie" — `tieCount >= 2` always forces
+  `matchConfidence = "Low"`, and every `ambiguousNote` branch caps
+  High->Medium, so **no new response field was needed** (`tieCount`
+  itself is not exposed and did not need to be). `api/*` untouched, so
+  no deploy — a `chrome://extensions` reload only.
+
+  **NOT built, design proposal only**: surfacing the tied *products*
+  with their prices ("Possible matches"). See the proposal in
+  `docs/test-cases.md`. **Trap recorded there and worth repeating: do
+  NOT "fix" the `"&"`/`"and"` set-name comparison on its own** — the
+  promo genuinely is not in the "Diamond & Pearl" set, so that fix
+  would make the base card win *more* firmly and bury the promo
+  further. The promo's only marker is the `[Diamond & Pearl]` bracket
+  tag in its PPT `name`.
+
 - **Set-stamped / vintage reverse-holo pricing — RESEARCHED, one real
   24x bug found, Option B BUILT (frontend only, uncommitted-to-remote,
   NOT DEPLOYED), 2026-09-30.** Full trace in `docs/test-cases.md`'s
@@ -2507,6 +2584,15 @@ checklist before reporting something as finished:
   Crystal Guardians Treecko 67/100), believing TCGplayer/PPT don't price
   them separately and PriceCharting does. **Both halves of that premise
   are wrong**, and the research surfaced a worse, already-live bug.
+
+  **PARTIALLY CORRECTED 2026-10-01 — read the Burger King entry directly
+  above first.** The "the stamp IS the Reverse Holofoil printing"
+  conclusion below is **set-specific**: true for EX Crystal Guardians
+  Treecko 67/100 (one product, two printings), **false** for Burger King
+  Promos and other promo reprints, which are SEPARATE TCGplayer products
+  sharing a name+number with the base card. Everything else in this
+  entry (the price-premium table, the PriceCharting/eBay decisions, the
+  never-auto-flip decision) stands as written.
 
   **The stamp IS the Reverse Holofoil printing** — PPT has one record for
   Treecko 67/100 (`tcgPlayerId: 90038`) with

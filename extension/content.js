@@ -830,10 +830,33 @@
   // a thin market is obvious at a glance — the Treecko reverse holo above
   // is a genuine $34 card but on only 3 NM sales in 3 months, and that
   // belongs on screen next to the number, not buried.
+  //
+  // SCOPED 2026-10-01 (Burger King Promos Chimchar 76/130 — see
+  // docs/test-cases.md and CLAUDE.md): this banner assumes the matched
+  // product is the right one and only the PRINTING is in question. That
+  // assumption breaks on a same-number tie across DIFFERENT products. A
+  // real scan of a Burger King promo (TCGplayer 155602, real value $26.45)
+  // matched the base Diamond & Pearl card (84282, $0.61) in a 4-way tie,
+  // and this banner then confidently offered the BASE card's Reverse
+  // Holofoil at $6.22 — a precise-looking number for the wrong product,
+  // still 4x below the truth, bolted on top of an already-flagged
+  // uncertain match. So the banner now only speaks when the match itself
+  // is solid.
+  //
+  // `matchConfidence !== "High"` is a COMPLETE gate for both "not High
+  // confidence" and "came from a multi-candidate tie", verified against
+  // api/identify.js rather than assumed: `tieCount >= 2` always forces
+  // `matchConfidence = "Low"`, and every other branch that sets an
+  // `ambiguousNote` caps High->Medium first. So no new response field
+  // was needed — `tieCount` itself is not exposed and does not need to
+  // be. Fails CLOSED: a missing/unknown matchConfidence suppresses the
+  // banner, since this is an assertion we should only make when we can
+  // positively confirm the match.
   const ALT_PRINTING_MIN_MULTIPLE = 3;
   const ALT_PRINTING_MIN_NM = 5;
 
-  function alternatePrintingAlertHtml(priceVariants, selectedKey) {
+  function alternatePrintingAlertHtml(priceVariants, selectedKey, matchConfidence) {
+    if (matchConfidence !== "High") return "";
     if (!priceVariants || !selectedKey) return "";
     const selected = priceVariants[selectedKey];
     const selectedNm = selected && selected.conditions ? selected.conditions.NM : null;
@@ -1061,7 +1084,8 @@
       ${pricingWarnings}
       <div id="wnpk-alt-printing">${alternatePrintingAlertHtml(
         priceData.priceVariants,
-        priceData.priceVariantUsed
+        priceData.priceVariantUsed,
+        identifyData && identifyData.matchConfidence
       )}</div>
       <div class="wnpk-market-price" id="wnpk-market-price">
         ${
@@ -1094,7 +1118,11 @@
         const variant = priceData.priceVariants[select.value];
         if (!variant) return;
         $("#wnpk-market-price").innerHTML = marketPriceLine(variant, priceData.listingCount);
-        $("#wnpk-alt-printing").innerHTML = alternatePrintingAlertHtml(priceData.priceVariants, select.value);
+        $("#wnpk-alt-printing").innerHTML = alternatePrintingAlertHtml(
+          priceData.priceVariants,
+          select.value,
+          identifyData && identifyData.matchConfidence
+        );
         $("#wnpk-sell-through").innerHTML = sellThroughBadgeHtml(variant.sellThrough, variant.conditionsBreakEven);
         $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions, variant.conditionsSuggestedBid);
         const badge = $("#wnpk-edition-badge");
