@@ -5034,6 +5034,21 @@ checklist before reporting something as finished:
   comparison). Doesn't affect `normalizeDiacriticTest`'s reliability.
   Open, low-priority follow-up: fix the code comment that overclaims
   this next time the file is touched.
+- **Bundle into the NEXT backend deploy (no deploy is worth doing just
+  for these, but neither should ship without the other)**: (a) log the
+  tied candidates' `tcgPlayerId`s in `pickBestCandidate`'s existing tie
+  log line — it already holds `tiedCandidates`, and without them a tie
+  cannot be reconstructed afterwards (proved 2026-10-01: re-querying PPT
+  does not reproduce the original pool, so 0 of 14 real ties were
+  recoverable); and (b) add a machine-readable `matchBasis` reason code
+  set alongside each `ambiguousNote`/Medium assignment
+  (`"legacy-number-rescue" | "setname-narrowed" | "weak-number" |
+  "name-rescued-by-number" | "score-only"`), so the alternate-printing
+  banner's gate can tell identity-confirmed Medium paths from genuinely
+  product-uncertain ones instead of treating all Medium alike — see the
+  Corphish entry above for why that distinction is currently unreachable
+  from the frontend.
+
 - **Open strategy question** (raised repeatedly, never resolved): whether
   to keep patching the matching/scoring model reactively as live tests
   surface issues, or pause for a dedicated pass adopting more of
