@@ -8589,6 +8589,143 @@ confirmed. A clean deploy is not a confirmed fix.
 
 ---
 
+## Test: Meditite 56/100, EX Crystal Guardians — FIRST live confirmation of the alternate-printing banner firing in the real panel (2026-10-02)
+
+**Research/docs only — no code changed.** Eric scanned a Meditite he
+reported as having the Crystal Guardians logo stamped in the art (seller
+`masterballcollect`, listing Near Mint; the stamp itself could not be
+independently confirmed from the screenshot — see the tally caveat
+below). This is the **first time the
+alternate-printing banner has been observed firing in the real extension
+panel on a live stream**, closing the "harness-verified, not observed
+live" gap carried since the banner shipped (`ebbf02f`, 2026-09-30).
+
+**It fired on a High-confidence match**, so it is also the first live
+exercise of the gate's allow path (`cce7892`, later widened by
+`d9dc4af`).
+
+### The scan — real log, `requestId=824592ad-ea72-403c-80b6-28216076add7`, 01:41:56 UTC
+
+| field | Gemini (primary) | legacy shadow (`gemini-3.6-flash`) | Haiku shadow |
+|---|---|---|---|
+| `cardName` | Meditite | Meditite | **"Gengar"** |
+| `attackName` | Kick | Kick | **"Pain Dealer"** |
+| `cardNumber` | **null** | **null** | null |
+| `setName` | null | null | null |
+| `hp` | 50 | 50 | null |
+| `stampType` | **"none"** | **"none"** | **"none"** |
+| `confidence` | Medium | Medium | Medium |
+| `reason` | "cardNumber area is too blurry and small to read" | "card held too far from camera" | "glare obscuring bottom edge..." |
+
+Matched correctly anyway: `best = Meditite 56/100, EX Crystal Guardians`,
+`bestScore = 10`, `tieCount = 1` -> **Match: High**. Note *how* it got
+there: `cardNumber` was null, so the 20-point number signal never fired
+and the score is exactly `hp (6) + attackName (4) = 10` — landing
+**precisely on `HIGH_THRESHOLD`**. Correct result, but on thin evidence,
+and it cleared the null-cardNumber weak-signal floor only because hp and
+attackName are two independent corroborating signals.
+
+**Two things worth flagging from this log beyond the banner:**
+1. **Haiku read a completely different Pokémon** ("Gengar", attack "Pain
+   Dealer") from the same frame. Not a near-miss — a different species
+   and a different attack. A real cross-provider disagreement on a
+   blurry live frame, and directly relevant to Option C below.
+2. **`total ms = 3495`, outside the 1-3s target** (`gemini 1774ms` +
+   `lookup 1721ms`). The lookup half was unusually slow; the Gemini half
+   was normal. One sample, not a trend — worth watching, not acting on.
+
+### Pricing — confirmed live against `/api/price` (productId 87282)
+
+| printing | NM | break-even | Suggested Bid | sell-through |
+|---|---|---|---|---|
+| Normal *(selected by default)* | **$0.42** | $0.85 | $0.61 | Normal, 54.3/mo, 163 sold/3mo |
+| **Reverse Holofoil** | **$12.52** | $10.06 | **$6.29** | Slow, 11.3/mo, 34 sold/3mo |
+
+Ratio **29.8x**, high side $12.52 — clears the banner's `>=3x` and
+`>=$5` thresholds comfortably. Every figure matches what the panel
+showed, including the `Normal · 54/mo` badge. PPT's cached RH price is
+$13.10 vs TCGplayer's live $12.52 — ordinary drift, not a discrepancy.
+
+**This is the EX Crystal Guardians pattern**: one product (87282), two
+printings, the stamped card being the Reverse Holofoil. The dropdown
+reaches the right answer and the banner points at it. Contrast the
+Burger King Chimchar entry above, where the right answer is a different
+product entirely and the banner cannot help.
+
+### Tally: stamp visibly in the art, `stampType` read as `"none"`
+
+| card | set | set-logo stamped set? | model reads, all `"none"` |
+|---|---|---|---|
+| Treecko 67/100 | EX Crystal Guardians | yes | 3 Gemini primary |
+| Chimchar 76/130 | Burger King Promos | n/a (promo overprint) | 2 Gemini primary |
+| Holon Research Tower 94/113 | EX Delta Species | yes | Gemini + legacy + Haiku |
+| Corphish 62/110 | EX Holon Phantoms | **probably not** (see caveat) | panel badge only |
+| **Meditite 56/100** | **EX Crystal Guardians** | **yes** | **Gemini + legacy + Haiku** |
+
+**Zero true positives across every scan logged so far.** On the two
+cards with full shadow coverage (Holon Research Tower, Meditite) all
+**three** independent models returned `"none"`.
+
+**Caveat on the Meditite row specifically — the one that matters most,
+since it is the strongest row in this table.** That the card in hand was
+the stamped printing is **Eric's report, not independently verified
+here**. The screenshot he sent does not settle it: the card is in a
+toploader at stream resolution with no legible stamp box, and the
+panel's own thumbnail is TCGplayer's catalog image for product 87282,
+which is the *Normal* printing and would not show a stamp either way.
+Supporting but non-conclusive: he placed a **$13 max bid**, consistent
+with valuing it as the $12.52 Reverse Holofoil rather than the $0.42
+Normal. **If this card was actually the Normal printing, `stampType:
+"none"` was correct and this row does not belong in the tally at all.**
+Flagged rather than assumed, because a tally of false negatives is only
+as good as the ground truth behind each row.
+
+Two further honest caveats:
+- **Corphish is the weakest row.** Only the panel's `none stamp` badge
+  was observed, not a log; and per the (user-generated) source used on
+  2026-09-30, EX Holon Phantoms is on the list of EX sets **without** a
+  set-logo stamp. It may not belong in a "stamp visible" tally at all.
+- This is **not** evidence the models *cannot* see these stamps. The
+  2026-09-30 direct test is the counter-evidence: asked explicitly
+  whether a set logo was printed in the artwork, Haiku returned
+  `{"setLogoStampInArt": true, "stampText": "CRYSTAL GUARDIANS",
+  "confidence": "High"}` on the stamped Treecko and `false` on an
+  unstamped control. The failure is a **schema/prompt gap** — the
+  `stampType` enum has no set-logo value and the prompt tells the model
+  to default to `"none"` for anything unlisted — not a vision limit.
+
+### Option C (`setLogoStampInArt` field): RECOMMENDATION — NOT YET
+
+| | |
+|---|---|
+| Effort | Medium. `GEMINI_SCHEMA` + `HAIKU_SCHEMA` + the shared prompt in `api/identify.js`, plus a live-validation window. Needs a deploy, so it should ride with the two backend items already queued (tie `tcgPlayerId` logging, `matchBasis`). |
+| Cost/scan | Effectively **$0** — one boolean and a short string of extra output. Measured scans run ~$0.0009 (Gemini) and ~$0.0033 (Haiku shadow); this adds roughly a thousandth of that. |
+| Risk | False positives under glare. Bounded by the standing rule that it may only **strengthen the banner's wording, never switch the default printing** — so a bad read costs a misleading sentence, not a misleading price. |
+
+**Why not yet, concretely:**
+1. **The banner already solves the user-facing problem without it.**
+   Meditite is the proof: the stamp signal was worthless (`"none"` from
+   all three models) and the right number — $12.52, Bid $6.29 — still
+   reached the panel. Option C would change the banner's *wording*, not
+   its *outcome*.
+2. **The gain is small for a ~10-second auction decision**: "this looks
+   like the stamped reverse-holo printing" instead of "another printing
+   is worth much more — check the card and switch".
+3. **The evidence it would work on real frames is weak.** The one
+   positive test was a flat, well-lit catalog scan. On *this* real
+   frame, Haiku could not identify the species, calling it a Gengar. A
+   stamp field read from frames of that quality is not something to rely
+   on yet.
+4. The two queued backend changes have clearer value and carry no
+   vision-reliability risk. They should land first.
+
+**What would change this to "build it":** the banner being live for a
+while and Eric finding cases where it fires but he still cannot tell
+which printing he is holding — i.e. the *wording* becomes the
+bottleneck rather than the data. Absent that, this stays deferred.
+
+---
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
