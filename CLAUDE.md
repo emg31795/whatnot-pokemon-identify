@@ -5034,6 +5034,26 @@ checklist before reporting something as finished:
   comparison). Doesn't affect `normalizeDiacriticTest`'s reliability.
   Open, low-priority follow-up: fix the code comment that overclaims
   this next time the file is touched.
+- **Southern Islands Mew (01/18, $624) — 10 consecutive failed scans
+  because the record is NEVER RETRIEVED. Investigated 2026-10-02, full
+  trace in `docs/test-cases.md`.** `search=Mew&limit=30` at offsets 0,
+  30 and 60 does not contain tcgPlayerId **46466** anywhere in the first
+  90 results — the Mew catalog crowds it out — so scoring never saw it.
+  Not a filter loss, not a scoring loss. Every existing fallback is
+  keyed on card NAME (page 2, combined name+number, the number rescue
+  searches only the already-fetched pool), so none of them can reach it.
+  The zero-padding fallback from `b01b257` worked correctly (`"Mew
+  7/18"` -> `"Mew 07/18"`), it was just fed a wrong numerator; Gemini
+  read 7/18, 8/18, 8/64 or null and essentially never 1/18.
+  **The fix is already visible in the data**: the legacy shadow model
+  read `setName: "Southern Islands"` on multiple scans (the primary read
+  it as null every time), and **`search="Mew Southern Islands"` returns
+  exactly one result — the correct card**. There is no setName-scoped
+  search anywhere in the codebase. **This is a class**, driven by common
+  species name + small/promo set: Butterfree (26 results) and Togepi
+  (23) are found in page 1, while Lapras and Mew (30+) are not — so it
+  is worst exactly where the species is most reprinted.
+
 - **Bundle into the NEXT backend deploy (no deploy is worth doing just
   for these, but neither should ship without the other)**: (a) log the
   tied candidates' `tcgPlayerId`s in `pickBestCandidate`'s existing tie
@@ -5047,7 +5067,10 @@ checklist before reporting something as finished:
   banner's gate can tell identity-confirmed Medium paths from genuinely
   product-uncertain ones instead of treating all Medium alike — see the
   Corphish entry above for why that distinction is currently unreachable
-  from the frontend.
+  from the frontend; and (c) the setName-scoped search fallback plus
+  consuming the legacy shadow model's `setName` as a hint — Options 1
+  and 2 from the Southern Islands Mew entry directly above, which are
+  the actual fix for a $624 miss and share this same deploy.
 
 - **Open strategy question** (raised repeatedly, never resolved): whether
   to keep patching the matching/scoring model reactively as live tests

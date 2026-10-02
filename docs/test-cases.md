@@ -8726,6 +8726,113 @@ bottleneck rather than the data. Absent that, this stays deferred.
 
 ---
 
+## Test: Southern Islands Mew (01/18, $624) — 10 consecutive failed scans; the record was NEVER RETRIEVED, not mis-scored (2026-10-02)
+
+**Investigation only — no code changed in this pass.** Eric scanned a
+Southern Islands Mew on a live stream. The extension read the name
+correctly every time and never found the card across **ten** scans.
+This is the most valuable card the tool has failed on to date.
+
+### Ground truth
+
+```
+tcgPlayerId 46466 | Southern Islands | "Mew" | cardNumber "01/18"
+rarity Promo | hp 30 | attack "Rainbow Wave" | externalCatalogId si1-1
+printingsAvailable: ["Reverse Holofoil"]  (no Normal printing exists)
+market $624.04 | 17 listings | totalSetNumber: null
+```
+Gemini's reads of `cardName: "Mew"` + `attackName: "Rainbow Wave"` (and
+`hp: "30"` on one scan) confirm this is the card.
+
+### The ten scans
+
+All read `cardName: "Mew"`, `attackName: "Rainbow Wave"`,
+`setName: null`, `stampType: "none"` (one `"other"`). Numbers read:
+`null` x6, `8/18` x2, `7/18` x1, `8/64` x1 — **never `1/18`**.
+
+| requestId | number | conf | best match | score/tie |
+|---|---|---|---|---|
+| `ba997012` | null | Medium | Mew - 8 (Glossy Finish), WoTC Promo | 6/1 — price withheld |
+| `1b052656` | 8/18 | High | Mew - 8 (Glossy Finish) | 7/1 |
+| `25ed6fcc` | null | Medium | Mew VMAX (Secret) | 2/**8** |
+| `96184a4b` | null | Low | Mew VMAX (Secret) | 2/**8** |
+| `946513f7` | null | High | Mew - 8 (Glossy Finish) | 6/1 — price withheld |
+| `2c59f053` | 8/18 | High | Mew - 8 (Glossy Finish) | 7/1 |
+| `2232314e` | null | Medium | Mew VMAX (Secret) | 2/**8** |
+| `bb3b474e` | 7/18 | High | Mew VMAX (Secret) | 2/**8** |
+| `f89e7b08` | null | Medium | Mew VMAX (Secret) | 2/**8** |
+| `8fa53765` | 8/64 | High | Shining Mew, Shining Legends | 8/1 |
+
+The null-cardNumber weak-signal floor did its job on 2 of 10 (price
+withheld). The other 8 surfaced a confident-looking wrong card.
+
+**The legacy shadow model read `setName: "Southern Islands"` on
+multiple scans, and once read `cardNumber: "1/18"` — the correct
+number.** The primary read `setName: null` on all ten. Haiku
+contributed nothing usable.
+
+### Root cause: the record was never retrieved
+
+`search=Mew&limit=30` at offsets **0, 30 and 60** — tcgPlayerId 46466
+is **absent from all 90 results**, crowded out by the enormous Mew
+catalog. **The scoring never saw it.** This is not a filter loss and
+not a scoring loss.
+
+Why every existing fallback failed:
+- **Page 2** (offset 30) ran — still absent.
+- **Combined name+number** fired on `bb3b474e`: `"Mew 7/18"` -> 0
+  results, then `"Mew 07/18"` -> 0 results. **The zero-padding logic
+  worked exactly as designed** (padded to 2 digits to match the 18
+  total, per test #94 / commit `b01b257`). It was simply fed the wrong
+  numerator. Verified directly: **`search="Mew 01/18"` returns exactly
+  1 result, the correct card.**
+- **Legacy-model number rescue** does `candidates.find(...)` against the
+  **already-fetched pool** and never re-queries, so even the correct
+  `1/18` legacy read could not have rescued it.
+
+**The decisive finding**: `search="Mew Southern Islands"` returns
+**exactly 1 result — the correct card**. The legacy model had already
+read that set name. **There is no setName-scoped search anywhere in the
+codebase** — confirmed by auditing every `fetchPokemonPriceTracker`
+call site; all are keyed on card name only (plus offset, or a combined
+name+number string).
+
+### It is a class, not this one card
+
+The driver is **common species name + small/promo set**:
+
+| species | total results for a bare search | Southern Islands card in page 1? |
+|---|---|---|
+| Butterfree | 26 | **yes** (09/18) |
+| Togepi | 23 | **yes** (04/18) |
+| Lapras | 30 (full page) | **no** |
+| Mew | 30 (full page) | **no** — absent from first 90 |
+
+So it hits exactly the subset of small/promo-set cards whose species is
+heavily reprinted — i.e. it is worst precisely where the crowding comes
+from the species being popular. The same shape applies to any
+small/promo set record of a common species, not just Southern Islands.
+
+**Unresolved**: why the models read 7/18, 8/18, 9/18 and 8/64 but
+essentially never 1/18. Variance that wide suggests the printed number
+is genuinely hard to read on this card; the logs cannot settle it, and
+no prompt change is proposed on this evidence alone.
+
+### Options (none built in this pass)
+
+| | Option | Effort | Deploy? | Risk |
+|---|---|---|---|---|
+| **1** | **setName-scoped search fallback** — when the name/number fallbacks fail and a set name was read, try `"<cardName> <setName>"`. Proven to resolve this exact card. | small-medium | yes | Low-moderate: must keep strict exact-match-only acceptance, because PPT returns unrelated filler for non-matching multi-word queries (test #63). |
+| **2** | **Consume the legacy shadow's `setName`, not just its `cardNumber`** — already in flight, already carried "Southern Islands". This is what makes Option 1 fire here. | small | yes | Low — additive, same shape as the existing number rescue. |
+| 3 | Deepen pagination to page 3-4 | small | yes | **Rejected — tested: the card is absent from the first 90 results**, so it would burn 30-60 extra credits per failing scan and still fail. |
+| 4 | Accept and disclose only | none | no | The floor withheld 2 of 10, but 8 scans surfaced a wrong card for a $624 item. Weak alone. |
+
+**Recommendation: Options 1 + 2 together**, bundled into one deploy with
+the two already-queued backend items (tied `tcgPlayerId` logging and the
+`matchBasis` reason code).
+
+---
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
