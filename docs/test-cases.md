@@ -8833,6 +8833,192 @@ the two already-queued backend items (tied `tcgPlayerId` logging and the
 
 ---
 
+## Fix: set-name-scoped search rescue for small-set cards that a name search never returns — BUILT, DEPLOYED, PUSHED; the rescue itself NOT yet observed on live traffic (2026-10-02)
+
+Follows the Southern Islands Mew investigation directly above. Four
+backend changes shipped as one set.
+
+### What shipped
+
+**Option 2 — the legacy shadow model's `setName` as a HINT.** The set
+name is taken from the primary read, falling back to the legacy shadow
+read already in flight (no new model call, no new cost). It only chooses
+a query; it must then survive the acceptance rules below. In the real
+Mew scans the primary read `setName: null` every time while the legacy
+model read `"Southern Islands"` — the information was already there and
+being discarded.
+
+**Option 1 — one extra PPT search, `"<cardName> <setName>"`.** Accepted
+only if a candidate passes **all** of:
+- the same name filter used everywhere else;
+- **exact normalized set-name equality** (`normalizeSetNameForMatch` —
+  folds case, accents, punctuation and `&`/`and`);
+- the number check, when a number was read and parses.
+
+Then **exactly one distinct qualifier** (deduped via
+`candidateDedupKey`) is required. Several or none -> nothing happens,
+existing behavior. Strictness is deliberate: PPT returns unrelated
+**filler** rows rather than an empty array for multi-word queries that
+match nothing (test #63), so a nonzero result count proves nothing.
+
+Accepted matches get `matchConfidence: "Medium"` (set outright, not
+`min(current, Medium)` — the rescue replaces `best` with a candidate
+that was never scored against the read, so the surviving `bestScore`
+describes a different card; carrying it forward produced **Low** on the
+Mew case purely because the synthesized floor score of 3 sits under
+`MEDIUM_THRESHOLD` of 5) plus `matchBasis: "setname-search"` and this
+disclosure:
+
+> "We couldn't find this card by name or number, so it was located using
+> the set name "Southern Islands", which came from a second AI model's
+> independent read of the card. Exactly one printing in that set matched
+> the name and number we had. This isn't a fully confirmed match; verify
+> the exact set and printing before trusting this price."
+
+**Two guards, both load-bearing:**
+- `resultIsWeak = !best || bestScore < HIGH_THRESHOLD || tieCount >= 2`.
+  The first draft lacked this and would have run on any scan whose best
+  match was not number-confirmed — **including scans that had already
+  resolved well on a null card number**. The real Meditite 56/100 scan is
+  exactly that shape (`cardNumber: null`, `bestScore` 10 = hp 6 +
+  attackName 4, `tieCount` 1, Match High). Those scans would have paid
+  an extra PPT call, ~30 extra credits, the legacy-await latency, and
+  risked a good High match being replaced by a Medium one. Caught in
+  review — the code comment claimed "never replaces a High-confidence
+  normal-path match" and the code did not enforce it.
+- `numberAlreadyConfirmed` — redundant (any number match scores >= 14,
+  already clearing `HIGH_THRESHOLD`) but kept because it states intent.
+
+**500ms cap on the legacy-read await.** `LEGACY_SETNAME_HINT_TIMEOUT_MS
+= 500`, via `Promise.race`. The await is otherwise bounded only by
+`GEMINI_TIMEOUT_MS` (5000ms) and a measured worst case added **+2161ms**
+to a weak scan — enough to blow the 1-3s target alone. Past the cap the
+hint is treated as absent and the scan falls through, logging that it
+did. The `.catch` on the raced promise prevents an unhandled rejection;
+the timer is cleared in a `finally`.
+
+**One extra change the Mew case forced**: set-name rescues are exempted
+from the null-cardNumber weak-signal floor
+(`} else if (!read.cardNumber && !setNameSearchRescued) {`). Without it
+the Mew case resolved correctly to 46466 and was then **discarded on a
+signal count of 0**, because the rescued candidate was never scored
+against the read so `bestDetail` is null.
+
+**Queued item (a) — `tiedIds` logging.** `pickBestCandidate`'s tie log
+line now records the tied `tcgPlayerId`s. Without them a tie cannot be
+reconstructed afterwards: proved 2026-10-01, when re-querying PPT failed
+to reproduce the original pool and **0 of 14** real ties from a live
+session were recoverable.
+
+**Queued item (b) — `matchBasis`.** A machine-readable companion to
+`ambiguousNote`, returned in the response:
+`legacy-number-rescue`, `setname-narrowed`, `setname-search`,
+`weak-number`, `name-rescued-by-number`, **`tie`**, `score-only`. The
+`tie` value was added for the `tieCount >= 2` -> Low path, which
+previously fell through to `score-only`. No frontend change shipped —
+the extension's alternate-printing banner gate still treats every Medium
+alike; this is the field that will let it stop doing so.
+
+**`&` vs `and`**: folded together in `normalizeSetNameForMatch`, scoped
+**only** to this acceptance check. Deliberately **NOT** wired into
+`scoreCandidate`'s `set` signal — per the Burger King Chimchar entry,
+doing that in isolation hands the BASE card +3 while a promo reprint
+sharing the number gets nothing, collapsing an honest tie into a
+confident wrong answer.
+
+### Measured numbers (real live PPT, not estimates)
+
+**Credits per scan** — the new search runs *only* on already-failing scans:
+
+| scan | PPT calls | credits |
+|---|---|---|
+| Resolves normally (Treecko 90038) | `search=Treecko` | **30 — zero added** |
+| **Meditite-shaped strong scan** (null number, High) | `search=Meditite` | **30 — zero added, zero set-name searches** |
+| Fails (Mew null number) | name + page 2 + **set search** | **90** (+30 from this change) |
+| Worst case (Mewtwo zero-pad chain + set search) | 5 | ~150 |
+
+**Latency of the legacy-hint await**, with a deliberately slow legacy read:
+
+| scenario | total | delta |
+|---|---|---|
+| **Strong scan, legacy 3000ms slow** | **481ms** | **0 — never awaited** |
+| Weak scan, legacy already resolved | 1495ms | baseline |
+| Weak scan, legacy @1500ms | 1077ms | falls through at the cap |
+| Weak scan, legacy @3000ms | 1028ms | falls through at the cap |
+
+Capped weak scans come out *faster* than baseline, because giving up on
+the hint also skips the extra PPT call. Context for why the tail rarely
+bites: both model calls are fired in parallel at the top of the handler,
+and real production logs show the legacy finishing only ~100-250ms after
+the primary (primary 1519-1774ms vs legacy 1572-1991ms).
+
+**Test suite**: 10/10 against real live PPT, plus one report-only case —
+Mew null + hint resolves to 46466 at Medium; a wrong hint ("Jungle")
+accepts nothing; a Meditite-shaped scan makes zero set-name searches and
+stays High; Moo-Moo Milk (`d1c185a`), Mewtwo zero-pad (`b01b257`),
+Chimchar tie, Treecko, Corphish and the legacy-number-rescue path all
+behave exactly as before; a many-qualifier search accepts nothing. One
+intermediate red on Chimchar was a transient PPT minute rate limit from
+the harness itself, confirmed correct in isolation (84282 / Low /
+`tie`).
+
+### Deploy
+
+Built from disk via the Vercel CLI with `--scope leasedraftai` (required
+— see the box in CLAUDE.md's "Before you deploy").
+
+```
+preview     dpl_6xXTfhU3naefv7EifPohWr8veZma
+production  dpl_qGSZV7k4TyiKhauy37SRxRMrS6qJ   (Ready, aliased)
+sourceHash  460cbf0eeb651d9f0b9a26759283fff9d8d4e1c9
+```
+Both deployments' `sourceHash` equal `shasum api/identify.js` exactly.
+`normalizeDiacriticTest: "pokemon collector"` intact; `POST {}` returns
+the real 400. Code commits `324f837` + `cc6e4c6`, pushed.
+
+**Real end-to-end scans on production:**
+- Southern Islands Mew (46466 product image) -> correct card, **High**,
+  `matchBasis: "score-only"`, `timingMs.total: 2461`
+- Pikachu XY95 -> correct (114004), High, `score-only`, 1623ms
+
+`get_runtime_errors` clean for the new deployment — the single error
+group (a PPT 502 on an unrelated Charizard search) is stamped
+`lastDeployment=dpl_DhY7ZAQyJzd1cfR1U3wVFBJ7B3n6`, the PRIOR deployment,
+and predates this deploy.
+
+### NOT YET PROVEN ON LIVE TRAFFIC
+
+**The real Mew end-to-end scan resolved BY NUMBER and did NOT exercise
+the new rescue** — `matchBasis` came back `score-only`, not
+`setname-search`. The TCGplayer catalog image is clean enough that the
+number reads correctly, and the combined name+number fallback
+(`"Mew 01/18"`) finds the card on its own. So the rescue path is
+deployed and proven against live PPT data in the local harness, but
+**has not been observed firing on real production traffic**. Watch for
+a `[lookup] SETNAME SEARCH RESCUE` line. The same applies to the new
+`tiedIds=` field, which needs a real tie scan to appear.
+
+### OPEN ITEM — the wrong-number Mew class is NOT fixed
+
+Of the ten logged Mew scans, six read `cardNumber: null` and would now
+resolve. The other four read a **wrong** number (`8/18` x2, `7/18`,
+`8/64`) and **still will not**.
+
+A wrong-but-parseable number produces a `weak-number` match worth >= 14
+points, which **clears `HIGH_THRESHOLD` (10)**, so `resultIsWeak` is
+false and the set-name search never runs. Verified against the real
+function: the logged `"Mew 8/18"` read resolves to **tcgPlayerId 607818
+at Medium via `weak-number`** — a wrong card — on a single PPT call.
+
+This is not a regression (the `weak-number` path predates this change)
+but it is not fixed either, and it needs its own design. The obvious
+knobs each have a cost: lowering the weakness bar would re-admit the
+extra call and latency on genuinely-fine scans; treating `weak-number`
+as weak would change behavior for every promo-vs-numbered-set card.
+Not proposed here.
+
+---
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

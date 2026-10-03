@@ -5034,6 +5034,97 @@ checklist before reporting something as finished:
   comparison). Doesn't affect `normalizeDiacriticTest`'s reliability.
   Open, low-priority follow-up: fix the code comment that overclaims
   this next time the file is touched.
+- **Set-name-scoped search rescue (Southern Islands Mew, $624) — BUILT,
+  DEPLOYED, PUSHED, 2026-10-02. The rescue itself is NOT yet proven on
+  live traffic.** Full trace in `docs/test-cases.md`. Fixes the failure
+  where a card's PPT record is **never retrieved** because every search
+  is keyed on card name and a common species crowds it out
+  (`search=Mew&limit=30` does not contain tcgPlayerId 46466 anywhere in
+  the first 90 results).
+
+  **What it does**: when a result is weak, take the set name from the
+  primary read — or, failing that, from the legacy shadow read already
+  in flight — and run one extra PPT search, `"<cardName> <setName>"`.
+  Accept a candidate only on **exact normalized set-name equality**
+  (case/accents/punctuation and `&`/`and` folded) plus the usual name
+  filter plus the number check when a number was read and parses, and
+  only if **exactly one distinct candidate qualifies**. Several or none
+  -> nothing happens. Strict because PPT returns unrelated **filler**
+  rows, not an empty array, for multi-word queries that match nothing
+  (test #63). Accepted matches are `matchConfidence: "Medium"` with
+  `matchBasis: "setname-search"` and a note naming the set and saying
+  whether the hint came from the second model.
+
+  **Two guards**: `resultIsWeak = !best || bestScore < HIGH_THRESHOLD ||
+  tieCount >= 2`, plus "number not already confirmed". The first draft
+  lacked the weakness gate and would have fired on scans that had
+  already resolved well with a null card number — the real Meditite
+  56/100 scan is exactly that shape (`bestScore` 10, `tieCount` 1,
+  High). Caught in review: the comment claimed it never replaces a
+  High-confidence match and the code did not enforce it. A **500ms cap**
+  (`LEGACY_SETNAME_HINT_TIMEOUT_MS`, via `Promise.race`) bounds the
+  legacy-read await, which is otherwise bounded only by
+  `GEMINI_TIMEOUT_MS` and measured **+2161ms** worst case on a weak
+  scan. Set-name rescues are also exempted from the null-cardNumber
+  weak-signal floor, which otherwise discarded the correct Mew match on
+  a signal count of 0.
+
+  **Shipped alongside**: `tiedIds` in `pickBestCandidate`'s tie log line
+  (closing queued item (a) — without it a tie cannot be reconstructed
+  later, proved when 0 of 14 real ties were recoverable), and
+  `matchBasis` on the response (queued item (b)):
+  `legacy-number-rescue`, `setname-narrowed`, `setname-search`,
+  `weak-number`, `name-rescued-by-number`, `tie`, `score-only`. **No
+  frontend change** — the alternate-printing banner gate still treats
+  every Medium alike; `matchBasis` is what will let it stop.
+
+  **`&`/`and` is folded ONLY in the new acceptance check**, never in
+  `scoreCandidate`'s `set` signal — per the Burger King Chimchar entry,
+  fixing that in isolation buries promo reprints.
+
+  **Measured, real live PPT**: a scan that already resolves costs **30
+  credits, zero added** (Meditite-shaped strong scans make **zero**
+  set-name searches); a failing scan costs **90** (+30 from this
+  change); worst case ~150. Latency: a strong scan is **481ms even with
+  a deliberately 3000ms-slow legacy read** (never awaits it); capped
+  weak scans come out *faster* than baseline (1077ms / 1028ms vs 1495ms)
+  because giving up on the hint also skips the extra PPT call. Suite
+  10/10 plus one report-only case.
+
+  **Deploy**: built from disk via the Vercel CLI with
+  **`--scope leasedraftai`**. preview `dpl_6xXTfhU3naefv7EifPohWr8veZma`,
+  production **`dpl_qGSZV7k4TyiKhauy37SRxRMrS6qJ`** (Ready, aliased),
+  **`sourceHash 460cbf0eeb651d9f0b9a26759283fff9d8d4e1c9`** — equal to
+  `shasum api/identify.js` on both. Commits `324f837` + `cc6e4c6`,
+  pushed. `get_runtime_errors` clean for the new deployment (its one
+  group is a PPT 502 stamped to the PRIOR deployment and predates this
+  deploy).
+
+  **NOT YET PROVEN ON LIVE TRAFFIC — read this before trusting it.** The
+  real end-to-end production scan of the Southern Islands Mew product
+  image **resolved BY NUMBER and did not exercise the rescue**:
+  `matchBasis` came back `score-only`, not `setname-search`. The catalog
+  image is clean enough that the number reads correctly and the existing
+  combined name+number fallback (`"Mew 01/18"`) finds the card on its
+  own. The rescue is proven against live PPT in a local harness only.
+  Watch for a `[lookup] SETNAME SEARCH RESCUE` log line; same for the
+  new `tiedIds=` field, which needs a real tie scan to appear.
+
+- **OPEN — the wrong-number Mew class is NOT fixed and needs its own
+  design.** Of the ten logged Southern Islands Mew scans, six read
+  `cardNumber: null` and would now resolve via the rescue above. The
+  other four read a **wrong** number (`8/18` x2, `7/18`, `8/64`) and
+  still will not. A wrong-but-parseable number produces a `weak-number`
+  match worth >= 14 points, which **clears `HIGH_THRESHOLD` (10)**, so
+  `resultIsWeak` is false and the set-name search never runs. Verified
+  against the real function: the logged `"Mew 8/18"` read resolves to
+  **tcgPlayerId 607818 at Medium via `weak-number`** — a wrong card — on
+  a single PPT call. Not a regression (`weak-number` predates this
+  change), but not fixed. The obvious knobs each cost something:
+  lowering the weakness bar re-admits the extra call and latency on
+  genuinely-fine scans, and treating `weak-number` as weak changes
+  behavior for every promo-vs-numbered-set card. No fix proposed yet.
+
 - **Southern Islands Mew (01/18, $624) — 10 consecutive failed scans
   because the record is NEVER RETRIEVED. Investigated 2026-10-02, full
   trace in `docs/test-cases.md`.** `search=Mew&limit=30` at offsets 0,
@@ -5054,8 +5145,9 @@ checklist before reporting something as finished:
   (23) are found in page 1, while Lapras and Mew (30+) are not — so it
   is worst exactly where the species is most reprinted.
 
-- **Bundle into the NEXT backend deploy (no deploy is worth doing just
-  for these, but neither should ship without the other)**: (a) log the
+- **DONE 2026-10-02, shipped in `dpl_qGSZV7k4TyiKhauy37SRxRMrS6qJ`** (kept
+  for the record; nothing left to do here) — bundle into the next backend
+  deploy: (a) log the
   tied candidates' `tcgPlayerId`s in `pickBestCandidate`'s existing tie
   log line — it already holds `tiedCandidates`, and without them a tie
   cannot be reconstructed afterwards (proved 2026-10-01: re-querying PPT
