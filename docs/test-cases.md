@@ -9052,20 +9052,40 @@ no signal we hold distinguishes it.
 
 ---
 
-## Fix: READ TOTAL ORPHAN rescue — resolves the wrong-number Mew class. BUILT AND COMMITTED LOCALLY; NOT DEPLOYED, NOT PUSHED, UNPROVEN ON LIVE TRAFFIC (2026-10-04)
+## Fix: READ TOTAL ORPHAN rescue — resolves the wrong-number Mew class. DEPLOYED, PUSHED, AND OBSERVED FIRING CORRECTLY ON PRODUCTION (n=1 target case) (2026-10-04)
 
 Follows the Southern Islands Mew investigation and the set-name search
 rescue above. Commit `1c487f7`, `api/identify.js` only
-(sha1 `e7495136d71a95542c3aa7666edb1c5b0df5e521`).
+(sha1 `e7495136d71a95542c3aa7666edb1c5b0df5e521`), docs in `e14362e`,
+pushed to GitHub as `0eec6a1..e14362e`.
 
-> **LIVE PRODUCTION STILL RUNS `460cbf0eeb651d9f0b9a26759283fff9d8d4e1c9`**
-> (`dpl_qGSZV7k4TyiKhauy37SRxRMrS6qJ`). Nothing in this entry is live.
-> The next deploy of `api/identify.js` carries this change — along with
-> the two comment corrections already queued against that file (the
-> `WHATNOT_PURCHASE_TAX_RATE` "ASSUMPTION, NOT YET VERIFIED" text and the
-> `stampNote` wording). Byte-for-byte deploy-hash parity with production
-> is already broken by this commit, so the "fold comment-only edits into
-> the next real change" rule now applies to all of them at once.
+> **LIVE AND CONFIRMED.** Production runs
+> `sourceHash e7495136d71a95542c3aa7666edb1c5b0df5e521`
+> (`dpl_DnqenwCrm7BjRa3oG44LCFrEfQ62`), which **equals
+> `shasum api/identify.js` on disk byte-for-byte** — the second byte-exact
+> deploy in this project's history, and the second built from disk via the
+> Vercel CLI rather than inline content. The prior production hash was
+> `460cbf0e…` (`dpl_qGSZV7k4TyiKhauy37SRxRMrS6qJ`).
+>
+> **STILL QUEUED, did NOT ride along** — verified by grep against the
+> deployed file after the deploy, not assumed:
+>   1. `WHATNOT_PURCHASE_TAX_RATE`'s comment still reads "ASSUMPTION, NOT
+>      YET VERIFIED" (`api/identify.js:220`), which Eric's 48-receipt check
+>      across 7 sellers already disproved.
+>   2. `stampNote`'s wording still claims "our data source doesn't track
+>      pricing for stamped promos separately from the standard printing"
+>      (`api/identify.js:3900`), which is false for set-stamped EX cards.
+>   3. `WHATNOT_SHIPPING_PER_CARD` is still `0.0`
+>      (`api/identify.js:238`) and `computeSuggestedBid` still computes
+>      `(target - shipping) / (1 + tax)` (`api/identify.js:2311`) — the
+>      less-correct term ordering. A no-op while shipping is zero, but
+>      whoever sets that constant to a real value (~$6 / cards per order)
+>      must move the shipping term outside the division in the same change.
+>
+> Deploy-hash parity with production is now intact again, so the "fold
+> comment-only edits into the next real change" rule applies to all three
+> as before — none of them is urgent, and none should get a dedicated
+> deploy.
 
 ### What it fixes
 
@@ -9252,17 +9272,149 @@ supplied no set name.
    is byte-identical). Recorded because it is a real interpretation, not
    a detail.
 
+### Deployed and live-confirmed, 2026-10-04
+
+Built from disk via the Vercel CLI (never the inline-content MCP path),
+with `--scope leasedraftai` on every subcommand:
+
+| | deployment | target | status | `sourceHash` |
+|---|---|---|---|---|
+| preview | `dpl_DPcGhvgCEMJj2BTy8KYrTiSD3xbw` | preview | Ready | `e7495136…` |
+| **production** | **`dpl_DnqenwCrm7BjRa3oG44LCFrEfQ62`** | production | Ready | `e7495136…` |
+
+**Both equal `shasum api/identify.js` exactly.** Production is aliased to
+`whatnot-pokemon-identify.vercel.app` and
+`whatnot-pokemon-identify-leasedraftai.vercel.app`; a live `GET` on the
+real alias returns that hash plus
+`normalizeDiacriticTest: "pokemon collector"`, and `POST {}` returns the
+real `400 {"error":"Missing imageBase64","requestId":…}`.
+
+**CLI wrinkle worth recording.** The first
+`npx vercel deploy --yes --scope leasedraftai` returned a bare
+`{"status":"error","reason":"deploy_failed","message":"Not authorized"}`
+and created **no** deployment (confirmed — only one preview exists in
+`vercel ls`). Re-running the identical command with `--debug` succeeded
+immediately, and the debug output showed auth was fine the whole time
+(`Valid access token, skipping token refresh`, correct
+`teamId=team_DZEpR5n7heCyZsNFjxZmxUP1`); the failure surfaced around the
+CLI's own GitHub-deployment-status step, not the file upload. `npx` had
+also auto-bumped the CLI 62.1.0 → 62.2.0 since the 2026-10-02 note. **So
+if `--scope` alone returns "Not authorized", just retry before assuming a
+credential or scope problem** — and check `vercel ls` before retrying, so
+a half-succeeded deploy isn't duplicated.
+
+### Three real production scans
+
+**A — Pikachu XY95 (clean regression), `requestId 4b630767`.** Correct
+card, `tcgPlayerId 114004`, `matchConfidence: High`,
+`matchBasis: "score-only"`, `visionProvider: gemini`,
+`timingMs: {gemini: 1720, lookup: 156, total: 1876}` — inside the 1-3s
+target. Cost $0.00091. **Its log contains exactly ONE `[lookup] search=`
+line, NO `READ TOTAL ORPHAN` line and NO set-name search** — i.e. **1 PPT
+call, 30 credits, zero extra** on a scan that resolves normally, which is
+the central cost claim, now confirmed on production rather than inferred.
+(The read was `cardNumber: "XY95"` — a prefixed promo code with no total
+— so this also demonstrates the "a read with no `/total` can never set
+the flag" property on real traffic.)
+
+**B — Southern Islands Mew, `requestId 6e24f393` — THE TARGET CASE.** A
+specific read cannot be forced, so the real 46466 catalog image was sent
+and whatever came back was reported. Gemini read
+**`cardNumber: "8/18"` — the exact wrong-number shape from the logged
+ten.** Real production log:
+
+```
+[lookup] READ TOTAL ORPHAN: read=8/18, no candidate in pool carries total 18
+[lookup] no number-confirmed match — trying setName-scoped search= "Mew Southern Islands" (setName hint from primary)
+[lookup] setName-scoped search raw candidate count= 1
+[lookup] SETNAME SEARCH RESCUE: accepted Mew 01/18 (Southern Islands, tcgPlayerId=46466) via setName hint "Southern Islands" from primary — ACCEPTED ON SET SIZE ONLY, read number 8/18 disagrees
+```
+
+Result: **46466, Southern Islands, `matchConfidence: Medium`,
+`matchBasis: "setname-search"`, `timingMs.total: 1734`ms**, with the
+extended note naming both numbers. A follow-up `POST /api/price`
+returned in **185ms**: `priceVariantUsed: "Reverse Holofoil"`, NM
+**$630.89**, `conditionsBreakEven.NM` $527.31,
+**`conditionsSuggestedBid.NM` $329.70** (Slow tier, 57 sold / 19·mo),
+`pricingError: null`.
+
+Two details that matter for reading this correctly, neither of which the
+design predicted:
+- **The set-name hint came from the PRIMARY read this time**
+  (`setName: "Southern Islands"`), not the legacy shadow model. All ten
+  logged scans had the primary read `setName: null` every single time, so
+  this firing did **not** exercise the legacy-hint path. The legacy model
+  read `cardNumber: "9/18"` here — wrong again, and a fifth distinct
+  wrong numerator for this card (7, 8, 9, and 8/64 across all reads).
+- **On this particular firing the load-bearing piece was the relaxed
+  total-only filter, not the gate bypass.** `best` was `Shining Mew
+  40/73` (score 8 = hp 6 + rarity 2), so
+  `numbersMatch("8/18", "40/73")` is false and
+  `numberAlreadyConfirmed` was already false — the gate passed on the
+  pre-existing condition. The gate bypass is still needed for the case
+  where `best` IS the weak-matched bare-number candidate (harness case
+  C1, where `hp` was null); both halves are real, they just didn't both
+  fire here.
+
+**C — organic Japanese Espeon, `requestId 4ffba242`** (Eric's own live
+scanning, not a test). Read `cardNumber: "060/114"`. Hit the new line —
+`[lookup] READ TOTAL ORPHAN: read=060/114, no candidate in pool carries
+total 114` — and then, because neither the primary nor the legacy read
+supplied a set name, made **no** set-name search and **no** extra PPT
+call, falling through to the existing `NO NUMBER MATCH, INSUFFICIENT
+CORROBORATION` withhold. 3 PPT calls (page 1, page 2, combined
+name+number), exactly as before this change. **Real organic traffic
+exercising the new code path with zero behavior change and zero extra
+cost** — the safety property the sweeps claimed, observed rather than
+modelled.
+
+### Measured before/after on the real production read
+
+The exact logged read from scan B was replayed through both the pre- and
+post-change files against the same cached PPT payloads — a measurement,
+not an inference from the log:
+
+```
+OLD  id=146699  set="Shining Legends"    conf=Medium  basis=score-only       pptCalls=2
+     note: (NONE — no warning shown)
+NEW  id=46466   set="Southern Islands"   conf=Medium  basis=setname-search   pptCalls=2
+     note: We couldn't find this card by name or number, so it was located using the set name "Southern Islands"...
+```
+
+So on this real scan the old code showed **Shining Mew (Shining Legends)
+at Medium confidence with no warning of any kind** — a confidently-
+presented wrong card, worse than the $37.25 WoTC Promo outcome
+documented from the harness, because that one at least carried a
+`weak-number` warning. And **both versions made the same 2 PPT calls**:
+this fix cost **zero extra credits** on the very scan it was built for,
+better than the +0.015 calls/scan the 1,324-scan sweep predicted for
+denominator-misread scans.
+
+### Errors
+
+`get_runtime_errors` (2h window spanning the deploy): **none**.
+Error/warning/fatal logs on `dpl_DnqenwCrm7BjRa3oG44LCFrEfQ62`: **none**.
+Status-code breakdown on the new deployment: 13x200, 7x204, 1x400 (that
+400 being the deploy checklist's own `POST {}` check).
+
 ### Honest limitations
 
-- **Not deployed and not observed on live traffic.** Every result above
-  is from the real functions against real PPT data, but the only live
-  PPT calls made were 6 read-only searches during investigation. Watch
-  for `[lookup] READ TOTAL ORPHAN` and `ACCEPTED ON SET SIZE ONLY` after
-  a deploy.
-- **The trigger's real-traffic firing rate is inferred from synthetic
-  perturbation**, not measured on production traffic — the logs that
-  would have shown it rolled past Vercel's 1-hour retention. That is
-  precisely why the log line was added.
+- **n=1 on the target case.** The orphan path has now been observed
+  resolving the wrong-number Mew class correctly on production exactly
+  **once** (scan B), plus once firing harmlessly with no hint available
+  (scan C). That is a real status change from "unproven," not a
+  confirmed rate. Keep watching for `[lookup] READ TOTAL ORPHAN` and
+  `ACCEPTED ON SET SIZE ONLY`.
+- **The legacy-shadow hint path is still unobserved on production.**
+  Scan B's hint came from the primary read. The case the original
+  investigation was built around — primary `setName: null`, legacy
+  supplying "Southern Islands" — has not been seen firing live.
+- **The trigger's real-traffic firing RATE is still inferred from
+  synthetic perturbation**, not measured over a representative window.
+  Two firings in a handful of scans says nothing about the rate; the log
+  line exists so a future stats pull can measure it properly (and per
+  the standing rule at the top of CLAUDE.md, never off a `[timing]`-only
+  filter).
 - **Exact normalized set-name equality stays brittle against how a model
   words a Japanese set name.** `"Hitmontop Crimson Haze"` (test #10)
   returns **0** name+set-equal candidates because PPT stores that set
