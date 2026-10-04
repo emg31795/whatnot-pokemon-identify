@@ -8886,8 +8886,18 @@ disclosure:
   risked a good High match being replaced by a Medium one. Caught in
   review — the code comment claimed "never replaces a High-confidence
   normal-path match" and the code did not enforce it.
-- `numberAlreadyConfirmed` — redundant (any number match scores >= 14,
-  already clearing `HIGH_THRESHOLD`) but kept because it states intent.
+- `numberAlreadyConfirmed` — kept because it states intent directly.
+  **CORRECTED 2026-10-04**: this originally read "redundant (any number
+  match scores >= 14, already clearing `HIGH_THRESHOLD`)". Both halves
+  were wrong and the error mattered — see the total-orphan entry near the
+  end of this file. An EXACT match scores `SCORE.number` = 20, but a WEAK
+  (asymmetric promo-vs-numbered-set) match scores `SCORE.number * 0.35` =
+  **7**; the `0.7` multiplier that would have given 14 was removed in
+  commit `42429a5` (test #67). 7 does **not** clear `HIGH_THRESHOLD`
+  (10), so on a weak match `resultIsWeak` is **true** and this guard is
+  not redundant at all — it was the only thing blocking the rescue,
+  because `numbersMatch`'s asymmetric branch returns `match: true` for a
+  coincidental numerator.
 
 **500ms cap on the legacy-read await.** `LEGACY_SETNAME_HINT_TIMEOUT_MS
 = 500`, via `Promise.race`. The await is otherwise bounded only by
@@ -8998,24 +9008,271 @@ deployed and proven against live PPT data in the local harness, but
 a `[lookup] SETNAME SEARCH RESCUE` line. The same applies to the new
 `tiedIds=` field, which needs a real tie scan to appear.
 
-### OPEN ITEM — the wrong-number Mew class is NOT fixed
+### The wrong-number Mew class — now FIXED IN CODE (2026-10-04), see the total-orphan entry below
 
-Of the ten logged Mew scans, six read `cardNumber: null` and would now
-resolve. The other four read a **wrong** number (`8/18` x2, `7/18`,
-`8/64`) and **still will not**.
+Of the ten logged Mew scans, six read `cardNumber: null` and resolve via
+the rescue above. **Three** of the remaining four read a *wrong* number
+(`8/18` x2, `8/64`) and surfaced a wrong card; the fourth (`7/18`)
+surfaced nothing at all.
 
-A wrong-but-parseable number produces a `weak-number` match worth >= 14
-points, which **clears `HIGH_THRESHOLD` (10)**, so `resultIsWeak` is
-false and the set-name search never runs. Verified against the real
-function: the logged `"Mew 8/18"` read resolves to **tcgPlayerId 607818
-at Medium via `weak-number`** — a wrong card — on a single PPT call.
+**CORRECTED 2026-10-04 — the original text of this section got the
+mechanism wrong on three counts, and the corrected version is what the
+fix was actually built against.** It read: *"A wrong-but-parseable number
+produces a `weak-number` match worth >= 14 points, which clears
+`HIGH_THRESHOLD` (10), so `resultIsWeak` is false and the set-name search
+never runs,"* and counted **four** stuck scans. In fact:
 
-This is not a regression (the `weak-number` path predates this change)
-but it is not fixed either, and it needs its own design. The obvious
-knobs each have a cost: lowering the weakness bar would re-admit the
-extra call and latency on genuinely-fine scans; treating `weak-number`
-as weak would change behavior for every promo-vs-numbered-set card.
-Not proposed here.
+1. **A weak match is worth 7 points, not >= 14.** It is
+   `SCORE.number * 0.35`; the `0.7` multiplier was removed in `42429a5`.
+   7 does **not** clear `HIGH_THRESHOLD` (10), so **`resultIsWeak` was
+   always TRUE** on these scans.
+2. **The blocker was `numberAlreadyConfirmed`, not the score gate** —
+   `numbersMatch`'s asymmetric branch returns `match: true` for a
+   coincidental numerator, which satisfied that guard. **And unblocking
+   it alone would have fixed nothing**, because the rescue's own
+   qualifier filter re-applies `numbersMatch` against the wrong read
+   number. Verified against the one real `"Mew Southern Islands"`
+   result: `8/18`, `7/18` and `8/64` each yield **0 qualifiers**.
+3. **`7/18` was never blocked by the gate at all.** Its `best` is null
+   (score 2 < `MATCH_FLOOR`), so `numberAlreadyConfirmed` is false and
+   the set-name search *already ran* — it was the qualifier filter that
+   rejected the correct card. Attributing its failure to the weakness
+   gate was wrong.
+
+The two knobs this section dismissed were also costed properly before
+anything was built, and the dismissal was right for the reason given but
+understated: treating `weak-number` as weak would fire on **108 of 330**
+realistic bare-numerator scans (**63 currently correct**), or **322 of
+330** on number-only reads (**258 correct**). That is what pushed the
+design onto an orphan-total trigger instead, which cannot fire on a read
+with no `/total` at all.
+
+`8/64` **remains unrecoverable by design** — both digits were misread, so
+no signal we hold distinguishes it.
+
+---
+
+## Fix: READ TOTAL ORPHAN rescue — resolves the wrong-number Mew class. BUILT AND COMMITTED LOCALLY; NOT DEPLOYED, NOT PUSHED, UNPROVEN ON LIVE TRAFFIC (2026-10-04)
+
+Follows the Southern Islands Mew investigation and the set-name search
+rescue above. Commit `1c487f7`, `api/identify.js` only
+(sha1 `e7495136d71a95542c3aa7666edb1c5b0df5e521`).
+
+> **LIVE PRODUCTION STILL RUNS `460cbf0eeb651d9f0b9a26759283fff9d8d4e1c9`**
+> (`dpl_qGSZV7k4TyiKhauy37SRxRMrS6qJ`). Nothing in this entry is live.
+> The next deploy of `api/identify.js` carries this change — along with
+> the two comment corrections already queued against that file (the
+> `WHATNOT_PURCHASE_TAX_RATE` "ASSUMPTION, NOT YET VERIFIED" text and the
+> `stampNote` wording). Byte-for-byte deploy-hash parity with production
+> is already broken by this commit, so the "fold comment-only edits into
+> the next real change" rule now applies to all of them at once.
+
+### What it fixes
+
+Three of the ten logged Mew scans read a wrong number (`8/18` x2,
+`8/64`) and resolved to tcgPlayerId **607818** ("Mew - 8 (Glossy
+Finish)", WoTC Promo, **$37.25**) instead of the real **46466**
+(**$624.04**) — a **17x** understatement at Medium confidence resting on
+one coincidental numerator. A fourth (`7/18`) surfaced nothing.
+
+What separates the right card from the wrong one is the **denominator**,
+not the numerator: the read said `/18` and **not one candidate in the
+fetched pool carries total 18**, because the whole Southern Islands set
+was crowded out of the name search. New `readTotalMissingFromPool()`
+detects exactly that, and it is a *set-absent* detector rather than a
+typo detector. Measured over 18 real cached PPT pools, 330 perturbation
+triples:
+
+| scenario | total-orphan fires | existing no-exact-match fires |
+|---|---|---|
+| number read correctly | **0 / 330 (0.0%)** | 0 / 330 (0.0%) |
+| **numerator** misread (+7) | **0 / 330 (0.0%)** | 328 / 330 (99.4%) |
+| **denominator** misread (+13) | **317 / 330 (96.1%)** | 322 / 330 (97.6%) |
+
+The 0% vs 96.1% split between numerator and denominator perturbation is
+the non-trivial result — the 0% on correct reads is partly construction-
+guaranteed, since the read was derived from a pool member.
+
+PPT's own `totalSetNumber` is `null` everywhere (re-confirmed on 46466),
+so "the candidate set's real printed total" is **not** available. Only
+the total embedded in a candidate's own number string is, which is what
+both new helpers use.
+
+### The change
+
+1. **`readTotalOrphan` trigger** — OR'd into the existing rescue's entry
+   condition, bypassing **only** `numberAlreadyConfirmed`.
+   `resultIsWeak` is still required (the orphan check sits inside that
+   branch), so a High-scoring untied match is never replaced.
+   `numbersMatch`, `scoreCandidate`, `resultIsWeak` and
+   `numberAlreadyConfirmed` are themselves untouched.
+2. **Total-only qualifier relaxation, orphan path only** — a qualifier
+   may be accepted on denominator-only equality (`numberTotalsMatch`).
+   When the flag is false the filter is byte-identically as strict as
+   before. The other three guards are unchanged and each is load-bearing:
+   the name filter, exact normalized set-name equality, and **exactly one
+   distinct qualifier**. Verified against live PPT: `"Mew Southern
+   Islands"` yields **1** qualifier, but `"Mew WoTC Promo"` yields **4**
+   and `"Lapras SV2a: Pokemon Card 151"` yields **3**, so neither
+   rescues anything.
+3. **Weak qualifiers REJECTED on the orphan path** — the opposite of the
+   unchanged path. See "what the tests caught" below.
+4. **NO-NUMBER-MATCH exemption** for a rescued result.
+5. **`setNameSearchNumeratorDisagreed`** adds a clause to the
+   `ambiguousNote` naming both numbers and saying only the set size
+   matched, and tags the rescue log line `ACCEPTED ON SET SIZE ONLY`.
+6. **New log line**:
+   `[lookup] READ TOTAL ORPHAN: read=X/T, no candidate in pool carries total T`
+   — added so the trigger's real firing rate becomes measurable rather
+   than inferred from synthetic perturbation.
+
+Real captured output for `8/18`:
+
+```
+[lookup] READ TOTAL ORPHAN: read=8/18, no candidate in pool carries total 18
+[lookup] no number-confirmed match — trying setName-scoped search= "Mew Southern Islands" (setName hint from legacy-shadow)
+[lookup] setName-scoped search raw candidate count= 1
+[lookup] SETNAME SEARCH RESCUE: accepted Mew 01/18 (Southern Islands, tcgPlayerId=46466) via setName hint "Southern Islands" from legacy-shadow — ACCEPTED ON SET SIZE ONLY, read number 8/18 disagrees
+```
+
+### The 8 cases — before/after
+
+Driven through the **real, unmodified `lookupCardPPT`** with `fetch`
+mocked over real cached PPT payloads (no network, no credits).
+
+| | case | before | after |
+|---|---|---|---|
+| **C1** | `8/18` (logged `1b052656`, `2c59f053`) | 607818 WoTC Promo **$37.25**, Medium `weak-number` | **46466 Southern Islands**, Medium `setname-search` |
+| **C2** | `7/18` (logged `bb3b474e`) | `notFound` | **46466**, Medium `setname-search` |
+| **C3** | `8/64` (logged `8fa53765`) | 607818, Medium `weak-number` | **unchanged** (+1 PPT call) |
+| **C4** | `1/18` correct read | 46466, Medium `setname-search` | **unchanged** |
+| **C5** | `null` (6 of the 10 logged scans) | 46466, Medium `setname-search` | **unchanged** |
+| **R1** | High score + orphan total | 99991, Low `score-only` | **unchanged** — `resultIsWeak` false, orphan never evaluated, no extra call |
+| **R2** | bare `"No. 131"` (Lapras 3-way tie) | 566476, Low `tie` | **unchanged** — orphan cannot fire without a `/total` |
+| **R3** | orphan + ambiguous set (`WoTC Promo` hint) | 607818, Medium `weak-number` | **unchanged** (+1 call) — 0 qualifiers |
+
+**Net on the ten logged Mew scans: 6 of 10 recoverable -> 9 of 10.**
+`8/64` stays unrecoverable by design.
+
+### Regression — differential against `HEAD`, not a reconstructed suite
+
+**3,514-scan differential**: real `lookupCardPPT`, 18 real cached PPT
+pools, every candidate x 5 read shapes x hint/no-hint, run against both
+the pre- and post-change file with identical mocked fetch.
+**0 outcome differences, 0 exceptions on either side.**
+
+| read shape / hint | n | outcome diffs |
+|---|---|---|
+| correct / hint, nohint | 382, 382 | 0, 0 |
+| numPerturb / hint, nohint | 331, 331 | 0, 0 |
+| totPerturb / hint, nohint | 331, 331 | 0, 0 |
+| bare / hint, nohint | 331, 331 | 0, 0 |
+| null / hint, nohint | 382, 382 | 0, 0 |
+
+That first sweep served **empty** results for set-name searches, so it
+proved "no outcome change when the rescue finds nothing" without ever
+exercising a *successful* rescue. A second **1,324-scan sweep** served a
+realistic set-name result (every cached card of that species in the
+hinted set) and counted PPT calls:
+
+| read shape | n | diffs | fixed | **broke** | calls old | calls new | per-scan delta |
+|---|---|---|---|---|---|---|---|
+| correct | 331 | 0 | 0 | **0** | 331 | 331 | **+0.000** |
+| numPerturb | 331 | 0 | 0 | **0** | 1340 | 1340 | **+0.000** |
+| totPerturb | 331 | **1** | 0 | **0** | 1377 | 1382 | **+0.015** |
+| bare | 331 | 0 | 0 | **0** | 361 | 361 | **+0.000** |
+| **total** | **1324** | **1** | 0 | **0** | 3409 | 3414 | **+0.004** |
+
+**0 cases went from correct to wrong.** The single difference is an
+**improvement**: truth card 87394 (`Mew (8)`, `08/53`, WoTC Promo) with a
+misread denominator used to surface the wrong 607818 labelled
+`setname-search`; it now withholds instead.
+
+**47-function byte-identity check** — rather than reconstruct the
+documented suites from prose, every top-level function body was
+extracted from both files and compared. **2 added**
+(`readTotalMissingFromPool`, `numberTotalsMatch`), **1 changed**
+(`lookupCardPPT`), **all 47 others byte-identical** — including
+`normalizeNumber`, `numbersMatch`, `scoreCandidate`, `pickBestCandidate`,
+`confidenceForScore`, `attackNamesFuzzyMatch`, `normalizeNameForMatch`,
+`normalizeSetNameForMatch`, `candidateDedupKey`,
+`buildZeroPaddedNumberVariant`, `candidateStampType`,
+`ambiguousNoteText`, `normalizeNameForSearchQuery`,
+`fetchPokemonPriceTracker`, `normalizePptCard`,
+`buildLivePriceVariantsFromTCGPlayer`, `computeBreakEvenMaxBid`,
+`computeSuggestedBid`, `buildLiveVariantsForCandidate` and
+`pickDefaultVariantKey`. So the 31-case `normalizeNumber`, 23-case
+fuzzy-attack, 411-value broad and pricing suites **cannot** change.
+`module.exports` is identical, so `api/price.js` and `api/flag.js` are
+unaffected and were not touched. `GET /api/identify` still returns
+`normalizeDiacriticTest: "pokemon collector"` — this file's single most
+historically fragile spot, confirmed intact.
+
+### Credit cost — measured, not estimated
+
+**+0.004 PPT calls per scan aggregate** (+5 calls over 1,324). Zero for
+correct reads, numerator misreads and bare reads; **+0.015** for
+denominator misreads. The orphan bypass only adds a call in the narrow
+sub-case where `numberAlreadyConfirmed` was already true via a weak
+match — everywhere else the set-name search was already eligible. A scan
+that *does* trigger it pays **one extra search = 30 credits**, plus up to
+500ms (`LEGACY_SETNAME_HINT_TIMEOUT_MS`) only when the primary read
+supplied no set name.
+
+### Three things the tests caught that the design didn't anticipate
+
+1. **A NO-NUMBER-MATCH override silently undid a correct rescue, and
+   needed a third code change that wasn't in the spec.** The
+   `if (read.cardNumber && best.number)` block now also requires
+   `!setNameSearchRescued`, mirroring the exemption the
+   `!read.cardNumber` branch has carried since `324f837`. A rescue
+   accepted on denominator-only equality fails `numberMatchedForBest`
+   **by construction** — the numerator is the part already concluded to
+   be misread — so without this guard the real `7/18` read resolved
+   correctly to 46466 and was then **immediately re-withheld** by the
+   insufficient-corroboration floor (case C2 failed on the first build).
+   When a rescue's number *did* match, the block was already a no-op, so
+   this only ever affects the numerator-disagreed case.
+2. **The orphan path must REJECT a weak qualifier — the opposite of the
+   unchanged path.** The first build let strict `numbersMatch` admit weak
+   qualifiers on the orphan path too, and regression case **R3** caught
+   the consequence: with the hint `"WoTC Promo"`, bare candidate `"8"`
+   became the single qualifier for read `8/18` and **relabelled the same
+   wrong $37.25 card from `weak-number` to `setname-search`, dropping its
+   weak-number warning**. Same wrong card, strictly worse disclosure. A
+   weak match is a coincidental numerator against a bare promo number,
+   which is precisely what the orphan signal says not to trust.
+3. **"Relax the filter on the orphan path only" was ambiguous, and the
+   two readings disagree on `7/18`.** Read literally as *only when
+   `numberAlreadyConfirmed` was the thing bypassed*, `7/18` would **not**
+   relax — its gate already passes, since `best` is null — and would
+   still fail. The relaxation is therefore gated on `readTotalOrphan`
+   itself, which satisfies both the `7/18` expectation and "the existing
+   path keeps its current strictness" (when the flag is false the filter
+   is byte-identical). Recorded because it is a real interpretation, not
+   a detail.
+
+### Honest limitations
+
+- **Not deployed and not observed on live traffic.** Every result above
+  is from the real functions against real PPT data, but the only live
+  PPT calls made were 6 read-only searches during investigation. Watch
+  for `[lookup] READ TOTAL ORPHAN` and `ACCEPTED ON SET SIZE ONLY` after
+  a deploy.
+- **The trigger's real-traffic firing rate is inferred from synthetic
+  perturbation**, not measured on production traffic — the logs that
+  would have shown it rolled past Vercel's 1-hour retention. That is
+  precisely why the log line was added.
+- **Exact normalized set-name equality stays brittle against how a model
+  words a Japanese set name.** `"Hitmontop Crimson Haze"` (test #10)
+  returns **0** name+set-equal candidates because PPT stores that set
+  differently, so the rescue cannot reach that class either way. This
+  change does not alter that.
+- **Test #60 (Porygon2, Aquapolis) is unaffected by this change** — it
+  was checked and already passes today's gate (`setName=null`,
+  `bestScore=6`, `tieCount=4`, no number match), so it needs only a
+  legacy set-name hint, not the orphan trigger. Flagged so this entry
+  isn't later misread as having closed it.
 
 ---
 

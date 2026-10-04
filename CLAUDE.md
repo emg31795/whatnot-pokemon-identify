@@ -5110,20 +5110,102 @@ checklist before reporting something as finished:
   Watch for a `[lookup] SETNAME SEARCH RESCUE` log line; same for the
   new `tiedIds=` field, which needs a real tie scan to appear.
 
-- **OPEN — the wrong-number Mew class is NOT fixed and needs its own
-  design.** Of the ten logged Southern Islands Mew scans, six read
-  `cardNumber: null` and would now resolve via the rescue above. The
-  other four read a **wrong** number (`8/18` x2, `7/18`, `8/64`) and
-  still will not. A wrong-but-parseable number produces a `weak-number`
-  match worth >= 14 points, which **clears `HIGH_THRESHOLD` (10)**, so
-  `resultIsWeak` is false and the set-name search never runs. Verified
-  against the real function: the logged `"Mew 8/18"` read resolves to
-  **tcgPlayerId 607818 at Medium via `weak-number`** — a wrong card — on
-  a single PPT call. Not a regression (`weak-number` predates this
-  change), but not fixed. The obvious knobs each cost something:
-  lowering the weakness bar re-admits the extra call and latency on
-  genuinely-fine scans, and treating `weak-number` as weak changes
-  behavior for every promo-vs-numbered-set card. No fix proposed yet.
+- **The wrong-number Mew class — FIXED IN CODE, NOT DEPLOYED, UNPROVEN
+  ON LIVE TRAFFIC (2026-10-04, commit `1c487f7`).** The READ TOTAL
+  ORPHAN rescue. **Live production still runs
+  `sourceHash 460cbf0eeb651d9f0b9a26759283fff9d8d4e1c9`
+  (`dpl_qGSZV7k4TyiKhauy37SRxRMrS6qJ`) — none of this is live, and the
+  next deploy of `api/identify.js` carries it** (on-disk sha1 is now
+  `e7495136d71a95542c3aa7666edb1c5b0df5e521`, so byte-for-byte parity
+  with production is already broken; fold the queued
+  `WHATNOT_PURCHASE_TAX_RATE` and `stampNote` comment corrections into
+  that same deploy). Full trace, all 8 test cases and the differential
+  numbers in `docs/test-cases.md`.
+
+  Of the ten logged Southern Islands Mew scans, six read
+  `cardNumber: null` and already resolved via the set-name rescue.
+  **Three** of the other four read a *wrong* number (`8/18` x2, `8/64`)
+  and surfaced tcgPlayerId 607818 (WoTC Promo, **$37.25**) instead of
+  46466 (**$624.04**); the fourth (`7/18`) surfaced nothing at all.
+  **Net: 6 of 10 recoverable -> 9 of 10.** `8/64` **stays unrecoverable
+  by design** — both digits were misread, so no signal we hold
+  distinguishes it.
+
+  **CORRECTED — this entry previously stated the mechanism wrongly on
+  three counts, and the corrections are what the fix was built against.**
+  It read: *"A wrong-but-parseable number produces a `weak-number` match
+  worth >= 14 points, which clears `HIGH_THRESHOLD` (10), so
+  `resultIsWeak` is false and the set-name search never runs,"* and
+  counted **four** stuck scans. In fact: (1) a weak match is
+  `SCORE.number * 0.35` = **7 points**, not >= 14 — the `0.7` multiplier
+  was removed in `42429a5` — so 7 does **not** clear `HIGH_THRESHOLD`
+  and **`resultIsWeak` was always TRUE**; (2) the blocker was
+  **`numberAlreadyConfirmed`** (the asymmetric branch returns
+  `match: true` on a coincidental numerator) **plus the rescue's own
+  qualifier filter**, which re-applies `numbersMatch` against the wrong
+  read number — unblocking the gate alone fixes nothing, verified at 0
+  qualifiers for all three reads; (3) **`7/18` was never gate-blocked at
+  all** (its `best` is null, so the search already ran) — the qualifier
+  filter rejected the correct card, so attributing its failure to the
+  weakness gate was wrong.
+
+  **The fix**: a new `readTotalMissingFromPool()` signal — the read
+  number parses with a total and **no candidate in the fetched pool
+  carries that same total**, i.e. the set was never retrieved or the
+  denominator was misread. Measured over 18 real cached PPT pools, 330
+  perturbation triples: fires on **0%** of correct reads, **0%** of
+  numerator misreads, **96.1%** of denominator misreads — a set-absent
+  detector, not a typo detector. It is OR'd into the existing rescue's
+  entry condition and bypasses **only** `numberAlreadyConfirmed`;
+  `resultIsWeak` is still required, so a High-scoring untied match is
+  never replaced, and `numbersMatch`/`scoreCandidate`/`resultIsWeak`/
+  `numberAlreadyConfirmed` are themselves untouched. On that path only,
+  the qualifier filter may accept on **denominator-only equality**
+  (`numberTotalsMatch`) while **rejecting weak matches**; the name
+  filter, exact normalized set-name equality and exactly-one-distinct
+  qualifier are unchanged. Result is `Medium` / `matchBasis:
+  "setname-search"` with the note now naming both numbers and saying
+  only the set size matched. New log line: `[lookup] READ TOTAL ORPHAN:
+  read=X/T, no candidate in pool carries total T` — added because the
+  firing rate is currently inferred from synthetic perturbation, not
+  measured on real traffic.
+
+  **Why not the obvious knob**: treating `weak-number` as weak globally
+  would fire on **108 of 330** realistic bare-numerator scans (**63
+  currently correct**), or **322 of 330** on number-only reads (**258
+  correct**). The orphan trigger cannot fire on a read with no `/total`
+  at all, which is what keeps that whole population out of it.
+
+  **Regression**: a **3,514-scan** differential against the pre-change
+  file (18 real pools x 5 read shapes x hint/no-hint, real
+  `lookupCardPPT`) shows **0 outcome differences, 0 exceptions**. A
+  second **1,324-scan** sweep serving a realistic set-name result shows
+  **exactly 1** difference — an **improvement** (a misread denominator
+  that used to surface a wrong card labelled `setname-search` now
+  withholds) — and **0 cases went from correct to wrong**. Function-level
+  diff: 2 added, `lookupCardPPT` changed, **all 47 others
+  byte-identical**, so the `normalizeNumber`, fuzzy-attack, 411-value
+  and pricing suites cannot change; `module.exports` identical, so
+  `api/price.js`/`api/flag.js` are unaffected; `GET /api/identify` still
+  returns the correct `normalizeDiacriticTest`. **Credit cost, measured**:
+  **+0.004 PPT calls/scan** aggregate — zero for correct reads, numerator
+  misreads and bare reads, **+0.015** for denominator misreads; a scan
+  that triggers it pays one extra search (30 credits) plus up to 500ms
+  only when the primary read supplied no set name.
+
+  **Two things the tests caught, both now in the code**: a
+  NO-NUMBER-MATCH override silently undid a correct rescue (the
+  `read.cardNumber && best.number` block now also requires
+  `!setNameSearchRescued`, mirroring the `!read.cardNumber` exemption —
+  without it the real `7/18` read resolved to 46466 and was immediately
+  re-withheld), and the orphan path must **reject** weak qualifiers,
+  because leaving them in relabelled the same wrong $37.25 card from
+  `weak-number` to `setname-search` and dropped its warning.
+
+  **Still to do**: deploy (per the CLI-from-disk rule, with
+  `--scope leasedraftai`), then watch for `[lookup] READ TOTAL ORPHAN`
+  and `ACCEPTED ON SET SIZE ONLY` on real traffic. Nothing here has been
+  observed firing in production.
 
 - **Southern Islands Mew (01/18, $624) — 10 consecutive failed scans
   because the record is NEVER RETRIEVED. Investigated 2026-10-02, full
