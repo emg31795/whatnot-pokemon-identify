@@ -1146,6 +1146,67 @@ function buildZeroPaddedNumberVariant(rawNumber) {
   return `${parsed.prefix}${paddedNum}/${parsed.totalPrefix}${parsed.total}`;
 }
 
+// ADDED (2026-10-03, Southern Islands Mew wrong-number class — see
+// docs/test-cases.md): the "read total orphan" signal, used ONLY by the
+// setName-scoped search rescue further down.
+//
+// Three of the ten logged Mew scans read a WRONG card number (8/18 x2,
+// 8/64) and resolved to tcgPlayerId 607818 ("Mew - 8 (Glossy Finish)",
+// WoTC Promo, $37.25) instead of the real 46466 ($624.04) — a 17x
+// understatement at Medium confidence, resting on nothing but a
+// coincidental numerator. The read "8/18" weak-matches the bare candidate
+// number "8" (numbersMatch's asymmetric branch: SCORE.number * 0.35 = 7
+// points, and crucially `match: true`), and that `match: true` is what
+// satisfies `numberAlreadyConfirmed` and blocks the rescue entirely.
+//
+// What separates the right card from the wrong one here is the
+// DENOMINATOR, not the numerator: the read said "/18" and NOT ONE
+// candidate in the fetched pool carries total 18, because the whole
+// Southern Islands set was crowded out of the search. That is a precise
+// "the set we need was never retrieved, or the denominator was misread"
+// detector. Measured against 18 real cached PPT pools, 330 perturbation
+// triples (see the matching docs/test-cases.md entry):
+//     number read correctly      -> fires   0 / 330  (0.0%)
+//     NUMERATOR misread (+7)     -> fires   0 / 330  (0.0%)
+//     DENOMINATOR misread (+13)  -> fires 317 / 330 (96.1%)
+// So it ignores numerator typos — which the page-2 and combined
+// name+number fallbacks above already handle — and fires almost only when
+// the denominator is wrong or the set is absent. It also cannot fire at
+// all on a read with no "/total", which is what keeps the large, mostly-
+// CORRECT bare-numerator population (322/330 real simulated scans land on
+// a weak match, 276 of them on the right card) completely untouched.
+//
+// NOT usable as a general scoring signal, and deliberately not wired in as
+// one: PPT's own `totalSetNumber` is null everywhere (confirmed again on
+// 46466), so "the candidate set's real printed total" is not available —
+// only the total embedded in a candidate's own number string is.
+function readTotalMissingFromPool(readNumber, candidates) {
+  const parsed = readNumber ? normalizeNumber(readNumber) : null;
+  if (!parsed || !parsed.total) return false;
+  if (!Array.isArray(candidates) || !candidates.length) return false;
+  return !candidates.some((c) => {
+    const candParsed = c && c.number ? normalizeNumber(c.number) : null;
+    return candParsed && candParsed.total && candParsed.total === parsed.total && candParsed.totalPrefix === parsed.totalPrefix;
+  });
+}
+
+// Companion to the above: denominator-only equality, ignoring the
+// numerator. Used ONLY as the relaxed acceptance rule inside the
+// setName-scoped rescue, and ONLY when readTotalMissingFromPool already
+// fired — never as a scoring signal and never on the pre-existing rescue
+// path. Requires BOTH sides to actually carry a total, so a bare
+// promo-style number on either side can never qualify (verified: read
+// "8/18" accepts only 01/18 Southern Islands and rejects 32/68 Hidden
+// Fates, bare "8"/47/53/08/53 WoTC Promo, 53/108 XY-Evolutions and
+// 131/165 SV2a; read "8/64" accepts nothing at all, which is correct —
+// that denominator was misread too).
+function numberTotalsMatch(readRaw, candRaw) {
+  const a = normalizeNumber(readRaw);
+  const b = normalizeNumber(candRaw);
+  if (!a || !b || !a.total || !b.total) return false;
+  return a.total === b.total && a.totalPrefix === b.totalPrefix;
+}
+
 // ADDED (2026-08-31, research write-up + test #53 Drayton case):
 // PPT's raw `rarity` field is fetched on every single lookup already
 // (zero extra API cost) but was never used anywhere in scoring —
@@ -2717,6 +2778,12 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   let setNameSearchRescued = false;
   let setNameSearchHintSource = null;
   let setNameSearchHintValue = null;
+  // True only when the rescue below accepted a candidate on
+  // denominator-only equality, i.e. the numerator we read disagreed with
+  // the printing we found. Drives the extra sentence in the disclosure
+  // note so the user is told the number itself was probably misread,
+  // rather than being shown a note that implies the number checked out.
+  let setNameSearchNumeratorDisagreed = false;
   // WEAKNESS GATE (added 2026-10-02 after review): the first draft of this
   // block ran on any scan whose best match was not number-confirmed, which
   // silently included scans that had already resolved WELL on a null
@@ -2733,14 +2800,51 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // the legacyReadPromise await below, so a strong scan does zero extra
   // work and takes zero extra latency.
   //
-  // `numberAlreadyConfirmed` is kept as a second, redundant guard — any
-  // exact or weak number match scores at least 14, which already clears
-  // HIGH_THRESHOLD — because it states the intent directly and costs
-  // nothing.
+  // `numberAlreadyConfirmed` is kept as a second guard because it states
+  // the intent directly and costs nothing.
+  //
+  // CORRECTED 2026-10-03: this comment used to claim "any exact or weak
+  // number match scores at least 14, which already clears HIGH_THRESHOLD",
+  // which made the guard sound redundant with the score check. It is not,
+  // and the arithmetic was wrong. An EXACT match scores SCORE.number = 20,
+  // but a WEAK (asymmetric promo-vs-numbered-set) match scores
+  // SCORE.number * 0.35 = 7 — the 0.7 multiplier that would have given 14
+  // was removed in commit 42429a5 (test #67). 7 does NOT clear
+  // HIGH_THRESHOLD (10), so on a weak match `resultIsWeak` is TRUE and
+  // `numberAlreadyConfirmed` is the ONLY thing blocking this rescue —
+  // because numbersMatch's asymmetric branch returns `match: true` for a
+  // coincidental numerator. That is exactly how three real Southern
+  // Islands Mew scans ("8/18" x2, "8/64") came back as a $37.25 WoTC Promo
+  // instead of a $624.04 Southern Islands card.
+  //
+  // ADDED 2026-10-03 — the orphan bypass. When the read's own DENOMINATOR
+  // appears nowhere in the fetched pool (see readTotalMissingFromPool
+  // above), `numberAlreadyConfirmed` is not trustworthy: whatever it
+  // matched can only have been a bare promo-style number sharing a
+  // numerator by chance, since no candidate we retrieved even belongs to a
+  // set of that size. In that one case the guard is bypassed.
+  //
+  // Scope, deliberately narrow:
+  //   - `resultIsWeak` is STILL REQUIRED (this is inside that branch), so a
+  //     High-scoring, untied match is never replaced, orphan total or not;
+  //   - numbersMatch, scoreCandidate, resultIsWeak and
+  //     numberAlreadyConfirmed are all left exactly as they were;
+  //   - a read with no "/total" can never set this flag, so the bare-
+  //     numerator population is untouched;
+  //   - when the flag is false, every line below behaves byte-identically
+  //     to before this change.
   const resultIsWeak = !best || bestScore < HIGH_THRESHOLD || tieCount >= 2;
   if (!setNameSearchRescued && resultIsWeak) {
     const numberAlreadyConfirmed = !!(read.cardNumber && best && numbersMatch(read.cardNumber, best.number).match);
-    if (!numberAlreadyConfirmed) {
+    const readTotalOrphan = readTotalMissingFromPool(read.cardNumber, candidates);
+    if (readTotalOrphan) {
+      const orphanParsed = normalizeNumber(read.cardNumber);
+      console.log(
+        `[requestId=${requestId}]`,
+        `[lookup] READ TOTAL ORPHAN: read=${read.cardNumber}, no candidate in pool carries total ${orphanParsed.total}`
+      );
+    }
+    if (!numberAlreadyConfirmed || readTotalOrphan) {
       let setNameHint = read.setName || null;
       setNameSearchHintSource = setNameHint ? "primary" : null;
       if (!setNameHint && legacyReadPromise) {
@@ -2798,7 +2902,39 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
           .filter((c) => normalizeSetNameForMatch(c.setName) === wantedSet)
           .filter((c) => {
             if (!readNumberParsed) return true;
-            return numbersMatch(read.cardNumber, c.cardNumber).match;
+            const nm = numbersMatch(read.cardNumber, c.cardNumber);
+            if (!readTotalOrphan) return nm.match;
+            // RELAXED ACCEPTANCE, orphan path only (added 2026-10-03).
+            // Gated entirely on readTotalOrphan: when the flag is false
+            // this line is unreachable and the filter is byte-identically
+            // as strict as before. The orphan signal means the read's
+            // denominator is absent from everything we retrieved, so the
+            // NUMERATOR is the part we have reason to distrust (the models
+            // read 7/18, 8/18, 8/64 and null on a card printed 01/18) while
+            // the denominator is the part that identifies the set. So fall
+            // back to denominator-only equality here.
+            //
+            // This is NOT a loosening of acceptance overall — the three
+            // other guards are unchanged and each one is load-bearing:
+            // the name filter, exact normalized set-name equality, and
+            // EXACTLY ONE distinct qualifier. Verified against live PPT:
+            // "Mew Southern Islands" -> 1 qualifier (the correct card),
+            // but "Mew WoTC Promo" -> 4 and "Lapras SV2a: Pokemon Card
+            // 151" -> 3, both of which therefore rescue nothing.
+            //
+            // NOTE, and this is load-bearing — found by regression case R3:
+            // on the orphan path a WEAK numbersMatch is REJECTED, even
+            // though the unchanged path accepts it. A weak match is a
+            // coincidental numerator against a bare promo number, which is
+            // precisely what the orphan signal tells us not to trust. Left
+            // in, the hint "WoTC Promo" made bare candidate "8" the single
+            // qualifier for read "8/18" and relabelled the same wrong
+            // $37.25 card from `weak-number` to `setname-search`, dropping
+            // its weak-number warning — a disclosure regression. So the
+            // orphan path requires a NON-weak exact match, or denominators
+            // that agree, and nothing else.
+            if (nm.match && nm.strength !== "weak") return true;
+            return numberTotalsMatch(read.cardNumber, c.cardNumber);
           });
 
         const distinctQualifiers = [];
@@ -2812,9 +2948,14 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
 
         if (distinctQualifiers.length === 1) {
           const accepted = normalizePptCard(distinctQualifiers[0]);
+          setNameSearchNumeratorDisagreed = !!(
+            read.cardNumber && !numbersMatch(read.cardNumber, accepted.number).match
+          );
           console.log(
             `[requestId=${requestId}]`,
-            `[lookup] SETNAME SEARCH RESCUE: accepted ${accepted.name} ${accepted.number} (${accepted.setName}, tcgPlayerId=${accepted.tcgPlayerId}) via setName hint "${setNameHint}" from ${setNameSearchHintSource}`
+            `[lookup] SETNAME SEARCH RESCUE: accepted ${accepted.name} ${accepted.number} (${accepted.setName}, tcgPlayerId=${accepted.tcgPlayerId}) via setName hint "${setNameHint}" from ${setNameSearchHintSource}${
+              setNameSearchNumeratorDisagreed ? ` — ACCEPTED ON SET SIZE ONLY, read number ${read.cardNumber} disagrees` : ""
+            }`
           );
           best = accepted;
           setNameSearchHintValue = setNameHint;
@@ -2963,7 +3104,22 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   //      derived from anything — tune it here if real scans show it's too
   //      strict (good matches needlessly withheld) or too loose (bad
   //      matches still getting through).
-  if (read.cardNumber && best.number) {
+  // EXCLUSION ADDED 2026-10-03 (`!setNameSearchRescued`): same rationale as
+  // the null-cardNumber exemption in the `else if` further down, and found
+  // by regression case C2. A setName-search rescue that was accepted on
+  // denominator-only equality will BY CONSTRUCTION fail
+  // `numberMatchedForBest` — the numerator is the part we already concluded
+  // was misread. Without this guard the block below immediately overrode a
+  // correct rescue (real Mew read "7/18" resolved to 46466 and was then
+  // withheld again by the insufficient-corroboration floor). Once the
+  // rescue has replaced `best` with a candidate located by exact set-name
+  // equality, number comparisons against the read describe a different card
+  // and carrying them forward is meaningless — the same reasoning already
+  // written out at the `matchBasis = "setname-search"` assignment below.
+  // When the rescue's number DID match, `numberMatchedForBest` is true and
+  // this block was already a no-op, so this guard only ever affects the
+  // numerator-disagreed case.
+  if (read.cardNumber && best.number && !setNameSearchRescued) {
     const { match: numberMatchedForBest } = numbersMatch(read.cardNumber, best.number);
     if (!numberMatchedForBest) {
       const anyNumberMatch = candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
@@ -3140,7 +3296,11 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     ambiguousNote =
       `We couldn't find this card by name or number, so it was located using the set name "${setNameSearchHintValue}"${
         setNameSearchHintSource === "legacy-shadow" ? ", which came from a second AI model's independent read of the card" : " read from the card"
-      }. Exactly one printing in that set matched the name and number we had. This isn't a fully confirmed match; verify the exact set and printing before trusting this price.`;
+      }. Exactly one printing in that set matched the name${
+        setNameSearchNumeratorDisagreed
+          ? `, but its number (${best.number}) does NOT match the number we read (${read.cardNumber}) — only the set size matched, so the number was very likely misread`
+          : " and number we had"
+      }. This isn't a fully confirmed match; verify the exact set and printing before trusting this price.`;
   }
 
   if (!ambiguousNote && nameFilterRescuedByNumber) {
