@@ -1837,6 +1837,21 @@ function extractFirstAttackName(attacks) {
   return m ? m[1].trim() : null;
 }
 
+// ADDED (2026-10-05, 30th Celebration Pikachu — see the ATTACK MISMATCH
+// block in lookupCardPPT for the real-log case this exists for): the
+// parsed name of EVERY attack on a candidate, not just the first.
+// scoreCandidate's existing `attackName` signal only ever needed attack
+// #1, but a mismatch rule needs all of them — a correct read of a card's
+// SECOND attack ("Thunder Jolt" on Celebrations 005/025, whose
+// extractFirstAttackName is "Gnaw") must not look like a mismatch.
+// Deliberately implemented by calling extractFirstAttackName on a
+// one-element array rather than refactoring a shared helper out of it:
+// that function is on the live scoring path and is left byte-identical.
+function extractAttackNames(attacks) {
+  if (!Array.isArray(attacks) || !attacks.length) return [];
+  return attacks.map((a) => extractFirstAttackName([a])).filter(Boolean);
+}
+
 function normalizePptCard(raw) {
   const nameSuffixMatch = String(raw.name || "").match(/-\s*(\d+\/\d+)\s*(?:\(.*\))?\s*$/);
   const number = raw.cardNumber || raw.number || (nameSuffixMatch ? nameSuffixMatch[1] : null);
@@ -1868,6 +1883,16 @@ function normalizePptCard(raw) {
     rarity: raw.rarity || null,
     setName: raw.setName || null,
     attackName: raw.attackName || extractFirstAttackName(raw.attacks) || null,
+    // ADDED (2026-10-05): the full attack list, carried alongside the
+    // unchanged single-attack `attackName` above so nothing on the
+    // existing scoring path shifts. `attacks` is PPT's raw text (kept
+    // for diagnosis); `attackNames` is the parsed list the ATTACK
+    // MISMATCH check in lookupCardPPT compares against. An empty array
+    // means "no attack data" (Trainer, Energy, or an incomplete PPT
+    // row) — the mismatch rule skips those entirely, since silence is
+    // not evidence.
+    attacks: Array.isArray(raw.attacks) ? raw.attacks : null,
+    attackNames: extractAttackNames(raw.attacks),
     tcgPlayerUrl: raw.tcgPlayerUrl || null,
     // ADDED (2026-08-30, live TCGplayer pricing): PPT's own data already
     // carries the real TCGplayer product ID for every candidate (PPT is
@@ -3032,6 +3057,12 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // response. No frontend change ships with this.
   let matchBasis = "score-only";
 
+  // ADDED (2026-10-05): orthogonal to matchBasis — matchBasis says HOW
+  // this candidate was chosen, this says a positive signal CONTRADICTS
+  // it. Set only by the ATTACK MISMATCH block near the end of this
+  // function; never overwrites matchBasis.
+  let attackMismatch = false;
+
   // Companion to the narrowing rescue above: when it fully resolved the tie
   // to a single candidate, the generic `tieCount >= 2` disclosure below
   // never fires (tieCount is now 1) — but the number is still genuinely
@@ -3367,6 +3398,78 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     }
   }
 
+  // FIX (2026-10-05, live scan — "ME: 30th Celebration" Pikachu 038/128,
+  // requestId 930b7ccd): a real scan read attackName "Targeted Spark" —
+  // the genuine attack on 038/128 (tcgPlayerId 712942, market $0.96) —
+  // but fabricated cardNumber "005/025", which happens to match a REAL
+  // card exactly: Celebrations 005/025 Pikachu (tcgPlayerId 250303),
+  // same classic Base Set artwork, same HP 60, market $4.58. That scored
+  // 29 (number 20 + set 3 + hp 6) with tieCount 1 and was presented at
+  // High confidence with the wrong card's price. The one signal that
+  // positively DISPROVED the match — an attack name on neither of the
+  // candidate's attacks — was worth exactly zero, because scoreCandidate
+  // only ever ADDS SCORE.attackName on a match and never penalizes a
+  // mismatch. Both Gemini models independently produced the same wrong
+  // number, so this is artwork/set-logo anchoring, not glare OCR noise;
+  // no amount of rescanning would have fixed it.
+  //
+  // Deliberately NOT a scoring penalty. A penalty changes which
+  // candidate WINS across the whole corpus, and here it would buy
+  // nothing: with the number misread, the correct card is not in the
+  // fetched pool at all, so penalizing only reaches "withhold" by a
+  // longer route with far more blast radius. This is a confidence cap
+  // plus an honest disclosure instead — strictly additive, and it cannot
+  // change which card wins or what price is computed for it.
+  //
+  // Each guard is load-bearing:
+  //   - read.confidence === "High": a hedged read's attack name isn't
+  //     trustworthy enough to disprove anything.
+  //   - best.attackNames must be non-empty: Trainers, Energy and
+  //     incomplete PPT rows carry no attack data at all, and silence is
+  //     not evidence of a mismatch.
+  //   - compares against EVERY attack, not best.attackName (which is
+  //     only attack #1) — otherwise a correct read of a card's second
+  //     attack would be flagged. See extractAttackNames above.
+  //   - tries attackNameEnglish too, so a Japanese card whose English
+  //     translation matches is not flagged on the as-printed name alone.
+  //   - ENGLISH READS ONLY. On a non-English card the attack name has to
+  //     survive OCR *and* translation, two failure modes an English read
+  //     doesn't have, and the only false positive this rule produced in
+  //     measurement was exactly that: a real Japanese Mega Eelektross ex
+  //     225/193 whose number AND hp both matched the candidate exactly
+  //     (so the card was right), read as "ばくれつだん" and translated to
+  //     "Focus Blast" when the real attack is Split Bomb / ぶんれつだん — a
+  //     single-kana confusion plus a wrong translation. A false Low is
+  //     not free: it also suppresses the extension's alternate-printing
+  //     banner, which has already cost a real find once (see the Corphish
+  //     entry in CLAUDE.md). Japanese cards therefore lose this
+  //     protection entirely, deliberately. Missing/null language is
+  //     treated as English, matching `String(read.language || "English")`
+  //     elsewhere in this file.
+  // matchBasis is left untouched: the basis on which this candidate was
+  // chosen hasn't changed, and this flag is a separate axis.
+  const readLanguageIsEnglish = String(read.language || "English").trim().toLowerCase() === "english";
+  const readAttackNamesToTry = [read.attackName, read.attackNameEnglish].filter(Boolean);
+  if (
+    read.attackName &&
+    readLanguageIsEnglish &&
+    read.confidence === "High" &&
+    Array.isArray(best.attackNames) &&
+    best.attackNames.length &&
+    !readAttackNamesToTry.some((readAttack) =>
+      best.attackNames.some((candAttack) => attackNamesFuzzyMatch(readAttack, candAttack))
+    )
+  ) {
+    matchConfidence = "Low";
+    attackMismatch = true;
+    const attackMismatchNote = `The attack we read, "${read.attackName}", isn't on this printing's attack list.`;
+    ambiguousNote = ambiguousNote ? `${ambiguousNote} ${attackMismatchNote}` : attackMismatchNote;
+    console.log(
+      `[requestId=${requestId}]`,
+      `[lookup] ATTACK MISMATCH: read="${readAttackNamesToTry.join('" / "')}" candidate attacks=[${best.attackNames.join(", ")}] best=${best.name} ${best.number} (tcgPlayerId=${best.tcgPlayerId})`
+    );
+  }
+
   // NOTE (2026-08-27): the "read a specific number that matches nothing in
   // the pool at all" check (originally added for the Hitmontop/Crimson
   // Haze case) now runs FIRST, above, before the tie-break check — see the
@@ -3449,6 +3552,11 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     // ADDED 2026-10-02 (queued item b): machine-readable companion to
     // ambiguousNote — see the matchBasis declaration above.
     matchBasis,
+    // ADDED 2026-10-05: see the ATTACK MISMATCH block above. Orthogonal
+    // to matchBasis — true means a confidently-read attack name is on
+    // none of this printing's attacks, i.e. a positive contradiction,
+    // whatever basis the match was made on.
+    attackMismatch,
     tcgplayerUrl: best.tcgPlayerUrl || null,
     pricingLookup: {
       tcgPlayerId: best.tcgPlayerId || null,
@@ -3897,7 +4005,20 @@ async function handler(req, res) {
       stampType: read.stampType,
       stampNote:
         read.stampType && read.stampType !== "none" && read.stampType !== "1st Edition"
-          ? `This is a "${read.stampType}" stamped promo — our data source doesn't track pricing for stamped promos separately from the standard printing, so the price shown likely understates its real value.`
+          // CORRECTED (2026-10-05): the previous wording made two claims
+          // that are both false. It asserted our data source "doesn't
+          // track pricing for stamped promos separately from the
+          // standard printing" — it often does (a set-stamped EX card is
+          // carried as that product's Reverse Holofoil printing; a Burger
+          // King / 30th Celebration promo is a separate tcgPlayerId
+          // entirely) — and it asserted the price "likely understates its
+          // real value", which has the sign backwards whenever the stamp
+          // belongs to a CHEAPER printing than the one matched. On the
+          // 30th Celebration Pikachu scan it overstated by 5x ($4.83
+          // shown vs. $0.96 real), i.e. the only warning on screen was
+          // pushing toward bidding MORE on a wrong, cheaper card.
+          // Neutral, direction-free wording instead.
+          ? `This card appears to carry a set stamp or logo ("${read.stampType}") — the printing it belongs to may not be the one priced here. Verify the exact printing before relying on this price.`
           : null,
     };
   }
