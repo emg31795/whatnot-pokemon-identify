@@ -9428,6 +9428,330 @@ Status-code breakdown on the new deployment: 13x200, 7x204, 1x400 (that
 
 ---
 
+## Fix: attack-mismatch confidence cap (English reads only) — "ME: 30th Celebration" Pikachu priced as Celebrations. BUILT AND MEASURED LOCALLY; NOT DEPLOYED, NOT PUSHED (2026-10-04/05)
+
+Eric reported the extension struggling on the "30th collection" Pikachus.
+His screenshot showed a card whose attack is **"Targeted Spark"** at HP
+60, while the panel showed the **Celebrations** Pikachu (Gnaw / Thunder
+Jolt) at **Read: High, Match: High**, with the "other stamp" warning and
+**Market (Holofoil) $4.83**. A confident wrong match.
+
+### Ground truth (PPT, confirmed live — PPT is NOT missing the set)
+
+The real card is **tcgPlayerId 712942, "Pikachu - 038/128", `ME: 30th
+Celebration`, HP 60, rarity "Pikachu Rare", market $0.96**, attack:
+
+> `[L] Targeted Spark — This attack does 20 damage to 1 of your
+> opponent's Pokémon. (Don't apply Weakness and Resistance for Benched
+> Pokémon.)`
+
+PPT carries the set under **two** names, both `releaseDate 2026-09-16`:
+
+- **`ME: 30th Celebration`** — numbering `NNN/128`
+- **`ME: 30th Celebration Classic Collection`** — numbering `NN/102`
+  (e.g. the Base Set Pikachu reprint 58/102, HP 40, Gnaw/Thunder Jolt,
+  market $23.74)
+
+There are **~19 distinct Pikachu at `034/128`–`052/128`**, all rarity
+"Pikachu Rare", market **$0.68–$2.54**. So this was never a data gap.
+
+What the panel showed instead: **tcgPlayerId 250303, "Pikachu" 005/025,
+Celebrations (2021), HP 60, Holo Rare, market $4.58**, attacks
+`[1] Gnaw (10)` / `[1L] Thunder Jolt (30)`. The two cards share the
+classic Base Set forest artwork, which is the whole reason they are
+confusable.
+
+### Diagnosis: a read problem that a scoring gap failed to contain
+
+**Not a data gap, not a retrieval gap.** `search="Pikachu 038/128"`
+returns **exactly 1 result — the correct card**. The existing combined
+name+number fallback already resolves this the moment the number is
+right.
+
+**The number is a hallucination, not a lucky collision.** Three pieces of
+evidence: (a) the real card is `038/128`, confirmed by its attack text;
+(b) the `[legacy-model-shadow-test]` line shows `gemini-3.6-flash`
+independently produced the *identical* `005/025` + `"Targeted Spark"` —
+two models agreeing on a wrong number is **artwork/set-logo anchoring,
+not glare OCR noise**, so no amount of rescanning would have fixed it;
+(c) **Haiku on the same frame returned `cardNumber: null`** with
+`reason: "Card number obscured by glare and angle of card in hand"`.
+
+Score decomposition for requestId `930b7ccd`, **29 points**:
+
+| signal | value | why |
+|---|---|---|
+| number | **+20** | `005/025` == `005/025`, exact |
+| set | **+3** | the set test is a substring: `"celebrations"` ⊂ `"celebrations"` |
+| hp | **+6** | 60 == 60 |
+| attackName | **0** | "Targeted Spark" vs "Gnaw" — **no match, and no penalty** |
+| rarity | **0** | "Holo Rare" not in `NOTABLE_RARITY_PATTERN` |
+| stamp | **0** | read `"other"`, `candidateStampType(250303)` null → neither branch |
+
+29 ≥ `HIGH_THRESHOLD` (10), `tieCount` 1 → **Match: High**. requestId
+`99df0746` scored **23** (20 + 3 + 0, hp 70 vs 60) and logged
+`NUMBER/HP CONFLICT`, yet still priced the card.
+
+**The one signal that positively disproved the match was worth exactly
+zero**, because `scoreCandidate` only ever ADDS `SCORE.attackName` on a
+match and never penalizes a mismatch. `stampType` is the only signal in
+the whole function with an asymmetric penalty (−8).
+
+### All 6 Pikachu scans in the window (4 of 6 already behaved correctly)
+
+| requestId | number | set | hp | attack | outcome |
+|---|---|---|---|---|---|
+| `99df0746` | 005/025 | Celebrations | 70 | Play Rough | → 250303, score 23, NUMBER/HP CONFLICT, **priced anyway** |
+| `31293e57` | 024/025 | Celebrations | 70 | Volt Tackle | WITHHELD (READ TOTAL ORPHAN) |
+| `54c65370` | 001/025 | Celebrations | 50 | Gnaw | WITHHELD (READ TOTAL ORPHAN) |
+| `ceedd330` | 041/120 | null | 60 | Hang Down | WITHHELD — **real card is 041/128 "[C] Hang Down (10)" (712945)**; numerator exactly right, denominator 128→120 |
+| `b2b212cc` | 008/124 | Fates Collide | 60 | Mach Bolt | WITHHELD (READ TOTAL ORPHAN) |
+| `930b7ccd` | 005/025 | Celebrations | 60 | Targeted Spark | → 250303, score 29, **Match: High — the reported bug** |
+
+`005/025` is the only one of these fabricated numbers that happens to hit
+a real PPT card; that is why only this one surfaced a confident wrong
+answer. The combined search returned `count= 0` for 024/025, 001/025,
+041/120 and 008/124.
+
+### The rule, and why it is a confidence cap and not a scoring penalty
+
+A score penalty changes **which candidate wins** across the whole corpus,
+and here it buys nothing: with the number misread the correct card is not
+in the fetched pool at all, so penalizing only reaches "withhold" by a
+longer route with far more blast radius. The cap is strictly additive and
+cannot change which card wins or what price is computed.
+
+`lookupCardPPT` now sets `matchConfidence = "Low"` and `attackMismatch =
+true`, and appends
+
+> `The attack we read, "<name>", isn't on this printing's attack list.`
+
+to `ambiguousNote` (**appending**, never replacing — an existing tie /
+weak-number / HP-conflict note survives alongside it). `matchBasis` is
+**never** overwritten: the basis on which the candidate was chosen hasn't
+changed, and this is a separate axis. New log line `[lookup] ATTACK
+MISMATCH: read="X" candidate attacks=[...] best=<id>`.
+
+Every guard is load-bearing:
+
+- **English reads only.** See the false positive below.
+- **`read.confidence === "High"`** — a hedged read's attack name isn't
+  trustworthy enough to disprove anything.
+- **candidate must have a non-empty parsed attack list** — Trainers,
+  Energy and incomplete PPT rows have nothing to compare against, and
+  silence is not evidence.
+- **compares against EVERY attack**, not `candidate.attackName` (which is
+  only attack #1). Without this, a correct read of a card's *second*
+  attack — "Thunder Jolt" on 250303, whose `attackName` is "Gnaw" —
+  would be flagged. This is why `extractAttackNames` exists.
+- **`attackNameEnglish` is tried as well.**
+
+`extractAttackNames` is implemented by calling `extractFirstAttackName`
+on a one-element array, so the multi-`[cost]`-bracket regex is literally
+the same code and `extractFirstAttackName` stays byte-identical on the
+live scoring path.
+
+**Ordering matters and was verified:** the weak-signal withhold paths
+`return` at `api/identify.js:3205` and `:3290`, **before** the new block
+— a scan that already withholds its price never reaches the rule.
+
+### Measurements
+
+Method: replay the **real, unmodified `lookupCardPPT`** out of probe
+copies of `api/identify.js` (test-only exports appended to the *copies*;
+the real file untouched), with the PPT runtime cache disabled identically
+on both, against real cached PPT pools, driven by **93 real logged Gemini
+reads** (46 primary + 47 `[legacy-model-shadow-test]`) preserved from
+Vercel before the 1-hour retention window closed.
+
+**Evidence base, stated honestly: 32 scans that produced a genuine match
+from a genuine pool.** The other 51 reads hit a pool that was never
+bought; `fetchPokemonPriceTracker` swallows the replay-miss error and
+returns an empty pool, so both files produced identical **vacuous** "no
+match" results. Those are **excluded** — an early version of this harness
+reported "93/93 replayed, 6 changed", which would have been a flattering
+lie. Card names actually covered (14): Pikachu, Flamigo, Sylveon EX,
+Cyclizar, Dewgong, Blitzle, Duosion, Aegislash, Cyndaquil, Scraggy, Sawk,
+Silvally, Quaxly, Mega Eelektross ex.
+
+**Eligible** (attack read + High confidence + candidate has attacks):
+**30 of 32**. **Fires: 5** (after the English-only guard).
+
+| scan | read attack | candidate | candidate's attacks | verdict |
+|---|---|---|---|---|
+| `930b7ccd` primary | Targeted Spark | 250303 Celebrations 005/025 | Gnaw, Thunder Jolt | **correct** |
+| `930b7ccd` legacy | Targeted Spark | 250303 | Gnaw, Thunder Jolt | **correct** |
+| `99df0746` | Play Rough | 250303 | Gnaw, Thunder Jolt | **correct** |
+| `31293e57` legacy | Volt Tackle | 250303 | Gnaw, Thunder Jolt | **correct** |
+| `ce95366e` legacy | Colorful Harmony | 113764 Sylveon EX (Full Art) RC32/RC32, hp 170 | Dress Up, Precious Ribbon | **correct** |
+
+By cause: **genuinely wrong card 5**; ability-read-as-attack **0
+observed**; English OCR variation **0 observed**; Japanese name 1 (now
+excluded by the language guard, below).
+
+The `ce95366e` pair is a useful independent check: the **primary** read
+matched `716231 Sylveon ex 153/128, ME: 30th Celebration`, whose attack
+genuinely **is** Colorful Harmony, and did **not** fire; the **legacy**
+read misread RC25→RC32, landed on the old Generations Full Art (hp 170 vs
+read 270), and fired. Another 30th Celebration card.
+
+**The one false positive, found before the guard and the reason for it.**
+`f8420846`, a **Japanese** Mega Eelektross ex: read `cardNumber
+"225/193"` — an exact match to candidate 665897 — and `hp 350`, also
+exact, so the card was almost certainly identified **correctly**. The
+read attack was `ばくれつだん` with `attackNameEnglish: "Focus Blast"`; the
+real attack is **Split Bomb** (Japanese ぶんれつだん). A single-kana ば/ぶ
+confusion plus a wrong translation. The fuzzy matcher cannot rescue it —
+"Focus Blast" vs "Split Bomb" is genuinely far apart. **Decision: skip
+the rule entirely for non-English reads.** On a non-English card the
+attack name must survive OCR *and* translation, two failure modes an
+English read doesn't have. A false Low is not free: it also **suppresses
+the alternate-printing banner**, which has already cost a real find once
+(see the Corphish entry). Japanese cards therefore lose this protection
+entirely, deliberately. Missing/null language is treated as English,
+matching `String(read.language || "English")` elsewhere in the file.
+
+**Honest limits on these numbers.** n=30 eligible, from **one ~10-minute
+slice of one session that happens to be unusually dense with 30th
+Celebration cards — the exact failure this targets.** The pre-guard
+**20% fire rate is NOT a representative rate and must not be quoted as
+one.** 1 false positive in 30 is all the precision this sample supports.
+The corpus was cut short by the credit stop described below; the primary
+and legacy reads for the other 18 card names were never replayed.
+
+**Differential over the 32 real-match scans:** 27 unchanged, 5 changed.
+The union of changed fields across all 5 is **`{matchConfidence,
+ambiguousNote}` and nothing else** — zero changes to `tcgPlayerId`,
+`cardName`, `setName`, `matchBasis`, `pricingLookup`,
+`printingUndetermined`, `found`. **No card won differently; no price
+input moved.**
+
+**Controls — 10/10 pass**, on candidate 250303 (Gnaw, Thunder Jolt):
+
+| case | read attack | language | fires? | expected |
+|---|---|---|---|---|
+| 2nd attack, correct | Thunder Jolt | English | no | no |
+| 1st attack, correct | Gnaw | English | no | no |
+| OCR typo (fuzzy) | Thunderjolt | English | no | no |
+| genuinely absent | Hyper Beam | English | **yes** | yes |
+| Medium confidence | Hyper Beam | English | no | no |
+| null attack | — | English | no | no |
+| JP + correct `attackNameEnglish` | でんげきは / Thunder Jolt | English | no | no |
+| **Japanese + wrong attack** | ばくれつだん / Focus Blast | Japanese | **no** | no |
+| **English + wrong attack** | Hyper Beam | English | **yes** | yes |
+| **null language → English** | Hyper Beam | null | **yes** | yes |
+
+Real-world corroboration: `54c65370-LEGACY` read "Gnaw" against 250303
+and correctly did **not** fire.
+
+**Attack-name parse statistics**, over **170 distinct real PPT candidates
+with attack data / 265 attack entries**:
+
+| | count |
+|---|---|
+| all attacks parsed cleanly | 167 |
+| all failed → `attackNames: []`, rule **skips** (fail-safe) | 1 |
+| partial, only non-text junk dropped (no risk) | 2 |
+| **partial, a real attack name dropped → false-positive risk** | **0** |
+
+Zero residual `[cost]` brackets, zero stray newlines or HTML in any
+parsed name. Multi-attack recovery works: `Blitzle 195/182 →
+["Rear Kick","Wild Charge"]`, where `scoreCandidate` would only ever have
+seen "Rear Kick". The three imperfect rows: **Mega Lucario ex 092/063**
+and **Steelix 073/063** each have a junk `attacks[0]` that is the literal
+string `"2"` / `"4"` in PPT's own data (drops harmlessly, both real
+attacks parse); **Scraggy** has a single attack in a different PPT format
+— `"<b>Tail Rap -- 20x</b>\r\n<br>…"` with no leading `[cost]` bracket —
+which parses to null, so `attackNames` is `[]` and **the rule skips the
+card entirely**. 3 of 265 entries (1.1%) use that `<b>Name</b>` format.
+**`extractFirstAttackName` was deliberately NOT widened** to handle it:
+that would break the byte-identity result and shift existing scoring, and
+it already fails the same way today (so `scoreCandidate`'s +4 attackName
+signal has always been dead on those cards). It fails in the safe
+direction — silent, never wrong.
+
+### What the UI does at `matchConfidence: "Low"` — read before deploying
+
+Checked in `extension/content.js` rather than assumed. **The price is
+still shown.** Price withholding is driven entirely by `pricingLookup ===
+null` / `printingUndetermined`, not by confidence
+(`content.js:1361`). On a fired scan the panel shows:
+
+- `Match: Low` in the badge row
+- the warning **above** the price — `confidenceWarnings` renders before
+  `priceSectionHtml`, per the 2026-09-26 fix
+- the alternate-printing banner **suppressed**
+  (`ALT_PRINTING_ALLOWED_CONFIDENCE = ["High", "Medium"]`,
+  `content.js:891`)
+- **the wrong price still displayed** — on `930b7ccd` that means $4.83
+  and its Bid figure stay on screen under the warning
+
+That is the honest limit: this converts a silent confident-wrong answer
+into a loud flagged-wrong answer, but it does not withhold.
+**Withholding was deliberately NOT built** — it would mean setting
+`pricingLookup: null` on mismatch, a bigger behavioral step that should
+wait for a false-positive rate measured over a representative window
+rather than this one dense session. No frontend file was touched;
+`attackMismatch` is backend-only for now and the note rides in
+`ambiguousNote`, which already renders.
+
+### Stamp warning reworded (same change)
+
+The old text made two claims that are both false: that our data source
+"doesn't track pricing for stamped promos separately from the standard
+printing" (it often does — a set-stamped EX card is carried as that
+product's Reverse Holofoil printing; a Burger King / 30th Celebration
+promo is a separate `tcgPlayerId` entirely), and that the price "likely
+understates its real value", which has the **sign backwards** whenever
+the stamp belongs to a cheaper printing. On this very scan it
+**overstated by 5x** ($4.83 shown vs $0.96 real) — i.e. the only warning
+on screen was pushing Eric toward bidding MORE on a wrong, cheaper card.
+New wording is neutral and direction-free: the card appears to carry a
+set stamp or logo, the printing may not be the one priced, verify before
+relying on the price. The block lives in the `else` branch, so this
+reaches **raw cards only** and cannot change any slab response.
+
+### Open items from this work (none fixed here)
+
+1. **The slab branch drops `ambiguousNote` and `attackMismatch`.** The
+   `if (read.isSlab)` branch builds its result with explicit fields and
+   copies `matchConfidence: baseLookup?.matchConfidence` but **not** the
+   note — so a slab scan whose underlying lookup fires the rule would
+   show **Match: Low with no explanation on screen**. This is a
+   pre-existing hole (the slab branch already drops `ambiguousNote` for
+   ties, weak-number and HP-conflict), slightly widened because `Low` now
+   fires in a new situation. **Eric's call: leave it, track as an open
+   item, do not touch the slab branch.** Slabs are Phase 2.
+2. **Do NOT loosen the `set` substring test** to make `"Celebrations"`
+   reach `"ME: 30th Celebration"`. Per the Burger King Chimchar
+   precedent, that makes the wrong card win *harder* — and here the read
+   set name is simply false, so it would not help anyway.
+3. **Possible prompt note, watching, not built.** Both Gemini models
+   agreeing on a fabricated number for a set that reuses classic artwork
+   is a distinct pattern worth a prompt line (a set logo is not the set
+   name; 2026 reprint sets reuse old art). One card, one session — not
+   enough evidence to change the prompt. Worth watching as more 30th
+   Celebration cards come through.
+4. **The retrieval side is untouched.** `search="Pikachu"` at offset 0
+   and 30 contains nothing from the 30th set — the Pikachu catalog crowds
+   it out, the same class as the Southern Islands Mew entry. Nothing in
+   this change addresses that.
+
+### PPT credit note — a long stream can exhaust the daily allowance
+
+Recording the pools for this measurement was **halted by its own
+guardrail**: PPT daily-remaining had fallen to **8,592**, below the
+10,000 floor Eric set. The cause was confirmed in Vercel logs before
+being assumed — **90 PPT searches in the preceding 30 minutes**, roughly
+**2,700 credits**, from Eric scanning live. This whole task spent **577
+credits** against a 3,500 cap. Worth recording as a standing fact: the
+**20,000/day allowance can be exhausted by a long live stream** at
+roughly 60 credits per scan, and any offline analysis that replays real
+pools competes directly with live scanning for both the daily allowance
+and the 60-units/60-second minute limit.
+
+---
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

@@ -2374,6 +2374,161 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Attack-mismatch confidence cap (English reads only) + neutral stamp
+  wording — BUILT AND MEASURED LOCALLY, COMMITTED, NOT PUSHED, NOT
+  DEPLOYED (2026-10-04/05).** Full trace, all tables and the honest
+  limits in `docs/test-cases.md`'s matching entry.
+
+  **The bug.** A live scan of an **"ME: 30th Celebration" Pikachu
+  038/128** (tcgPlayerId **712942**, market **$0.96**, attack
+  **"Targeted Spark"**) was priced as **Celebrations 005/025**
+  (tcgPlayerId **250303**, market **$4.58**, Gnaw / Thunder Jolt) at
+  **Read: High, Match: High**. The two cards share the classic Base Set
+  forest artwork.
+
+  **PPT is NOT missing the set** — it carries **`ME: 30th Celebration`**
+  (numbering `NNN/128`) and **`ME: 30th Celebration Classic Collection`**
+  (numbering `NN/102`), both `releaseDate 2026-09-16`, with **~19
+  distinct Pikachu at 034–052/128**, rarity "Pikachu Rare", **$0.68–
+  $2.54**. And retrieval works: `search="Pikachu 038/128"` returns
+  **exactly 1 result, the correct card**.
+
+  **It is a read problem, not a data or retrieval gap.** Both Gemini
+  models **independently** fabricated `005/025` + "Targeted Spark" — two
+  models agreeing on a wrong number is **artwork/set-logo anchoring, not
+  glare OCR noise**, so rescanning could never have fixed it. Haiku on
+  the same frame returned `cardNumber: null`, reason "Card number
+  obscured by glare and angle of card in hand". `005/025` happens to
+  match a real card exactly, so it scored **29** = number 20 + set 3 + hp
+  6, `tieCount` 1 → High. **The one signal that positively disproved the
+  match was worth zero**: `scoreCandidate` only ever ADDS
+  `SCORE.attackName` on a match and never penalizes a mismatch.
+  (4 of the 6 Pikachu scans in that window already behaved correctly and
+  withheld; `005/025` was the only fabricated number that hit a real
+  card. One of the withheld ones, `ceedd330`, read `041/120` + "Hang
+  Down" — the real card is **041/128 "[C] Hang Down (10)"**, numerator
+  exactly right, denominator 128→120.)
+
+  **The fix is a confidence cap, deliberately NOT a scoring penalty.** A
+  penalty changes which candidate *wins* across the whole corpus, and
+  here it buys nothing — with the number misread the correct card isn't
+  in the pool at all, so it only reaches "withhold" by a longer route
+  with far more blast radius. `lookupCardPPT` now sets `matchConfidence =
+  "Low"` and `attackMismatch = true` and **appends** (never replaces)
+  `The attack we read, "<name>", isn't on this printing's attack list.`
+  to `ambiguousNote`. **`matchBasis` is never overwritten** — it is a
+  separate axis. New log line `[lookup] ATTACK MISMATCH`.
+
+  **Guards, each load-bearing**: English reads only (see the false
+  positive below; missing/null language counts as English); High read
+  confidence only; the candidate must have a non-empty parsed attack list
+  (Trainers/Energy/incomplete PPT rows are skipped — silence is not
+  evidence); it compares against **every** attack via the new
+  `extractAttackNames`, not `candidate.attackName` which is only attack
+  #1 (otherwise a correct read of "Thunder Jolt" on 250303, whose
+  `attackName` is "Gnaw", would be flagged); and `attackNameEnglish` is
+  tried too. **Verified ordering**: the weak-signal withhold paths
+  `return` at `api/identify.js:3205`/`:3290`, **before** the new block —
+  a scan that already withholds never reaches the rule.
+
+  **Measured against real data, with honest limits.** The real,
+  unmodified `lookupCardPPT` was replayed out of probe copies of the file
+  against real cached PPT pools, driven by **93 real logged Gemini
+  reads**. **Evidence base: 32 scans that produced a genuine match**; the
+  other 51 hit pools never bought, and since `fetchPokemonPriceTracker`
+  swallows a fetch error and returns an empty pool, they produced
+  identical **vacuous** "no match" in both files and were **excluded** (an
+  early harness run reported "93/93 replayed", which would have been a
+  flattering lie). **30 eligible, 5 fires, all genuinely wrong cards, 0
+  false positives after the guard.** Differential: **27 unchanged, 5
+  changed, union of changed fields `{matchConfidence, ambiguousNote}` and
+  nothing else** — no card won differently, no price input moved.
+  **Controls 10/10.** `node --check` passes; **46 of 49 pre-existing
+  functions byte-identical** (only `normalizePptCard`, `lookupCardPPT`,
+  `handler` changed, plus the new `extractAttackNames`); `module.exports`
+  identical, so `api/price.js`/`api/flag.js` are unaffected.
+
+  **These numbers are NOT a representative rate.** n=30 eligible, from
+  **one ~10-minute slice of one session unusually dense with 30th
+  Celebration cards — the exact failure this targets.** The pre-guard
+  **20% fire rate must not be quoted as a real-world rate.**
+
+  **The one false positive, and why English-only.** A **Japanese** Mega
+  Eelektross ex `225/193` whose number **and** HP both matched the
+  candidate exactly (so the card was right) read its attack as
+  `ばくれつだん` → `attackNameEnglish: "Focus Blast"`, when the real attack
+  is **Split Bomb** (ぶんれつだん) — a single-kana ば/ぶ confusion plus a bad
+  translation, which fuzzy matching cannot rescue. On a non-English card
+  the attack name must survive OCR **and** translation. A false Low is
+  not free: it also **suppresses the alternate-printing banner**, which
+  already cost a real find once (see the Corphish entry below). Japanese
+  cards therefore lose this protection entirely, deliberately.
+
+  **Parse stats**, over **170 real PPT candidates with attack data / 265
+  attack entries**: 167 parsed cleanly, 1 parsed to empty (rule skips —
+  fail-safe), 2 partial but only PPT's own junk dropped, and **0 cases
+  where a real attack name was dropped while others parsed** (the one
+  shape that could cause a false positive). 3 of 265 entries use a
+  different PPT format, `"<b>Tail Rap -- 20x</b>…"` with no leading
+  `[cost]` bracket; those parse to null so the card is skipped entirely.
+  **`extractFirstAttackName` was deliberately NOT widened** to handle it
+  — that would break byte-identity and shift existing scoring, and it
+  already fails the same way today. It fails safe.
+
+  **What the UI does at Low — read this before deploying.** Checked in
+  `extension/content.js`, not assumed: **the price is still shown.**
+  Withholding is driven by `pricingLookup === null` /
+  `printingUndetermined`, not by confidence. A fired scan shows `Match:
+  Low`, the warning **above** the price, the alternate-printing banner
+  **suppressed**, and **the wrong price still on screen** ($4.83 on this
+  card). That is the honest limit: a silent confident-wrong answer
+  becomes a loud flagged-wrong answer, but nothing is withheld.
+  **Withholding was deliberately NOT built** — it should wait for a
+  false-positive rate measured over a representative window, not this one
+  dense session. No frontend file was touched.
+
+  **Stamp warning reworded in the same change.** The old text claimed our
+  data source "doesn't track pricing for stamped promos separately" —
+  false (often a Reverse Holofoil printing, or a separate `tcgPlayerId`
+  entirely) — and that the price "likely understates its real value",
+  which has the **sign backwards** whenever the stamp belongs to a
+  cheaper printing. On this scan it **overstated by 5x**, so the only
+  warning on screen was pushing toward bidding MORE on a wrong, cheaper
+  card. New wording is neutral. It lives in the `else` branch, so it
+  reaches **raw cards only** and cannot change any slab response. This
+  closes one of the queued comment/wording corrections for this file; the
+  `WHATNOT_PURCHASE_TAX_RATE` comment and the `WHATNOT_SHIPPING_PER_CARD`
+  shipping-term items are **untouched and still queued**.
+
+  **Open items from this work, none fixed:**
+  1. **The slab branch drops `ambiguousNote`/`attackMismatch`.** `if
+     (read.isSlab)` copies `matchConfidence` but not the note, so a slab
+     scan that fires would show **Match: Low with no explanation**.
+     Pre-existing (it already drops the note for ties, weak-number and
+     HP-conflict), slightly widened. **Eric's decision: leave it, track
+     it, do not touch the slab branch.** Slabs are Phase 2.
+  2. **Do NOT loosen the `set` substring test** so `"Celebrations"`
+     reaches `"ME: 30th Celebration"` — per the Burger King Chimchar
+     precedent that makes the wrong card win *harder*, and here the read
+     set name is simply false anyway.
+  3. **Possible prompt note, watching, not built**: two models agreeing
+     on a fabricated number for a set that reuses classic artwork is a
+     real pattern (a set logo is not the set name). One card, one
+     session — not enough to change the prompt yet.
+  4. **Retrieval is untouched.** `search="Pikachu"` at offset 0 and 30
+     contains nothing from the 30th set — the catalog crowds it out, same
+     class as the Southern Islands Mew entry.
+
+  **PPT credit fact worth remembering: a long live stream can exhaust the
+  daily allowance.** Pool recording for this measurement was halted by
+  its own guardrail at **daily-remaining 8,592**. Confirmed in Vercel
+  logs rather than assumed: **90 PPT searches in 30 minutes (~2,700
+  credits)** from live scanning. This whole task spent **577 credits**.
+  At ~60 credits/scan the **20,000/day allowance is exhaustible by one
+  long stream**, and offline analysis that replays real pools competes
+  with live scanning for both the daily allowance and the 60-units/60s
+  minute limit.
+
 - **2026-09-29/30 pricing model — the current, authoritative description
   of how list price, break-even and Suggested Bid are computed. Read
   this one, not the older 1.2x/13.25% entries further down (now marked
