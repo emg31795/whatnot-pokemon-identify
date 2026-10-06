@@ -9059,13 +9059,19 @@ rescue above. Commit `1c487f7`, `api/identify.js` only
 (sha1 `e7495136d71a95542c3aa7666edb1c5b0df5e521`), docs in `e14362e`,
 pushed to GitHub as `0eec6a1..e14362e`.
 
-> **LIVE AND CONFIRMED.** Production runs
+> **LIVE AND CONFIRMED.** This deploy was
 > `sourceHash e7495136d71a95542c3aa7666edb1c5b0df5e521`
-> (`dpl_DnqenwCrm7BjRa3oG44LCFrEfQ62`), which **equals
+> (`dpl_DnqenwCrm7BjRa3oG44LCFrEfQ62`), which **equalled
 > `shasum api/identify.js` on disk byte-for-byte** — the second byte-exact
 > deploy in this project's history, and the second built from disk via the
 > Vercel CLI rather than inline content. The prior production hash was
 > `460cbf0e…` (`dpl_qGSZV7k4TyiKhauy37SRxRMrS6qJ`).
+>
+> **SUPERSEDED 2026-10-05 — this is no longer the production deployment.**
+> The attack-mismatch cap deploy (`dpl_CDsEbiiWKKcLMHRHBBsXpSwNFkfc`,
+> `sourceHash 882cc1b7…`, built from `b597236`) is current; see its own
+> entry below. The READ TOTAL ORPHAN logic described here is unchanged and
+> still live.
 >
 > **STILL QUEUED, did NOT ride along** — verified by grep against the
 > deployed file after the deploy, not assumed:
@@ -9280,9 +9286,11 @@ with `--scope leasedraftai` on every subcommand:
 | | deployment | target | status | `sourceHash` |
 |---|---|---|---|---|
 | preview | `dpl_DPcGhvgCEMJj2BTy8KYrTiSD3xbw` | preview | Ready | `e7495136…` |
-| **production** | **`dpl_DnqenwCrm7BjRa3oG44LCFrEfQ62`** | production | Ready | `e7495136…` |
+| **production (superseded 2026-10-05)** | **`dpl_DnqenwCrm7BjRa3oG44LCFrEfQ62`** | production | Ready | `e7495136…` |
 
-**Both equal `shasum api/identify.js` exactly.** Production is aliased to
+**Both equalled `shasum api/identify.js` exactly** at the time of this
+deploy. Production has since moved to `dpl_CDsEbiiWKKcLMHRHBBsXpSwNFkfc`
+(`882cc1b7…`) — see the attack-mismatch entry below. Production is aliased to
 `whatnot-pokemon-identify.vercel.app` and
 `whatnot-pokemon-identify-leasedraftai.vercel.app`; a live `GET` on the
 real alias returns that hash plus
@@ -9428,7 +9436,7 @@ Status-code breakdown on the new deployment: 13x200, 7x204, 1x400 (that
 
 ---
 
-## Fix: attack-mismatch confidence cap (English reads only) — "ME: 30th Celebration" Pikachu priced as Celebrations. BUILT AND MEASURED LOCALLY; NOT DEPLOYED, NOT PUSHED (2026-10-04/05)
+## Fix: attack-mismatch confidence cap (English reads only) — "ME: 30th Celebration" Pikachu priced as Celebrations. BUILT, MEASURED, DEPLOYED; FIRING PATH NOT YET OBSERVED ON ORGANIC TRAFFIC (2026-10-04/05)
 
 Eric reported the extension struggling on the "30th collection" Pikachus.
 His screenshot showed a card whose attack is **"Targeted Spark"** at HP
@@ -9749,6 +9757,243 @@ credits** against a 3,500 cap. Worth recording as a standing fact: the
 roughly 60 credits per scan, and any offline analysis that replays real
 pools competes directly with live scanning for both the daily allowance
 and the 60-units/60-second minute limit.
+
+### Deploy (2026-10-05) — byte-exact, built from disk via the CLI
+
+Built from commit **`b597236`**, deployed from disk with
+`npx vercel deploy` / `--prod`, `--scope leasedraftai` on every
+subcommand:
+
+| | deployment | target | status | `sourceHash` |
+|---|---|---|---|---|
+| preview | `dpl_6T7ueXrmv3T57yVhe3d6hsXmkJMa` | preview | Ready | `882cc1b7…` |
+| **production** | **`dpl_CDsEbiiWKKcLMHRHBBsXpSwNFkfc`** | production | Ready | `882cc1b7…` |
+
+**Both equal `shasum api/identify.js` on disk byte-for-byte**
+(`882cc1b744260e98aa40162f8d54b93e2ed5cf4e`) — the **third** byte-exact
+deploy in this project's history and the third built from disk via the
+CLI. Production is aliased to `whatnot-pokemon-identify.vercel.app`,
+`aliasError: null`, and a live `GET` on the real alias returns that same
+hash plus `normalizeDiacriticTest: "pokemon collector"`. Prior
+production hash was `e7495136…` (`dpl_DnqenwCrm7BjRa3oG44LCFrEfQ62`).
+
+### Three real end-to-end production scans
+
+| card | result | latency | what it proves |
+|---|---|---|---|
+| Pikachu XY95 (114004) | High, **no** attack mismatch, **1 search** | 2212ms | no regression on a card that resolves normally |
+| Celebrations Pikachu 005/025 (250303) | read **"Gnaw"** → rule correctly did **not** fire, score **33** (vs **29** on the original bug) | 1879ms | the `extractAttackNames` guard works |
+| 30th Celebration Pikachu 038/128 (712942) | catalog image read **038/128 correctly** → High, **$0.96** | 2697ms | right answer, but **rule not exercised** |
+
+The 250303 scan is the most informative of the three. "Gnaw" **is** on
+that printing but is attack **#1**, while "Thunder Jolt" is attack #2 —
+so a rule comparing only `candidate.attackName` would have fired a false
+positive here. It did not fire, and the score rose 29 → 33, which is
+exactly the predicted behaviour and confirms the fix compares against
+**every** parsed attack rather than just the first.
+
+The 712942 scan did **not** exercise the rule: the original miss depended
+on both Gemini models fabricating `005/025` off a live-stream frame, and
+a clean catalog image simply reads the number correctly instead. That is
+the right outcome for that image, not evidence about the rule.
+
+### Status
+
+**Deployed; the firing path is NOT yet observed on organic traffic.**
+Watch for the `[lookup] ATTACK MISMATCH` log line. The pre-guard **20%
+fire rate must still not be quoted as a real-world rate** — it came from
+one ~10-minute slice unusually dense with 30th Celebration cards, i.e.
+the exact failure this targets (n=30 eligible). Nothing about the deploy
+changes that caveat.
+
+---
+
+## Research: does TCGplayer market reflect what Eric can actually sell for on eBay? (2026-10-05) — NO CODE CHANGED
+
+Scope: read-only measurement, no code, no proposal to build. The question
+behind it: Suggested Bid is worked backwards from TCGplayer market via a
+`market + $1.00` eBay listing template, so if TCGplayer systematically
+diverges from real eBay realisable prices, every bid inherits that error.
+
+**Raw data is NOT in the repo.** 910 parsed sales plus every raw
+TCGplayer JSON and PriceCharting HTML page live only in a session
+scratchpad
+(`/private/tmp/claude-501/-Users-ericgeller-…/ada62fce-…/scratchpad/`,
+`REPORT.md` + `results.json` + `table.md`). That path is **non-durable
+and will not survive** — the figures recorded here are the durable
+record, deliberately kept to summary level.
+
+### PriceCharting facts established before using any of its numbers
+
+These change what its figures mean, so they are recorded first:
+
+1. The headline **"Ungraded" value has blended eBay + TCGplayer sales
+   since 2025-12-08** — it is **not** a pure-eBay number.
+2. The **All / eBay only / TCGplayer only toggle only filters the visible
+   sales list**; it does **not** change the headline value.
+3. Since **2025-11-19** it shows the **accepted best-offer price**, with
+   the original listed price crossed out.
+
+Because of (1), the real comparison used the **individual eBay sold
+rows**, not the headline. Its ToS permits personal/internal use; nothing
+was redistributed, and no block or rate limit was circumvented.
+
+### Method
+
+- **40 English cards, all from Eric's real scans** — 22 productIds
+  harvested from a live scanning session that same evening (Vercel
+  `[tcgplayer-price]` lines), the rest from `CLAUDE.md` and this file.
+  Stratified across four price bands, mixing WotC/EX vintage and modern.
+  Included **Mega Charizard X ex 130/094 (662185)**.
+- **TCGplayer side: 0 PPT credits.** Used this project's own
+  `infinite-api.tcgplayer.com/price/history/{id}/detailed?range=quarter`
+  path with the existing User-Agent, taking `buckets[0].marketPrice` and
+  `totalQuantitySold` exactly as `buildLivePriceVariantsFromTCGPlayer`
+  does — so the TCG number is literally what the extension shows.
+- **eBay side: 48 PriceCharting pages**, one request per 5 seconds.
+  **910 sales kept** after filtering to the last 30 days and excluding
+  graded, lots, proxies/custom, wrong printings, and number-mismatched
+  rows. Condition parsed from title into NM / played / unspecified
+  (288 / 218 / 404).
+
+### Main result: TCGplayer is fine for a NM card
+
+eBay **NM-only** median ÷ Eric's actual list price (market + $1.00):
+
+| band | n | median |
+|---|--:|--:|
+| <$5 | 9 | 1.03 |
+| $5–25 | 7 | 1.17 |
+| $25–100 | 6 | 0.94 |
+| >$100 | 6 | 0.93 |
+| **all** | **28** | **0.97** |
+
+**0.998** excluding the one printing-artifact card. By era: modern
+**1.00**, vintage **0.93**. The required card was a best case — Mega
+Charizard X ex 130/094: TCG NM $227.82, eBay NM median $230.00 (n=9),
+PriceCharting headline $226.98, all inside ~1%.
+
+### The alarming raw gradient is two confounds, both tested
+
+Raw eBay median ÷ TCG NM: **1.80** (<$5), **1.18** ($5–25), **0.65**
+($25–100), **0.56** (>$100); vintage **0.47** vs modern **1.01**.
+
+1. **Condition blindness.** PriceCharting "Ungraded" is *any* raw
+   condition; TCG NM is NM specifically, and the raw vintage cards that
+   actually sell are mostly LP/MP. Tested directly rather than assumed:
+   re-running vintage against TCGplayer **LP** instead of NM moves it
+   **0.473 → 0.927**, while modern barely moves (1.01 → 1.07). Base Set
+   Charizard is the clearest case — 29 sales, 13 explicitly played, only
+   **1** NM.
+2. **Shipping baked into cheap eBay prices.** eBay sold prices are what
+   the buyer paid, usually with free shipping; TCG market is card-only.
+   Subtracting ~$1 (Eric's envelope) moves the under-$5 band **1.80 →
+   1.01**, and the under-$20 group **1.587 → 1.03**. Above ~$20 the
+   adjustment is under 5% and irrelevant. **Subtracting $1 is the fairer
+   comparison and is decisive below $5.**
+
+Correcting both, all four bands land **0.89–1.19**.
+
+### Decision: no band-specific correction factor
+
+Fitting a factor to the raw ratios would hard-code a confound. The
+vintage half is **already structurally handled** — break-even is computed
+per condition, so it is a question of which condition row gets read, not
+of a multiplier. And the noise swamps any single factor:
+
+- median within-card IQR is **42%** of that card's own median;
+- **36 of 38** cards had individual sales spanning more than **2x**
+  (Base Set Charizard: $250–$600 inside 30 days);
+- **29 of 38** differed from TCG NM by more than 15%;
+- sold volume did **not** predict agreement (median |ratio−1| 0.40–0.58
+  across every volume tier).
+
+### PPT `includeEbay=true` returns raw comps, not only graded
+
+Probed because it would be the in-house path if this were ever wanted.
+**2 calls, 4 credits total** (`limit=1` deliberately).
+
+`card.ebay.salesByGrade` is keyed by grade (`psa7…psa10`, `cgc*`,
+`bgs*`, `sgc*`, `tag*`, `ace*`) **plus an `ungraded` key**. Each bucket:
+`{count, totalValue, averagePrice, medianPrice, minPrice, maxPrice,
+marketPrice7Day, marketPriceMedian7Day, dailyVolume7Day, marketTrend,
+lastMarketUpdate, lastSaleDate, smartMarketPrice{price, confidence,
+method, daysUsed}}`.
+
+**But coverage is value-dependent, which is the practical limit:**
+
+| probe | card | result |
+|---|---|---|
+| 1 | Shining Lugia SM82 ($109 raw) | `ungraded` count **26**, median **$133.71**, 7-day median $132.41 |
+| 2 | Alolan Raticate GX ($3.10 raw) | **no `ungraded` bucket at all** — only psa8/9/10 |
+
+So it is missing precisely in the cheap band, where shipping dominates
+anyway. Cost: **+1 credit per card** — doubles a `limit=1` call, and the
+real `limit=30` path would go **30 → 60 credits**.
+
+### One card-specific finding worth acting on: Pikachu XY95 (114004)
+
+**TCGplayer appears to genuinely overstate this card — and it is this
+project's own standard regression card.**
+
+| source | value |
+|---|---|
+| TCGplayer NM market | **$207.48** |
+| eBay median, 30 days, n=30 | **$98.50** |
+| eBay NM-only median (n_nm=5) | **$115.00** |
+| PriceCharting headline | **$94.82** (independent agreement) |
+| TCGplayer's own `lowestPrice` | **$36** |
+| TCGplayer MP market | **$67.30** |
+
+The sales are unambiguously the right card (XY95 Black Star Promo), and
+two independent sources land near $95–115. `CLAUDE.md` documents
+break-even **$169.79** / Suggested Bid **$106.16** for this card computed
+off that $207 market — **on this evidence the real NM resale is roughly
+$100–115, so that documented Suggested Bid may be at or above what the
+card actually sells for.** No other card in the sample shows this.
+Worth a second look before that figure is reused as a reference value.
+
+### New-set effect — UNCONFIRMED, do not build on it
+
+2026-released sets showed NM/list **1.26** (n=8) vs **0.93** (n=20) for
+older sets, with the ~3-week-old `ME: 30th Celebration` cards most
+extreme: Moltres 130/128 **1.60**, Salamence ex 156/128 **1.49**, Meowth
+144/128 **1.42**. The naive reading is that TCGplayer market lags eBay on
+fresh releases and Eric is underbidding there.
+
+**Deliberately marked unconfirmed.** n=8 from a single slice, and the
+**30-day sale window is very likely inflating it**: in a falling
+post-release market a 30-day median is weighted toward older, higher
+sales, so the apparent lag may be an artifact of the window rather than a
+real pricing gap. **Re-measure with a 7-day window before treating this
+as real**, and do not build a recency correction on these numbers.
+
+### Honest limits
+
+- **n=40 cards, one 30-day window, one evening's harvest** — directional,
+  not rates.
+- **NM subsets are thin.** Median n_nm per card is 5.5 and **10 of 38**
+  cards have n_nm < 3; the top two bands rest on 6 cards each. Base Set
+  Charizard's NM figure is a **single** $599.99 sale and must not be read
+  as a price.
+- **2 low-n cards (<5 sales) excluded from every summary** and reported
+  separately: Lotad (Shiny) SH4 (n=1), Irida Secret (n=4).
+- **1 flagged printing mismatch, not silently dropped:** Mew #8 (607818)
+  is TCGplayer's *Glossy Finish* product, but PriceCharting's "Mew #8"
+  page carries generic WoTC Black Star Promo sales ("08/53"), so its 0.22
+  ratio is very likely artifact. Excluding it moves the headline figure
+  0.974 → 0.998, so **no conclusion depends on it**.
+- **PriceCharting's own sale-to-product matching is noisy** — the
+  Celebrations Pikachu 005/025 page carries at least one `ME: 30th
+  Celebration` sale that number-filtering cannot catch, because
+  PriceCharting appends the correct number to a wrong-card title.
+- **404 of 910 sales are condition-unspecified**, so the NM/played split
+  is a title-based lower bound on both sides.
+- **This is PriceCharting's record of eBay, not eBay's own data**, and
+  inherits whatever it misses. No eBay API was used and no sign-in wall
+  was circumvented.
+- Band $5–25 contains **no vintage card at all**, so that era×band cell
+  is empty.
 
 ---
 
