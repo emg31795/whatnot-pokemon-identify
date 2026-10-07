@@ -1747,8 +1747,33 @@ async function fetchPokemonPriceTracker(name, { graded = false, language = "Engl
   try {
     resp = await fetchWithTimeout(url, { headers }, CARDDB_TIMEOUT_MS);
   } catch (e) {
-    console.error("[lookup] PokemonPriceTracker request threw:", e && e.message);
-    return null;
+    // FIX (2026-10-07, live Trainer-run investigation): a throw here is an
+    // abort/network error, and it used to return null — which
+    // lookupCardPPT turns into an EMPTY candidate pool and therefore a
+    // silent notFound, indistinguishable from "this card isn't in the
+    // catalog". That cost a real scan: Doctor 214/198 at 22:32:16, where
+    // BOTH vision models agreed on the number and the card genuinely
+    // exists (Doctor (Secret) 214/198, $8.67 — a price seen in this same
+    // session's own logs), came back as nothing at all on the single log
+    // line "PokemonPriceTracker request threw: This operation was
+    // aborted".
+    //
+    // One retry, same shape and rationale as the retry already shipped on
+    // fetchTCGPlayerPriceHistory (test #72): scoped strictly to this
+    // abort/network-error branch. A 4xx, a 429 or a 5xx does NOT throw —
+    // fetchWithTimeout resolves and those are handled on `!resp.ok`
+    // below — so by construction this can never retry a rate limit or a
+    // client error, only a genuine timeout/transport blip. The retry uses
+    // the shorter CARDDB_RETRY_TIMEOUT_MS so a hung upstream cannot push
+    // the request past the 1-3s scan target.
+    console.error("[lookup] PokemonPriceTracker request threw:", e && e.message, "— retrying once");
+    try {
+      resp = await fetchWithTimeout(url, { headers }, CARDDB_RETRY_TIMEOUT_MS);
+      console.log("[lookup] PokemonPriceTracker retry after abort SUCCEEDED for name=", name);
+    } catch (eRetry) {
+      console.error("[lookup] PokemonPriceTracker retry after abort also threw:", eRetry && eRetry.message, "name=", name);
+      return null;
+    }
   }
 
   if (!resp.ok) {
@@ -2809,6 +2834,14 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // note so the user is told the number itself was probably misread,
   // rather than being shown a note that implies the number checked out.
   let setNameSearchNumeratorDisagreed = false;
+  // ADDED 2026-10-07 — see the SUB-FLOOR LEGACY-MODEL NUMBER RESCUE block
+  // below `if (!best)` for the full rationale. Declared here alongside the
+  // other rescue flags because the two override blocks much further down
+  // (the no-number-match floor and the null-cardNumber floor) both have to
+  // be able to exempt this rescue, exactly as they already exempt
+  // setNameSearchRescued.
+  let subFloorLegacyRescued = false;
+  let subFloorLegacyNumber = null;
   // WEAKNESS GATE (added 2026-10-02 after review): the first draft of this
   // block ran on any scan whose best match was not number-confirmed, which
   // silently included scans that had already resolved WELL on a null
@@ -2999,6 +3032,104 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     }
   }
 
+  // FIX (2026-10-07, live full-art Trainer run — 51 of 73 real production
+  // scans in a single 25-minute window came back notFound): the
+  // LEGACY-MODEL NUMBER RESCUE further down exists precisely to recover a
+  // misread card number using the legacy shadow model's independent read of
+  // the same frame — but it is gated on `best` already existing, and sits
+  // ~150 lines AFTER the `if (!best) return { notFound: true }` on the next
+  // line, so it can never run on the scans that need it most.
+  //
+  // Why those scans have no `best` at all: on a Trainer/Supporter card `hp`
+  // and `attackName` are null BY CARD TYPE, so once the number misreads the
+  // only signal scoreCandidate can still award is `rarity` (2). 2 is below
+  // MATCH_FLOOR (3), so pickBestCandidate returns best=null and we bail out
+  // one line below. 37 of those 73 real scans scored EXACTLY 2. On a Pokémon
+  // card the same misread still leaves hp (6) + attackName (4), which clears
+  // the floor, which is why the existing rescue works there (Medicham) and
+  // fired only 3 times across this whole Trainer-heavy session.
+  //
+  // Measured on the preserved logs from that session: 8 of the 51 failures
+  // had the legacy model read a number that was ALREADY SITTING in the pool
+  // this function had already fetched — recoverable at zero extra API cost
+  // and thrown away (3x Shauna -> Shauna (Full Art) 263/264, Nessa ->
+  // 183/185, Dancer -> 259/264, 2x Melony -> 195/198, Melony -> 218/198).
+  // 2 of those 8 had read.cardNumber === null, so this deliberately does NOT
+  // gate on read.cardNumber the way the downstream block does.
+  //
+  // Acceptance is deliberately STRICTER than the downstream rescue, because
+  // this one fires with no scoring signal whatsoever behind it:
+  //   - searches ONLY `candidates`, the pool already fetched above — no new
+  //     PPT call, so this cannot cost a credit or trip the minute limit;
+  //   - re-applies the SAME name filter expression used to build `filtered`
+  //     above. This is NOT redundant, and the reachability argument is
+  //     subtle enough to write down, because it looks redundant at first
+  //     glance: page-1, the page-2 merge and the combined-search merge all
+  //     name-filter their own rows, so normally every row in `candidates`
+  //     has already passed. The exception is `nameFilterRescuedByNumber`,
+  //     where `filtered` was replaced by rows matched on NUMBER ONLY and
+  //     never name-checked. Those rows score >= 7 from the number signal,
+  //     so you would think they can never reach this `!best` branch — but
+  //     scoreCandidate SUBTRACTS SCORE.stampMismatch (8) when the read says
+  //     stampType "none" and the candidate name carries a stamp keyword,
+  //     which is the common case. A weak number match (7) minus 8 is -1,
+  //     below MATCH_FLOOR, so `best` is null with a wrong-name row sitting
+  //     in `candidates`. Verified by direct test: without this filter, a
+  //     read of "Testmon"/"263" against a pool row
+  //     "CompletelyDifferentCard - 263/264 (Staff)" is rescued and priced
+  //     at Medium. With it, the scan correctly stays notFound;
+  //   - requires a NON-weak exact numbersMatch. A "weak" match is the
+  //     asymmetric bare-promo-numerator case, i.e. a coincidence, which is
+  //     the one thing we must not trust when nothing else corroborates
+  //     (same reasoning already written out on the orphan path above);
+  //   - requires EXACTLY ONE distinct candidate (candidateDedupKey) to
+  //     qualify — two or more and we genuinely cannot tell them apart, so
+  //     nothing happens and the notFound below stands.
+  // scoreCandidate, MATCH_FLOOR and HIGH_THRESHOLD are untouched; bestScore
+  // is only floored to MATCH_FLOOR so downstream code sees a consistent
+  // shape, exactly as the setName-search rescue already does.
+  if (!best && !setNameSearchRescued && legacyReadPromise) {
+    try {
+      const legacyRead = await legacyReadPromise;
+      if (legacyRead && legacyRead.found && legacyRead.cardNumber) {
+        const qualifiers = candidates
+          .filter((c) => normalizeNameForMatch(c.name).includes(wantedName))
+          .filter((c) => {
+            const nm = numbersMatch(legacyRead.cardNumber, c.number);
+            return nm.match && nm.strength !== "weak";
+          });
+        const distinctQualifiers = [];
+        const seenQualifierKeys = new Set();
+        for (const q of qualifiers) {
+          const key = candidateDedupKey(q);
+          if (seenQualifierKeys.has(key)) continue;
+          seenQualifierKeys.add(key);
+          distinctQualifiers.push(q);
+        }
+        if (distinctQualifiers.length === 1) {
+          best = distinctQualifiers[0];
+          subFloorLegacyRescued = true;
+          subFloorLegacyNumber = legacyRead.cardNumber;
+          bestScore = Math.max(bestScore, MATCH_FLOOR);
+          tieCount = 1;
+          bestDetail = null;
+          tiedCandidates = [best];
+          console.log(
+            `[requestId=${requestId}]`,
+            `[lookup] SUB-FLOOR LEGACY-MODEL NUMBER RESCUE: primary read number=${read.cardNumber} produced no match above MATCH_FLOOR, but legacy shadow read number=${legacyRead.cardNumber} matched exactly one pool candidate: ${best.name} ${best.number} (tcgPlayerId=${best.tcgPlayerId})`
+          );
+        } else if (distinctQualifiers.length > 1) {
+          console.log(
+            `[requestId=${requestId}]`,
+            `[lookup] sub-floor legacy number rescue declined: legacy read number=${legacyRead.cardNumber} matched ${distinctQualifiers.length} distinct candidates — cannot tell them apart, keeping notFound`
+          );
+        }
+      }
+    } catch (e) {
+      console.error(`[requestId=${requestId}]`, "[lookup] sub-floor legacy-model rescue check failed (treating as unavailable):", e && e.message);
+    }
+  }
+
   if (!best) return { notFound: true };
 
   // FIX (2026-09-26, Gemini read-consistency investigation — null
@@ -3150,7 +3281,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // When the rescue's number DID match, `numberMatchedForBest` is true and
   // this block was already a no-op, so this guard only ever affects the
   // numerator-disagreed case.
-  if (read.cardNumber && best.number && !setNameSearchRescued) {
+  if (read.cardNumber && best.number && !setNameSearchRescued && !subFloorLegacyRescued) {
     const { match: numberMatchedForBest } = numbersMatch(read.cardNumber, best.number);
     if (!numberMatchedForBest) {
       const anyNumberMatch = candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
@@ -3230,7 +3361,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         }
       }
     }
-  } else if (!read.cardNumber && !setNameSearchRescued) {
+  } else if (!read.cardNumber && !setNameSearchRescued && !subFloorLegacyRescued) {
     // EXCLUSION ADDED 2026-10-02 (Southern Islands Mew): a setName-search
     // rescue is deliberately exempt from this floor. The floor exists for
     // "we picked a candidate out of a broad name-search pool on one
@@ -3332,6 +3463,26 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
           ? `, but its number (${best.number}) does NOT match the number we read (${read.cardNumber}) — only the set size matched, so the number was very likely misread`
           : " and number we had"
       }. This isn't a fully confirmed match; verify the exact set and printing before trusting this price.`;
+  }
+
+  // ADDED 2026-10-07, paired with the SUB-FLOOR LEGACY-MODEL NUMBER RESCUE
+  // above. Set outright rather than capped from the score, for the same
+  // reason as the setName-search rescue directly above: the rescue replaced
+  // a null `best` with a candidate that was never scored against the read,
+  // so `bestScore` is the synthesized MATCH_FLOOR and says nothing about
+  // this candidate. Medium is the right level on the merits — exactly one
+  // pool row passed the name filter AND a non-weak exact number match — but
+  // the number came from a second model's read, not the primary one, so it
+  // is explicitly never High. matchBasis is the existing
+  // "legacy-number-rescue" code: this is the same rescue mechanism as the
+  // downstream block, just reached on the sub-floor path, and the frontend
+  // should treat the two identically.
+  if (!ambiguousNote && subFloorLegacyRescued) {
+    matchConfidence = "Medium";
+    matchBasis = "legacy-number-rescue";
+    ambiguousNote = read.cardNumber
+      ? `The card number we read ("${read.cardNumber}") didn't match anything in our database, but a second AI model's independent read of the same card ("${subFloorLegacyNumber}") matched this printing exactly — using that as a cross-check rescue. This isn't a fully confirmed read; verify the exact printing before trusting this price.`
+      : `We couldn't read a card number off this scan at all, but a second AI model's independent read of the same card ("${subFloorLegacyNumber}") matched exactly one printing in our database — using that as a cross-check rescue. This isn't a fully confirmed read; verify the exact printing before trusting this price.`;
   }
 
   if (!ambiguousNote && nameFilterRescuedByNumber) {
