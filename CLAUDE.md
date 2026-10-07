@@ -2374,6 +2374,171 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Sub-floor legacy-model number rescue + one PPT retry on abort — live
+  full-art Trainer run where 51 of 73 real scans returned nothing.
+  INVESTIGATED, BUILT, DEPLOYED (2026-10-07).** Full trace, all tables,
+  the replay-fidelity limits and the Fix 1 measurement in
+  `docs/test-cases.md`'s matching entry.
+
+  **The trigger.** Eric reported mid-stream that the extension was having
+  trouble identifying cards. 675 log entries pulled and deduped from
+  Vercel's 1-hour window (22:25:52→22:51:14Z, 73 `/api/identify` + 19
+  `/api/price`; `group_by` confirmed zero traffic 21:54→22:24, so the
+  session is complete). **51 of 73 scans (69.9%) ended in "couldn't
+  confidently match".** Every one of the 51 has `hp: null` and
+  essentially all are full-art/secret-rare Trainers (Shauna x7, Melony
+  x5, Dancer/Nessa/Peonia x3 each, ...). Eric was scanning a full-art
+  Trainer run — the card class this tool is structurally weakest on.
+
+  **Infrastructure was clean and was NOT the cause**: 0 Gemini failures,
+  0 timeouts, **0 429s**, 0 rate limits, 100% shadow coverage (73/73
+  both models), exactly ONE error-level entry all window, latency median
+  1731ms gemini / 2034ms total with **0 of 22 over 3000ms**.
+
+  **Root cause 1, the one that was fixed.** On a Trainer card `hp` and
+  `attackName` are null BY CARD TYPE, so once the number misreads the
+  only signal left is `rarity` (2) — below `MATCH_FLOOR` (3). So
+  `pickBestCandidate` returns `best=null` and `lookupCardPPT` bails at
+  `if (!best) return { notFound: true }` (was line 3002), **151 lines
+  before** the LEGACY-MODEL NUMBER RESCUE (was line 3153) that exists
+  precisely to recover a misread number and which requires a non-null
+  `best`. **37 of the 73 scans scored exactly 2.** On a Pokémon card the
+  same misread still leaves hp(6)+attackName(4) ≥ 3, which is why the
+  rescue works there and fired only 3 times this session. **8 failures
+  had the legacy model read a number already sitting in the fetched
+  pool** — recoverable at zero API cost and thrown away.
+
+  **Root cause 2, deliberately NOT fixed — see the Fix 1 measurement
+  below.** `normalizePptCard`'s Trainer-subtype regex requires a
+  `"Trainer - "` prefix; PPT stores 73% of Trainer records as a bare
+  `"Supporter"` (6 captured / 46 dropped / 11 null across 63 real
+  records; 353 of 382 hp-null scored candidates have `subtypes: []`).
+
+  **28 of the 51 are a genuine legibility limit, not a code defect** —
+  neither model read a number, all with `hp: null` and a glare/angle/
+  thumb reason in the shadow reads. On a Trainer with no number, no HP
+  and no attack there is nothing left in this tool's signal set. That is
+  the largest single group, so roughly a third of the session was never
+  winnable from those frames.
+
+  **Fix 2 (built).** New block immediately before the `!best` return,
+  gated `!best && !setNameSearchRescued && legacyReadPromise`. Searches
+  ONLY the already-fetched `candidates` — **no new PPT call, so it cannot
+  cost a credit or trip the minute limit**. Acceptance is stricter than
+  the downstream rescue because this one fires with no scoring signal
+  behind it: the same name-filter expression, a **NON-weak exact**
+  `numbersMatch`, and **exactly one distinct** candidate by
+  `candidateDedupKey`. Capped at **Medium**, `matchBasis:
+  "legacy-number-rescue"`, existing cross-check note (separate wording
+  when the read number is null). `!subFloorLegacyRescued` added to both
+  downstream floor-override guards, for the same reason
+  `setNameSearchRescued` is already exempt — the rescue sets
+  `bestDetail = null`, so a signal-count floor would discard a correct
+  rescue. Deliberately **not** gated on `read.cardNumber` (2 of the 8
+  read null). `scoreCandidate`, `MATCH_FLOOR`, `HIGH_THRESHOLD`
+  untouched. New log line `[lookup] SUB-FLOOR LEGACY-MODEL NUMBER
+  RESCUE`.
+
+  **The name re-check is load-bearing, and the reason is written into the
+  code** because it reads as redundant: `nameFilterRescuedByNumber`
+  replaces `filtered` with rows matched on NUMBER ONLY that are never
+  name-checked. Those score ≥7, so they look unable to reach `!best` —
+  except `scoreCandidate` **subtracts `SCORE.stampMismatch` (8)** when
+  the read says `stampType: "none"` and the candidate carries a stamp
+  keyword. Measured: a `(Staff)`/`(Prerelease)`/`(Pokemon Center
+  Exclusive)` candidate on a weak number match scores **−1**. With the
+  filter removed, a read of "Testmon"/"263" rescues and prices
+  `"CompletelyDifferentCard - 263/264 (Staff)"` at $50/Medium; with it,
+  notFound.
+
+  **Fix 3 (built).** A PPT fetch abort used to `return null`, which
+  becomes an empty pool and a silent notFound. That cost a real scan:
+  Doctor 214/198 at 22:32:16, where **both models agreed** on the number
+  and the card exists at $8.67. One retry at the shorter
+  `CARDDB_RETRY_TIMEOUT_MS`, scoped to the abort branch only — a 4xx/429/
+  5xx does not throw and is handled on `!resp.ok`, so **by construction
+  this can never retry a rate limit** (verified: 429 → exactly 1
+  attempt, byte-identical to HEAD).
+
+  **Verified by replaying all 73 preserved scans through the real
+  `handler()`**, HEAD vs new, each in a fresh process (the local
+  in-memory cache fallback would otherwise poison the differential):
+  **65 unchanged, 8 changed**, every one notFound → the correct card at
+  Medium with exactly one rescue log line and no extra PPT call —
+  Shauna (Full Art) 263/264 x3, Nessa (Full Art) 183/185, Dancer (Full
+  Art) 259/264, Melony (Full Art) 195/198 x2, Melony (Secret) 218/198.
+  All 30 both-models-blind scans stay notFound; Katy 22:36:40 and all 16
+  replay successes unchanged. **8/8 acceptance controls pass.** 48 of 50
+  top-level functions byte-identical; `handler` unchanged;
+  `module.exports` identical so `api/price.js`/`api/flag.js` are
+  unaffected.
+
+  **Replay fidelity, stated honestly:** replay-HEAD shows 57 notFound vs
+  production's 51 — delta exactly +6, **one-directional** (the replay is
+  strictly more pessimistic). Causes: 1 truncated pool, 1 cache hit, 3
+  missing un-logged `attacks`/`setName`, and 22:43:31 whose `[identify]`
+  line fell in a 2-second slice boundary and **cannot** be replayed.
+  **None of the 6 is among the 8 the fix changes.**
+
+  **Fix 1 (the subtype regex) was MEASURED AND DELIBERATELY NOT BUILT.**
+  Both a lower and an upper bound give the identical result: **4 of 73
+  scans change; 1 unique correct priced match, and it is one of the 8 Fix
+  2 already recovers, so not incremental; 0 Low ties that would show a
+  price; 53 stay notFound; 0 effect on successes.** The reason it is so
+  small: `scoreCandidate` requires the **READ** subtype to be a
+  **substring of the candidate's**, and **42 of 73 reads are
+  `"Trainer"`**, which never matches a candidate `"Supporter"` — only 5
+  reads can ever benefit. The regex is the smaller half; the larger half
+  is a **read-vs-catalog subtype vocabulary mismatch**, a different
+  change, neither built nor measured. **And it would partially undo Fix
+  2**: on 22:29:36 Shauna, Fix 2 alone gives the correct Shauna (Full
+  Art) at Medium, while Fix 1 + Fix 2 gives `"Shauna"` at Low with the
+  price withheld — the +5 lifts a *wrong* candidate above the floor, so
+  `best` is no longer null and the sub-floor rescue never fires.
+
+  **Two self-corrections from this work, both recorded because they were
+  cited as evidence:** (1) the first writeup counted 52 notFound — it is
+  **51**; the 22:38:43 Marnie scan emits no `best=` line because a PPT
+  cache hit short-circuits the lookup, and it was a success (confirmed
+  independently: `productId=208496` appears twice in `/api/price`). The
+  corrected count is what reconciles with the 19 `/api/price` calls.
+  (2) **Katy (22:36:40) survived the floor on `set` (3) + `rarity` (2),
+  NOT on subtype** — its candidates have `subtypes: []`. It had been
+  cited as evidence for the subtype fix and does not support it.
+
+  **Open item: the legacy await on this new path has no time cap.** It is
+  a bare `await legacyReadPromise`, bounded only by the legacy model's own
+  `GEMINI_TIMEOUT_MS`, not by the 500ms `LEGACY_SETNAME_HINT_TIMEOUT_MS`
+  race the setName-hint path uses. In practice both reads launch together
+  and the primary has already resolved, and this path only runs on a scan
+  that was otherwise returning notFound — but it is a real worst-case
+  latency addition on the slow-legacy case, and the **existing**
+  downstream rescue has the same unbounded await. Capping both with the
+  same `Promise.race` pattern is the obvious follow-up; deliberately not
+  bundled here to keep the diff to the fix.
+
+  **Future idea, NOT built: a vision field for full-art / gold /
+  texture.** On a numberless Trainer read nothing separates the base
+  Uncommon from the Full Art, the Secret/gold and the stamped promos —
+  they share name and subtype, and 28 of 51 failures had no number from
+  either model. A dedicated read field would be a genuinely new signal
+  for exactly that population. Per the standing precedent it may inform a
+  warning or a tie-break but must **never** flip a default printing on a
+  vision read (the 2026-08-26 `pickDefaultVariantKey` revert, and the
+  Burger King Chimchar entry).
+
+  **Also found, not fixed:** "Lacy" is a misread of **"Lacey"** (Lacey
+  175/131, $22.34) killed at the name filter; retrieval gaps persist for
+  Lana's Aid 114/100 (Japanese) and Crispin 109/084, where both models
+  agreed on the number and no pool candidate carries that denominator.
+  **READ TOTAL ORPHAN fired 16 times, all 16 correct, and rescued
+  nothing. SETNAME SEARCH RESCUE: 0 accepted of 5 attempted** — the gate
+  is right, the *hints* are bad ("Shauna Evolving Skies", "Katy Scarlet &
+  Violet"); do NOT loosen acceptance in response (Burger King Chimchar
+  precedent). **ATTACK MISMATCH: 0** — it cannot fire on Trainers at all,
+  since every one of these 73 scans read `attackName: null`, so it
+  remains unobserved on organic traffic.
+
 - **Research (2026-10-05): is TCGplayer market the right basis for
   Suggested Bid, or should it be eBay sold prices? NO CODE CHANGED,
   nothing proposed for build. Answer: TCGplayer is fine; do NOT add a

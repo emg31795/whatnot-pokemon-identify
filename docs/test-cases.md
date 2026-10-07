@@ -9997,6 +9997,443 @@ as real**, and do not build a recency correction on these numbers.
 
 ---
 
+## Fix: sub-floor legacy-model number rescue + one PPT retry on abort — live full-art Trainer run, 51 of 73 scans returned nothing (2026-10-07)
+
+**Trigger.** Eric reported mid-stream that the extension was having
+trouble identifying cards. Read-only investigation first, per standing
+convention: pull everything out of Vercel's 1-hour retention window
+before touching anything.
+
+**Log capture.** 675 unique entries, merged and deduped from 9
+overlapping pulls, spanning **22:25:52.979Z → 22:51:14.371Z**. The
+retention edge moved *during* the pull — windows before ~21:50Z were
+already expired — and a `group_by` probe confirmed **zero traffic
+21:54→22:24**, so the scanning session is captured in full: **73
+`/api/identify` + 19 `/api/price`**. Entry density is ~28/min, so a
+100-entry page covers only ~3.5 minutes; this needed narrow slices plus
+three gap-fills where pulls hit the 100-entry cap. Raw payloads and the
+merged corpus are in a session scratchpad (non-durable, deliberately not
+committed); the numbers below are the durable record.
+
+### Headline
+
+**51 of 73 scans (69.9%) ended in "couldn't confidently match"** — no
+card, no price. **Every one of the 51 has `hp: null`**, and essentially
+all are full-art/secret-rare Trainer/Supporter cards: Shauna x7,
+Melony x5, Dancer x3, Nessa x3, Peonia x3, Zisu x2, Doctor x2,
+Marnie x2, Crispin x2, Lana's Aid x2, Zinnia x2, plus Opal, Eri, Iono,
+Rika, Lana, Katy, Penny, Lady, Dendra, Grusha, Lacy, Melli, Ariana,
+Ariana's Skirmish. Eric was scanning a full-art Trainer run — the exact
+card class this tool is structurally weakest on.
+
+| outcome | n | % |
+|---|---|---|
+| NOT_FOUND | 51 | 69.9% |
+| HIGH (incl. 1 cache-hit) | 13 | 17.8% |
+| MEDIUM (legacy-rescue) | 3 | 4.1% |
+| LOW (tie) | 3 | 4.1% |
+| WITHHELD | 3 | 4.1% |
+
+19 priced results, which **reconciles exactly with the 19 `/api/price`
+calls** (13 High + 3 Medium + 3 Low).
+
+**Infrastructure was clean and is not the cause.** 0 Gemini failures,
+0 timeouts, 0 503s, **0 429s** (every "429" grep hit is incidental digits
+in product IDs), 0 PPT rate limits, 0 Haiku-fallback invocations. Shadow
+coverage 100% (73/73 legacy, 73/73 haiku). Exactly **one** error-level
+entry in the entire window. Latency healthy: `geminiMs` n=72 median
+1731ms (1411-2975); `totalMs` n=22 median 2034ms (1571-2585); **0 of 22
+over 3000ms**. Speed was never the problem.
+
+### Root cause 1 — the legacy-number rescue is unreachable for Trainer cards
+
+Scoring: `number 20, hp 6, subtype 5, attackName 4, set 3, stampMatch 3,
+stampMismatch -8, rarity 2`. `MATCH_FLOOR=3`, `MEDIUM_THRESHOLD=5`,
+`HIGH_THRESHOLD=10`.
+
+On a Trainer card `hp` and `attackName` are null **by card type**. Once
+the number misreads, the only signal left is `rarity` (2). 2 < 3, so
+`pickBestCandidate` returns `best=null` and `lookupCardPPT` bails out:
+
+- `api/identify.js:3002` (pre-change) — `if (!best) return { notFound: true };`
+- `api/identify.js:3153` (pre-change) — `if (read.cardNumber && best.number && !setNameSearchRescued) {` — the **LEGACY-MODEL NUMBER RESCUE**, which requires a non-null `best`
+
+The rescue that exists precisely to recover a misread number sits **151
+lines after the early return**. Score distribution confirms the
+mechanism: **37 scans scored exactly 2**, 6 scored 0, 9 had no `best` at
+all = the 52 initially counted (51 after the correction below). On a
+Pokémon card the same misread still leaves hp(6)+attackName(4) ≥ 3, so
+`best` survives and the rescue IS reachable — which is why it works
+there (Medicham) and fired only **3 times** across this whole session.
+
+**8 of the 51 failures had the legacy shadow model read a number that
+was already sitting in the pool this function had fetched** —
+recoverable at zero extra API cost and thrown away.
+
+### Root cause 2 — Trainer subtype dropped for 73% of records
+
+`api/identify.js:1870` (pre-change) requires a `"Trainer - "` prefix:
+
+```js
+const trainerSubtypeMatch = String(raw.pokemonType || "").match(/^Trainer\s*-\s*(.+)$/i);
+```
+
+PPT stores two formats. Census over the 63 Trainer candidate records
+embedded in these logs: **6 captured** (`"Trainer - Supporter"`, 10%),
+**46 dropped** (bare `"Supporter"`, 73%), **11 null** (17%). Cross-check
+against the emitted scoring data: **353 of 382 (92%)** hp-null scored
+candidates have `subtypes: []`.
+
+### Group breakdown of the 51 failures
+
+| group | n | meaning |
+|---|---|---|
+| (a) | 8 | legacy number exists in the pool → recoverable by the ordering fix |
+| (b) | 15 | legacy number present but also absent from the pool |
+| (c) | 28 | neither model read a number — **genuine legibility limit** |
+
+Inside (b), four are **not** read failures — both models agreed on the
+number and it still failed:
+
+- 22:25:52 / 22:25:56 **Lana's Aid 114/100** (Japanese) — both agree; no
+  pool candidate carries total 100 (retrieval gap)
+- 22:32:16 **Doctor 214/198** — both agree; **PPT fetch aborted**, empty
+  pool. `Doctor (Secret) 214/198` exists at **$8.67** (a price visible in
+  this same session's own logs)
+- 22:42:52 **Crispin 109/084** — both agree; no pool candidate carries
+  total 84
+- 22:38:43 **Marnie 200/202** — both agree; actually served **correctly
+  from cache** (see the correction below)
+
+Four more died at `zero candidates survived the name filter` (Melli,
+Lacy, Ariana's Skirmish). **"Lacy" is a misread of "Lacey"** — `Lacey -
+175/131`, **$22.34**, is in this session's own harvested prices.
+
+**Group (c) is the single largest and is not fixable.** All 28 have
+`hp: null` and a glare/angle/finger reason in the shadow reads ("Card
+number obscured by glare and angle", "number area covered by thumb"). On
+a Trainer card with no number, no HP and no attack there is nothing left
+in this tool's signal set. That is a legibility limit, not a code defect
+— so roughly a third of this session was never winnable from those
+frames.
+
+### Rules audit (the three recent rules)
+
+- **ATTACK MISMATCH: 0 occurrences.** Cannot fire on this workload at
+  all — it requires `read.attackName`, and all 73 scans read
+  `attackName: null` (Trainers have no attacks). Not a false positive;
+  out of scope for this card class. Still never observed on organic
+  traffic.
+- **READ TOTAL ORPHAN: 16 occurrences, all 16 correct** (010/069,
+  058/091, 060/072, 065/073, 089/071, 099/084, 105/084, 109/084,
+  114/100, 154/100, 199/167, 201/198, 205/198, 211/203, 250/198,
+  265/203). No false positives — but it rescued nothing.
+- **SETNAME SEARCH RESCUE: 0 accepted, 5 attempted**, all 5 "did not
+  resolve to exactly one qualifying candidate (0 qualified)". Raw counts
+  0, 2, 2, 30, 30 — it did retrieve candidates twice and still qualified
+  none. Queries: `"Shauna Evolving Skies"`, `"Melony Evolving Skies"`,
+  `"Banette Scarlet & Violet"`, `"Katy Scarlet & Violet"`,
+  `"Staryu TV Animation Edition"` (the only legacy-shadow-sourced hint).
+  **The gate is behaving correctly; the HINT is bad.** Do not loosen the
+  acceptance test in response to "0 qualified" — that is the Burger King
+  Chimchar precedent, and it would make wrong cards win.
+- **LEGACY-MODEL NUMBER RESCUE: 3 fired**, all 3 look correct (Katy
+  211/198→237/198, Banette "E 150/TG30"→TG07/TG30, Kilowattrel
+  183/159→163/159). 8 more were available and structurally unreachable.
+
+### Watch item (not a bug)
+
+3 scans (22:44:10 / :15 / :24) showed a real price at Low confidence for
+`Iono's Wattrel - 071/217 (Poke Ball)` (productId 676908, priced 3x)
+while the read numbers were 058/091, 064/193 and 217/217 — none matching
+071/217, `tieCount=3`, `NO NUMBER MATCH IN POOL`. Working as designed
+(Low + warning + price still shown), but three consecutive priced results
+on an unconfirmed printing of a pattern-variant card is worth knowing.
+
+### Dollar value at stake
+
+From prices embedded in the logs — **0 PPT calls**. 32 distinct priced
+candidate records: min $0.13, **median $6.97**, mean $12.70, max $65.47;
+12 at ≥$10, 8 at ≥$20. Top of what was in these pools: Zinnia (Full Art)
+70/70 **$65.47**; Iono 269/193 **$50.38**; Marnie SWSH121 **$30.04**;
+Iono's Kilowattrel 182 Prerelease [Staff] $28.58; Crispin 171/131
+$23.48; Lacey 175/131 $22.34; Grusha 268/193 $20.44; Eri 210/162 $19.84.
+
+**Honest limit:** the exact market price of each of the 8 recovered cards
+was NOT confirmed, because that needs PPT calls and Eric was live-scanning.
+The defensible statement is the band: a full-art Trainer run where single
+cards run $2-$65, with ~51 blind bid decisions.
+
+**Deliberate choice: 0 PPT credits spent during the investigation.** PPT
+daily-remaining is not visible anywhere in these logs (it only surfaces
+in a 429 body, and there were no 429s), so it could not be checked
+against a floor. Combined with Eric scanning live, a 60-units/60s minute
+budget and ~2 calls (~60 credits) per scan, probing could have caused a
+429 on a live auction scan. Every finding is derived from the logs and
+from reading source.
+
+### Corrections made during this work
+
+1. **52 → 51 notFound.** The 22:38:43 Marnie scan emits **no `best=`
+   line** because a **PPT cache hit short-circuits the whole lookup**
+   (the cache path returns only when `cached.found && cached.pricingLookup`).
+   It was a success. Confirmed independently: **`productId=208496`
+   appears twice** in `/api/price` — once for the 22:38:37 fresh scan and
+   once for the 22:38:43 cache hit. The corrected count is what
+   reconciles with 19 `/api/price` calls.
+2. **Katy survived on `set` + `rarity`, not subtype.** The first writeup
+   said Katy (22:36:40) cleared the floor on a subtype hit. Wrong: its
+   candidates have `subtypes: []`, and `bestScore=5` is `set` (3,
+   read `"Scarlet & Violet"` ⊂ candidate `"SV01: Scarlet & Violet Base
+   Set"`) + `rarity` (2). This matters because it was cited as evidence
+   for the subtype fix, and it is not.
+3. **Fix 1 is far weaker than first claimed** — see the measurement
+   below.
+
+---
+
+## The fixes: what was built, and what was measured and rejected
+
+### Fix 2 — sub-floor legacy-model number rescue (BUILT)
+
+New block immediately before the `!best` return, gated
+`!best && !setNameSearchRescued && legacyReadPromise`. Searches **only**
+the already-fetched `candidates` — **no new PPT call**. Acceptance is
+deliberately stricter than the downstream rescue, because this one fires
+with no scoring signal behind it:
+
+- re-applies the same name-filter expression used to build `filtered`;
+- requires a **NON-weak exact** `numbersMatch` (a "weak" asymmetric
+  bare-promo numerator is a coincidence);
+- requires **exactly one distinct** candidate by `candidateDedupKey`.
+
+Result capped at **Medium**, `matchBasis: "legacy-number-rescue"`, the
+existing cross-check note (separate wording when the read number is
+null). `!subFloorLegacyRescued` added to **both** downstream
+floor-override guards, for the same reason `setNameSearchRescued` is
+already exempt: the rescue sets `bestDetail = null`, so a signal-count
+floor would immediately discard a correct rescue. Deliberately **not**
+gated on `read.cardNumber` — 2 of the 8 recovered scans read null.
+`scoreCandidate`, `MATCH_FLOOR` and `HIGH_THRESHOLD` untouched.
+
+New log line: `[lookup] SUB-FLOOR LEGACY-MODEL NUMBER RESCUE`, plus
+`sub-floor legacy number rescue declined` when 2+ qualify.
+
+### Fix 3 — one PPT retry on abort/timeout (BUILT)
+
+The `catch` on the PPT fetch used to `return null`, which becomes an
+empty pool and a silent notFound. One retry at the shorter
+`CARDDB_RETRY_TIMEOUT_MS` (1200ms) with a log line, scoped strictly to
+the abort/network-error branch. **A 4xx, 429 or 5xx does not throw** —
+those resolve and are handled on `!resp.ok` — so by construction this can
+never retry a rate limit.
+
+### Replay method, and its fidelity limits
+
+Pools reconstructed from the preserved logs' `scored candidates=` lines,
+enriched with real `setName`/`attacks`/`pokemonType`/`tcgPlayerId`
+harvested from the `sample=` records and `best=` blocks. Each scan
+replayed through the **real `handler()`** in a **fresh node process** —
+required, because the local in-memory Runtime Cache fallback would
+otherwise serve a cached result across repeated cards and poison the
+differential.
+
+73 scans: **57 complete pools**, 7 truncated (`scored candidates=` is
+sliced to 3000 chars), 9 with no pool line at all.
+
+**Fidelity gate** (reconstructed pool through HEAD must reproduce the
+logged `bestScore`/`tieCount`): **50 of 57 faithful**, 7 partially
+faithful — those 7 differ only because candidate `setName` and `attacks`
+are not logged in the scored-candidates line, costing the `set` (+3) and
+`attackName` (+4) signals.
+
+**Reconciliation: production notFound = 51; replay-HEAD notFound = 57;
+delta exactly +6, one-directional** (the replay is strictly more
+pessimistic, never more optimistic):
+
+| scan | production outcome | why unreplayable |
+|---|---|---|
+| 22:27:58 Professor's Research | HIGH | truncated pool |
+| 22:38:43 Marnie | HIGH (cache-hit) | no cache in replay |
+| 22:39:08 Banette | WITHHELD | missing attacks/setName |
+| 22:39:11 Banette | MEDIUM (rescue) | missing attacks/setName |
+| 22:43:31 Eri | WITHHELD | its `[identify]` Gemini-read line fell in a 2-second slice boundary — **cannot** be replayed |
+| 22:44:36 Kilowattrel | MEDIUM (rescue) | missing attacks/setName |
+
+**None of those 6 is among the 8 scans the fix changes**, so the
+differential is unaffected by the infidelity. Scans not replayable
+faithfully: those 6 plus the 7 truncated pools.
+
+### Differential result — matches the expectation exactly
+
+73 scans, HEAD vs the final file: **65 unchanged, 8 changed**. Union of
+changed fields `{found, matchConfidence, matchBasis, tcgPlayerId,
+pricingLookupNull, note, reason, attackMismatch}`. No card won
+differently on any unchanged scan; `pptCalls` identical on every scan.
+
+All 8 go notFound → the correct card at Medium / `legacy-number-rescue`,
+each with **exactly one** rescue log line (no double-fire with the
+downstream block):
+
+| time | read # | legacy # | resolved to |
+|---|---|---|---|
+| 22:29:26 | 265/264 | 263/264 | Shauna (Full Art) 263/264 |
+| 22:29:29 | 205/198 | 263/264 | Shauna (Full Art) 263/264 |
+| 22:29:36 | null | 263/264 | Shauna (Full Art) 263/264 |
+| 22:40:08 | 065/073 | 183/185 | Nessa (Full Art) 183/185 |
+| 22:41:16 | null | 259/264 | Dancer (Full Art) 259/264 |
+| 22:50:27 | 189/198 | 195/198 | Melony (Full Art) 195/198 |
+| 22:50:30 | 085/198 | 195/198 | Melony (Full Art) 195/198 |
+| 22:50:32 | 265/203 | 218/198 | Melony (Secret) 218/198 |
+
+Expectations, all met: 8/8 recovered at Medium; **30/30** both-models-blind
+scans stay notFound; Katy 22:36:40 unchanged; **16/16** replay successes
+unchanged.
+
+### Fix 2 acceptance controls — 8/8 pass
+
+| # | control | result |
+|---|---|---|
+| C1 | legacy matches exactly one name-passing candidate | RESCUE (Medium) |
+| C2 | legacy matches 2+ distinct candidates | NO rescue, notFound |
+| C3 | legacy matches a candidate FAILING the name filter | NO rescue |
+| C4 | legacy number is a WEAK asymmetric bare-promo match | NO rescue |
+| C5 | legacy read has no number | NO rescue |
+| C6 | legacy read failed/threw entirely | NO rescue, no throw |
+| C7 | primary number null + legacy matches one | RESCUE (Medium) |
+| C8 | `best` already exists above the floor | sub-floor does NOT fire |
+
+**C3 needed a second, harder construction to be meaningful**, and this is
+worth recording because the name re-check looks redundant at a glance —
+page-1, the page-2 merge and the combined-search merge all name-filter
+their own rows. The reachable path is `nameFilterRescuedByNumber`, which
+replaces `filtered` with rows matched on **NUMBER ONLY**, never
+name-checked. Those score ≥7 from the number signal, so they appear
+unable to reach the `!best` branch — **except `scoreCandidate` SUBTRACTS
+`SCORE.stampMismatch` (8)** when the read says `stampType: "none"` and
+the candidate name carries a stamp keyword, which is the common case.
+Measured directly: on a weak number match, a `(Staff)` /
+`(Prerelease)` / `(Pokemon Center Exclusive)` candidate scores **−1**,
+below `MATCH_FLOOR`. (`"Eevee Stamped"` is **not** a recognised keyword
+and scores 7 — the first attempt at this control failed for that reason.)
+
+Proof the guard is load-bearing, against a probe copy with the name
+filter removed — read `"Testmon"`/`"263"`, pool row
+`"CompletelyDifferentCard - 263/264 (Staff)"` at $50:
+
+- guard present: **notFound** (same as HEAD)
+- guard removed: **found**, that wrong-name card, **Medium**,
+  `legacy-number-rescue`, **price shown**
+
+The reachability argument is now written into the code comment so a
+future reader does not delete the filter as redundant.
+
+### Fix 3 tests
+
+| mode | HEAD | NEW |
+|---|---|---|
+| abort once, then success | 1 attempt → notFound | **2 attempts → found, tcgPlayerId 241826, High**, "retry after abort SUCCEEDED" logged |
+| abort twice | 1 attempt → notFound | stops at **exactly 2** → notFound, "retry after abort also threw" logged. No retry loop |
+| HTTP 429 | 1 attempt, rateLimited | **1 attempt**, rateLimited, byte-identical to HEAD — **no retry** |
+
+The abort-once case is the real 22:32:16 Doctor 214/198 scan.
+
+### Fix 1 (subtype regex) — MEASURED ONLY, NOT BUILT
+
+Probe accepts a bare subtype (`"Supporter"`) when `cardType` is
+`"Trainer"`, in addition to the prefixed form. Two scenarios, because the
+real `pokemonType` is only recoverable for 88 of 404 pool rows: a **lower
+bound** (only rows whose real value is known) and an **upper bound**
+(model every hp-null candidate as a bare `"Supporter"` — most
+favourable).
+
+**Both scenarios give the identical result: 4 of 73 scans change.**
+Of the replay-HEAD failures: 4 became found, 53 stayed notFound.
+
+| scan | becomes | shows a price? |
+|---|---|---|
+| 22:29:36 Shauna | "Shauna", Low | **no** — withheld |
+| 22:40:08 Nessa | "Nessa (Full Art)" 183/185, Medium | **yes, and it is the RIGHT printing** — but this is one of the 8 Fix 2 already recovers, so not incremental |
+| 22:40:51 Nessa | "Nessa", Low | **no** — withheld |
+| 22:41:19 Dancer | "Dancer", Low | **no** — withheld |
+
+So: unique correct match that shows a price = **1, and not incremental
+over Fix 2**. Low ties that would SHOW a price = **0** (the existing
+weak-signal floor withholds all three). Stayed notFound = **53**. Effect
+on previously-successful scans = **0 changed**.
+
+**Why it is so small — this corrects the first writeup.** The claim was
+that Fix 1 would "lift the dominant score-2 cluster to 5-7". That is
+wrong. `scoreCandidate` requires the **READ** subtype string to be a
+**substring of the candidate's**:
+
+```js
+candidate.subtypes.some((s) => String(s).toLowerCase().includes(wanted))
+```
+
+Read-subtype distribution over these 73 scans:
+
+| n | read `subtype` | can match candidate `"Supporter"`? |
+|---|---|---|
+| 42 | `"Trainer"` | **NO** — `"supporter".includes("trainer")` is false |
+| 20 | `null` | signal skipped |
+| 5 | `"Supporter"` | yes |
+| 2 | `"Full Art Trainer"` | no |
+| 2 | `"Full Art"` | no |
+| 1 | `"Illustration Rare"` | no |
+| 1 | `"Trainer-Supporter"` | no |
+
+**Only 5 of 73 reads can ever benefit.** The regex is the smaller half of
+the problem; the larger half is a **read-vs-catalog subtype vocabulary
+mismatch** (Gemini says "Trainer"/"Full Art Trainer", PPT says
+"Supporter"). Normalising that — or comparing in the other direction — is
+a different change, neither built nor measured.
+
+**And the decisive reason not to ship it as-is: Fix 1 partially UNDOES
+Fix 2.** Run on top of Fix 2 it changes 3 scans, and one is a regression:
+
+- **22:29:36 Shauna**: Fix 2 alone → `Shauna (Full Art)` at **Medium**
+  (the correct card). Fix 1 + Fix 2 → `"Shauna"` at **Low, price
+  withheld**.
+- Mechanism: the +5 subtype lifts a **wrong** candidate above
+  `MATCH_FLOOR`, so `best` is no longer null, so Fix 2's sub-floor rescue
+  never fires, and the null-number weak-signal floor then withholds on 1
+  corroborating signal. Not a wrong-price risk, but it trades a correct
+  priced answer for a withheld one.
+
+### Open items from this work
+
+1. **The legacy await on the new path has no time cap.** The sub-floor
+   rescue does a bare `await legacyReadPromise`, bounded only by the
+   legacy model's own `GEMINI_TIMEOUT_MS`, not by the 500ms
+   `LEGACY_SETNAME_HINT_TIMEOUT_MS` race the setName-hint path uses. In
+   practice both reads are launched together and the primary has already
+   resolved by this point, so the legacy read is normally done — and this
+   path only runs on a scan that was otherwise about to return notFound.
+   But it is a real worst-case latency addition on exactly the slow-legacy
+   case, and the existing downstream rescue has the same unbounded await.
+   Capping both with the same `Promise.race` pattern is the obvious
+   follow-up; deliberately not bundled here to keep the diff to the fix.
+2. **Future idea, NOT built: a vision field for full-art / gold /
+   texture.** On a numberless Trainer read there is currently nothing to
+   separate printings — the base Uncommon, the Full Art, the Secret/gold
+   and the stamped promos all share name and subtype, and 28 of 51
+   failures had no number from either model. A dedicated read field (is
+   this a full-art? gold/metallic? textured?) would be a genuinely new
+   signal for exactly that population. Per the standing precedent, any
+   such signal may inform a warning or a tie-break but must **never**
+   flip a default printing on a vision read (the 2026-08-26
+   `pickDefaultVariantKey` revert, and the Burger King Chimchar entry).
+3. **Lacy → Lacey.** A name-level misread killed a $22.34 card at the
+   name filter, and the number-scoped rescue search also missed. Not
+   investigated further.
+4. **Retrieval gaps remain** for Lana's Aid 114/100 (Japanese) and
+   Crispin 109/084 — both models agreed on the number and no pool
+   candidate carries that denominator. Same class as the Southern Islands
+   Mew entry; untouched here.
+
+---
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
