@@ -2380,6 +2380,79 @@ checklist before reporting something as finished:
   the replay-fidelity limits and the Fix 1 measurement in
   `docs/test-cases.md`'s matching entry.
 
+  **DEPLOYED FROM DISK VIA THE CLI, BYTE-EXACT.** Built from commit
+  `bc2d94a`. Preview `dpl_47Ya2SraR5KiCJ2de27PfKpWNnqk`, production
+  **`dpl_2j5pUPQdssRsjfncoRem8Mvyvb4E`** (`Ready`, target production,
+  aliased to `whatnot-pokemon-identify.vercel.app`). **`sourceHash
+  dc41b8624d9ed1458ff5349f9c6e45fa62537b4e` on BOTH deployments, and that
+  equals `shasum api/identify.js` on disk byte-for-byte** — the fourth
+  byte-exact deploy in this project's history and the fourth built from
+  disk via the CLI. Prior production hash was `882cc1b7…`
+  (`dpl_CDsEbiiWKKcLMHRHBBsXpSwNFkfc`). Live `GET /api/identify` returns
+  the matching hash plus `normalizeDiacriticTest: "pokemon collector"`;
+  `POST {}` returns the real 400. Commits: `093f551` (code,
+  `api/identify.js` only) and `bc2d94a` (docs), pushed as
+  `545a620..bc2d94a`.
+
+  **The `--scope` "Not authorized" wrinkle recurred — same signature as
+  2026-10-04, and the recovery is unchanged.** The first
+  `npx vercel deploy --yes --scope leasedraftai` returned a bare
+  `{"status":"error","reason":"deploy_failed","message":"Not authorized"}`.
+  **`npx vercel ls --scope leasedraftai` confirmed NO deployment had been
+  created** (newest was 3 days old) and that auth was fine — so re-running
+  is safe and does not duplicate. The identical command with `--debug`
+  succeeded immediately. `npx` had auto-bumped the CLI to 62.7.0. **If
+  this happens again: run `vercel ls` FIRST to confirm nothing was
+  created, then retry with `--debug`.**
+
+  **Live-confirmed on production, two real end-to-end scans.**
+  (a) *Pikachu XY95 regression*: correct card, `XY Promos`, **High**,
+  `matchBasis: "score-only"`, tcgPlayerId **114004**, **2047ms** — and its
+  log shows **exactly one `[lookup] search=`** line, `bestScore=30
+  tieCount=1`, and **no new log lines at all**, i.e. unchanged behaviour
+  and no extra PPT call on a scan that resolves normally.
+  (b) *Shauna (Full Art) 263/264*, one of the 8 cards this fix recovers:
+  correct card, tcgPlayerId **253165** (SWSH08: Fusion Strike), **High**,
+  `score-only`, `bestScore=22 tieCount=1`, **1731ms**. **The rescue did
+  NOT fire, which is the expected and correct result** — a clean catalog
+  image reads `263/264` correctly, so it is an ordinary number match. The
+  rescue can only be exercised by a frame where the number is MISREAD,
+  which a catalog image cannot reproduce; it is not forcible this way.
+  The real product id was identified by fetching both tied candidates'
+  catalog images and looking at them, at **0 PPT credits**.
+
+  **PPT credits: 15,559 -> 15,408 daily remaining (-151), floor of 5,000
+  never approached, zero 429s.** That counter is account-wide: roughly 62
+  of the 151 was this verification (2 scans plus 2 one-credit header
+  probes), the rest Eric's own live scanning. `x-ratelimit-minute-remaining`
+  read 41/60 before starting, which is how live scanning was detected —
+  worth remembering as the cheap way to check whether a stream is running
+  before spending anything.
+
+  **Post-deploy log state: 0 errors.** 64 log entries on the new
+  deployment, **all `info`**, zero error/warning/fatal;
+  `get_runtime_errors` over the surrounding hour returns none.
+  **`SUB-FLOOR LEGACY-MODEL NUMBER RESCUE`: 0 organic firings so far** —
+  expected, because every organic scan in the window is a Pokémon card
+  where hp+attackName clear the floor, so `best` is non-null and the new
+  path is never reached. **It needs a Trainer run to fire, so it is NOT
+  yet observed on organic traffic** — watch for that log line.
+  **`retrying once` (Fix 3): 0** — no PPT aborts occurred.
+
+  **One organic firing worth recording, of the PRE-EXISTING downstream
+  rescue, judged correct**: `requestId=2f9252cf`, Abra — primary read
+  `57/128` matched nothing, legacy shadow read `93/165` resolved to
+  `Abra 093/165` (Expedition). Correct on the evidence: scoring had
+  **independently** already chosen that same candidate at `bestScore=10`
+  = hp(6) + attackName(4), so two signals corroborate the number the
+  second model supplied, and the rescue agreed with the scored best
+  rather than overriding it. Note that card's printings split **$3.98
+  Normal vs $55.99 Reverse Holofoil**. Other organic scans in the window
+  all behaved sensibly: Leafeon VSTAR GG35/GG70 (score 40, tie 1, clean
+  High), Leafeon VSTAR SWSH195 (score 35, **tie 3** -> Low, a genuine
+  promo tie), Dark Kadabra 39/82 (null number, score 10 on hp+attack,
+  tie 1).
+
   **The trigger.** Eric reported mid-stream that the extension was having
   trouble identifying cards. 675 log entries pulled and deduped from
   Vercel's 1-hour window (22:25:52→22:51:14Z, 73 `/api/identify` + 19

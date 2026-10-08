@@ -10432,6 +10432,98 @@ Fix 2.** Run on top of Fix 2 it changes 3 scans, and one is a regression:
    candidate carries that denominator. Same class as the Southern Islands
    Mew entry; untouched here.
 
+### DEPLOYED 2026-10-07 — byte-exact, live-confirmed
+
+Built from commit `bc2d94a`. Code commit `093f551` (`api/identify.js`
+only); docs `bc2d94a`; pushed `545a620..bc2d94a`.
+
+| | deployment | sourceHash |
+|---|---|---|
+| preview | `dpl_47Ya2SraR5KiCJ2de27PfKpWNnqk` | `dc41b8624d9ed1458ff5349f9c6e45fa62537b4e` |
+| **production** | **`dpl_2j5pUPQdssRsjfncoRem8Mvyvb4E`** | `dc41b8624d9ed1458ff5349f9c6e45fa62537b4e` |
+
+`Ready`, target production, aliased to
+`whatnot-pokemon-identify.vercel.app`. **That hash equals
+`shasum api/identify.js` on disk byte-for-byte on BOTH deployments** —
+the fourth byte-exact deploy in this project's history. Prior production
+hash was `882cc1b7…` (`dpl_CDsEbiiWKKcLMHRHBBsXpSwNFkfc`). Live
+`GET /api/identify` returns the matching hash and
+`normalizeDiacriticTest: "pokemon collector"`; `POST {}` returns the real
+`400 {"error":"Missing imageBase64","requestId":"..."}`.
+
+**CLI wrinkle recurred (same as 2026-10-04).** The first
+`npx vercel deploy --yes --scope leasedraftai` returned a bare
+`{"status":"error","reason":"deploy_failed","message":"Not authorized"}`.
+**`npx vercel ls --scope leasedraftai` confirmed NO deployment was
+created** (newest 3 days old) and that auth was healthy; the identical
+command with `--debug` then succeeded immediately. `npx` had auto-bumped
+the CLI to 62.7.0. **Recovery order to reuse: `vercel ls` first to
+confirm nothing was created, then retry with `--debug`.**
+
+#### Real end-to-end on production
+
+**(a) Pikachu XY95 regression** — `found: true`, `XY Promos`, **High**,
+`matchBasis: "score-only"`, tcgPlayerId **114004**,
+`timingMs {gemini: 1838, lookup: 209, total: 2047}` (inside the 1-3s
+target). Its log block contains **exactly one `[lookup] search=` line**,
+`bestScore=30 tieCount=1 tiedIds=114004`, and **no new log lines** — so a
+scan that already resolves normally is unchanged and makes **no extra PPT
+call**.
+
+**(b) Shauna (Full Art) 263/264** — one of the 8 cards this fix recovers.
+Correct card, tcgPlayerId **253165** (SWSH08: Fusion Strike), **High**,
+`score-only`, `bestScore=22 tieCount=1 tiedIds=253165`,
+`timingMs {gemini: 1580, lookup: 151, total: 1731}`.
+
+**The rescue did NOT fire, and that is the correct expected result.** A
+clean catalog image reads `263/264` correctly, so this is an ordinary
+number match. The rescue only triggers on a frame where the number is
+MISREAD and the legacy model reads it right — **it is not forcible from a
+clean catalog image**, so this scan verifies the deploy and the
+no-regression case, not the rescue itself. The real product id was found
+by fetching both tied candidates' catalog images and looking at them,
+costing **0 PPT credits**.
+
+#### PPT credits
+
+**Daily remaining 15,559 -> 15,408 (-151)**; the 5,000 floor was never
+approached and **zero 429s** occurred. That counter is account-wide:
+roughly 62 of the 151 was this verification (2 scans + 2 one-credit
+header probes), the remainder Eric's own live scanning.
+`x-ratelimit-minute-remaining` read **41/60 before starting**, which is
+how live scanning was detected — a cheap way to check whether a stream is
+running before spending anything.
+
+#### Post-deploy log state
+
+- **0 errors.** 64 log entries on the new deployment, **all `info`**,
+  zero error/warning/fatal. `get_runtime_errors` over the surrounding
+  hour: none.
+- **`SUB-FLOOR LEGACY-MODEL NUMBER RESCUE`: 0 organic firings.**
+  Expected — every organic scan in the window is a Pokémon card where
+  hp+attackName clear `MATCH_FLOOR`, so `best` is non-null and the new
+  path is never reached. **It needs a Trainer run to fire, so the new
+  path is NOT yet observed on organic traffic.** Watch for that log line.
+- **`retrying once` (Fix 3): 0** — no PPT aborts occurred in the window.
+
+#### One organic firing of the PRE-EXISTING rescue, judged correct
+
+`requestId=2f9252cf` — Abra. Primary read `57/128` matched nothing;
+legacy shadow read `93/165` resolved to `Abra 093/165` (Expedition).
+
+**Judgment: correct.** `pickBestCandidate` had **independently** already
+selected that same candidate at `bestScore=10` = hp(6) + attackName(4)
+(read hp `40`, attack `"Scratch"`), so two signals corroborate the number
+the second model supplied, and the rescue **agreed with** the scored best
+rather than overriding it. Worth noting that card's printing split:
+**Normal $3.98 vs Reverse Holofoil $55.99**.
+
+Other organic scans in the same window, all behaving sensibly:
+Leafeon VSTAR `GG35/GG70` (score 40, tie 1, clean High, $86.93);
+Leafeon VSTAR `SWSH195` (score 35, **tie 3** — a genuine promo tie, Low);
+Dark Kadabra `39/82` (read number null, score 10 on hp+attackName,
+tie 1).
+
 ---
 
 ## Related docs
