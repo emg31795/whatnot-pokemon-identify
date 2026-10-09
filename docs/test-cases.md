@@ -10672,9 +10672,24 @@ candidate so the rule **skips** it. Silence is not evidence — the rule already
 requires a non-empty attack list, so `[]` means "cannot judge", never
 "mismatch". That is the safe direction: a missed warning costs a warning, a
 false warning costs a correct card its confidence and its printing banner.
-`" -- "` does not contain `" - "`, so the `<b>Tail Rap -- 20x</b>` format is
-untouched either way, and a leading-bracket-less entry still yields null and is
-still dropped exactly as before.
+`" -- "` does not contain `" - "`, so the `<b>Tail Rap -- 20x</b>` format's
+name is unaffected by the separator cut either way.
+
+**Tightened in a follow-up commit the same day:** an entry that does not match
+the regex at all (the bracket-less `<b>Tail Rap -- 20x</b>` shape, **3 of 265
+entries** in the 2026-10-05 sample — there are **zero** in the data saved for
+this entry, so this change is defensive and has no positive example here) now
+**also returns `[]` for the whole candidate** instead of being quietly dropped.
+A partially parsed list must never reach the mismatch rule: dropping the one
+entry we could not read and then concluding "the read attack is on none of the
+others" is exactly how a false positive is manufactured, and the unreadable
+entry is the one most likely to have held the match. Bare numeric/whitespace
+junk (PPT sometimes carries a stray `"2"` or `"4"`) is the one exception and is
+still skipped, since it cannot be an attack name and its absence tells us
+nothing. Measured effect on the saved corpus: **none** — 0 of 11 entries are
+bracket-less. Unit-tested: a mixed list (one parseable entry + one
+bracket-less) returns `["Hang Down"]` before and **`[]`** after; every other
+case is unchanged.
 
 Parser unit test, old vs new:
 
@@ -10698,25 +10713,35 @@ and contains **no PPT attack data** (it is TCGplayer/PriceCharting price data).
   log line does not include it. So that corpus **structurally cannot exercise
   the attack-mismatch rule**, which is also why it shows zero `attackMismatch`
   in both directions.
-- Raw 10-07 logs: 218 `"attacks":` occurrences, 123 parsed successfully (the
-  rest cut by log truncation).
-- **126 candidate records harvested -> 10 DISTINCT attack arrays / 16
-  individual attack entries** (heavy duplication: the same cards recur across
-  overlapping log windows).
+- Raw 10-07 logs: **13** sites where `[` immediately follows `"attacks":`, of
+  which **11 parsed** (the rest cut by log truncation).
+- **6 DISTINCT attack arrays / 11 individual attack entries.**
+
+**CORRECTED 2026-10-09 (same day).** A first pass reported 10 distinct arrays /
+16 entries and five "no leading bracket" entries reading `"Normal"`,
+`"Holofoil"`, `"Reverse Holofoil"` and `"Lightning"`. Those were **harvester
+artifacts, not data**: the harvester matched the loose string `"attacks":` and
+then took the *next* `[`, which in truncated log text often belongs to
+`printingsAvailable` or `energyType`. Requiring the bracket to follow
+immediately drops 218 loose hits to 13 real ones and the corrected figures
+below. The numbers originally published in this entry were wrong; these are the
+right ones.
 
 | metric | result |
 |---|---|
-| candidates using the `" - "` format | **1 / 10** |
-| individual entries in that format | **1 / 16** |
+| candidates using the `" - "` format | **1 / 6** |
+| individual entries in that format | **1 / 11** |
 | parse CHANGED old vs new | **1** |
 | new fail-safe returned `[]` | **0** |
-| parse UNCHANGED | **9** |
+| parse UNCHANGED | **5** |
+| entries with NO leading `[cost]` bracket | **0 / 11** |
+| entries that are bare numeric/whitespace junk | **0 / 11** |
 
 The single change is Snorlax 89392 itself, and it is a false positive
-disappearing. **This is a thin sample and NOT a representative rate** — 10
+disappearing. **This is a thin sample and NOT a representative rate** — 6
 distinct arrays, from one species plus one Trainer-heavy session that carries no
 attack data at all. The 2026-10-05 pass measured 170 candidates / 265 entries,
-but that data is gone. Do not quote 1/10 as a prevalence figure.
+but that data is gone. Do not quote 1/6 as a prevalence figure.
 
 ### Results
 Snorlax replay, OLD = committed HEAD `dc41b862`, NEW = working tree.

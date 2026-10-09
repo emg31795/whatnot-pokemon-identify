@@ -2434,11 +2434,22 @@ checklist before reporting something as finished:
   **Measurement**: the 73-scan Trainer corpus carries **no attacks at all**
   (404/404 absent, because the `scored candidates=` log line omits them), so it
   structurally cannot exercise the attack rule. Across the sources that can
-  (live Snorlax call + raw 10-07 logs): 126 records -> **10 distinct attack
-  arrays / 16 entries**, of which **1 uses the `" - "` format**, 1 parse
-  changed, **0 fail-safe firings**, 9 unchanged. The one change is the false
-  positive disappearing. **Thin sample, NOT a representative rate** — do not
-  quote 1/10 as prevalence.
+  (live Snorlax call + raw 10-07 logs): **6 distinct attack arrays / 11
+  entries**, of which **1 uses the `" - "` format**, 1 parse changed, **0
+  fail-safe firings**, 5 unchanged, and **0 of 11 lack a leading `[cost]`
+  bracket**. The one change is the false positive disappearing. **Thin sample,
+  NOT a representative rate** — do not quote 1/6 as prevalence. (A first pass
+  reported 10 arrays / 16 entries plus five bracket-less entries reading
+  "Normal"/"Holofoil"/"Lightning"; those were harvester artifacts — the loose
+  `"attacks":` match was picking up `printingsAvailable`/`energyType` from
+  truncated log text. Corrected same day.)
+
+  A follow-up commit tightened `extractAttackNames` further: an entry that does
+  not match the regex at all (the bracket-less `<b>Tail Rap -- 20x</b>` shape,
+  3 of 265 entries in the 2026-10-05 sample, **zero** in the data saved here)
+  now also returns `[]` for the whole candidate rather than being dropped — a
+  partially parsed list must never feed the mismatch rule. Bare numeric junk is
+  still skipped. Zero measured effect on the saved corpus.
 
   **Results**: fidelity gate passed (replay-HEAD reproduces the $499.99 bug
   before judging the fix). Both affected scans now return **89392 at Medium
