@@ -1961,17 +1961,31 @@ function extractFirstAttackName(attacks) {
 //      the safe direction: a missed warning costs a warning, a false warning
 //      costs a correct card its confidence and its printing banner.
 //
-// A leading-bracket-less entry (PPT's "<b>Tail Rap -- 20x</b>" shape) still
-// yields null and is still dropped, exactly as before — note " -- " does not
-// contain the " - " separator, so that format is untouched either way.
+// An entry that does not match the regex at all (PPT's
+// "<b>Tail Rap -- 20x</b>" shape, which has no leading [cost] bracket — 3 of
+// 265 entries in the 2026-10-05 sample) now ALSO returns [] for the whole
+// candidate rather than being quietly dropped. A PARTIALLY parsed attack list
+// must never reach the mismatch rule: dropping the one entry we could not read
+// and then declaring "the read attack is on none of the others" is exactly how
+// a false positive gets manufactured, and the unreadable entry is the one most
+// likely to have held the match. Bare numeric/whitespace junk (PPT sometimes
+// carries a stray "2" or "4") is the one exception and is still skipped — it
+// cannot be an attack name, so its absence tells us nothing.
+// Note " -- " does not contain the " - " separator, so that format's name is
+// unaffected by the separator cut either way.
 const ATTACK_NAME_MAX_LEN = 40;
+const ATTACK_ENTRY_BARE_JUNK = /^[\s\d.]*$/;
 
 function extractAttackNames(attacks) {
   if (!Array.isArray(attacks) || !attacks.length) return [];
   const names = [];
   for (const a of attacks) {
-    const m = String(a || "").match(/^\s*(?:\[[^\]]*\]\s*)+([^(\r\n<]+)/);
-    if (!m) continue;
+    const entry = String(a == null ? "" : a);
+    const m = entry.match(/^\s*(?:\[[^\]]*\]\s*)+([^(\r\n<]+)/);
+    if (!m) {
+      if (ATTACK_ENTRY_BARE_JUNK.test(entry)) continue;
+      return [];
+    }
     let name = m[1];
     const dashAt = name.indexOf(" - ");
     if (dashAt !== -1) name = name.slice(0, dashAt);
