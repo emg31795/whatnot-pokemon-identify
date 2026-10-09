@@ -2374,6 +2374,88 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **DEPLOYED 2026-10-09 — the stamped-twin fix, the `" - "` attack parser and
+  the `none` stamp badge are live.** Built from commit `9933e86` (code commits
+  `c12a90d` + `9bb4857`, docs `ec505d8` + `9933e86`), pushed as
+  `06e546e..9933e86`. Preview **`dpl_42LHhHcLRcqwYSQ55Hvi85UQ1mq6`**,
+  production **`dpl_GCZccTiVtGSdbMHptCFGyHW3EZEm`** (`Ready`, target
+  production, aliased to `whatnot-pokemon-identify.vercel.app`).
+  **`sourceHash c5d664f99f89e10e28e44416979ab7a4b52e41ae` on BOTH deployments,
+  equal to `shasum api/identify.js` on disk byte-for-byte** — the fifth
+  byte-exact CLI-from-disk deploy. Prior production was `dc41b862…`
+  (`dpl_2j5pUPQdssRsjfncoRem8Mvyvb4E`). Live `GET` returns the matching hash
+  plus `normalizeDiacriticTest: "pokemon collector"`; `POST {}` returns the
+  real 400.
+
+  **The `--scope` "Not authorized" wrinkle recurred a third time, same
+  recovery.** `npx vercel deploy --yes --scope leasedraftai` returned a bare
+  `{"message":"Not authorized"}`; **`npx vercel ls --scope leasedraftai`
+  confirmed NO deployment had been created** (newest was 2 days old), and the
+  identical command with `--debug` succeeded immediately. `npx` had auto-bumped
+  the CLI to 63.1.0. The documented order — `vercel ls` first, then retry with
+  `--debug` — worked exactly as written.
+
+  **Two real end-to-end production scans.** (a) *Pikachu XY95 regression*:
+  correct card, `XY Promos`, **High**, `matchBasis: "score-only"`, tcgPlayerId
+  **114004**, and its log shows **exactly one `[lookup] search=`** line — one
+  PPT search, unchanged behaviour. (b) *Snorlax 89392 Call of Legends catalog
+  image*: correct card, `Call of Legends`, **High**, `score-only`,
+  `bestScore=29 tieCount=1`, one search — and **this is the direct production
+  confirmation of the parser fix**: the read was `attackName: "Layabout"`,
+  English, High, and the response came back `attackMismatch: false` with **no
+  `ATTACK MISMATCH` log line**, where committed HEAD would have fired (old
+  parser yields `["Layabout - Remove all damage counters…", "Clomp Clomp
+  Clobber"]`, matching nothing). `bestScore` stayed **29** = number 20 + hp 6 +
+  set 3, with attackName contributing nothing — exactly the intended scoping,
+  since `extractFirstAttackName` is byte-identical and still yields the
+  sentence. `/api/price` returned NM $29.36, break-even $19.43, Suggested Bid
+  $12.15, Slow tier. Worth noting that card's own `Reverse Holofoil` is
+  **$190** against $30 Normal, so the alternate-printing banner genuinely
+  matters here — which a false Low would have suppressed.
+
+  **As expected, the rescue itself was NOT exercised.** A clean catalog image
+  reads `33/95` correctly, so it is an ordinary number match. The stamp filter
+  and the new `DECLINED` path can only be reached by a frame whose number is
+  MISREAD, which a catalog image cannot reproduce; they are not forcible this
+  way.
+
+  **Latency ran over target on both scans** — 3032ms and 3827ms total, with
+  gemini at 2804ms/3488ms and the lookup at only 228ms/339ms. The overage is
+  entirely the vision call on a large 800x800 catalog image, not the part this
+  change touches; prior deploys of the Pikachu card have ranged 1589-3032ms.
+  Not treated as a regression, but recorded.
+
+  **One organic scan landed mid-test and is worth recording** (Eric was
+  scanning): `requestId=d03fda84`, a Starmie read as `064/110` / setName
+  "EX Delta Species" / `attackName: "Metal Navigation"`.
+  - Its **setName-scoped search declined with "(0 qualified)"**. Judged
+    correct and **provably not caused by the new stamp filter**:
+    `filterCandidatesByStampAgreement` returns its input unchanged whenever the
+    filtered set would be empty or the input has fewer than 2 entries, so it can
+    never take a non-empty set to zero — the base name/set/number chain already
+    yielded 0. Per the standing rule, do NOT loosen acceptance in response to a
+    bad hint.
+  - It also produced a **genuine ATTACK MISMATCH true positive**:
+    `read="Metal Navigation" candidate attacks=[Surf, Swift]
+    best=Starmie - 030/113 (Delta Species) (tcgPlayerId=89541)`. The candidate's
+    attacks parsed **cleanly into two short names**, so the new fail-safe
+    correctly did NOT trigger, and "Metal Navigation" is genuinely neither —
+    on a candidate whose number (30/113) disagrees with the read (064/110)
+    anyway. Correct firing, no action.
+
+  **Post-deploy log state: 0 errors.** 43 log entries on the new deployment,
+  **all `info`**, zero error/warning/fatal; `get_runtime_errors` over the
+  surrounding hour returns none. `RESCUE` and `DECLINED`: **0 firings** so far.
+
+  **PPT credits: daily remaining 15,759 -> 15,458 (-301), floor of 5,000 never
+  approached, zero 429s.** Roughly 62 of that was this verification (2 scans at
+  one `limit=30` search each, plus 2 one-credit header probes); the rest is
+  Eric's own live scanning, which is also why `minute-remaining` fell from
+  59/60 to 50/60 during the window.
+
+  **`extension/content.js` changed, so the extension needs a manual reload in
+  `chrome://extensions`** before the `none`-stamp-badge fix is visible.
+
 - **Stamped-twin rescue bug (Snorlax 33/95 priced at $499.99 instead of
   $30.23) + the PPT " - " attack format — INVESTIGATED, BUILT, COMMITTED
   LOCALLY, NOT PUSHED, NOT DEPLOYED (2026-10-09).** Full trace, all tables and

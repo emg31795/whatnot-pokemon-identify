@@ -136,12 +136,12 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_2j5pUPQdssRsjfncoRem8Mvyvb4E`**, aliased to
-  `whatnot-pokemon-identify.vercel.app`.
-- **`sourceHash dc41b8624d9ed1458ff5349f9c6e45fa62537b4e`** — byte-exact to the
-  `api/identify.js` it was built from (CLI deploy from disk). Note the working
-  tree is currently AHEAD of this (see Open items), so a local
-  `shasum api/identify.js` will not match until the next deploy.
+- Deployment **`dpl_GCZccTiVtGSdbMHptCFGyHW3EZEm`** (2026-10-09), aliased to
+  `whatnot-pokemon-identify.vercel.app`. Preview of the same build:
+  `dpl_42LHhHcLRcqwYSQ55Hvi85UQ1mq6`.
+- **`sourceHash c5d664f99f89e10e28e44416979ab7a4b52e41ae`** == `shasum
+  api/identify.js` on disk, byte-exact on both deployments (CLI deploy from
+  disk). Built from commit `9933e86`.
 - Project `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team `leasedraftai`
   (`team_DZEpR5n7heCyZsNFjxZmxUP1`). **Not git-linked** — no build-on-push.
   GitHub: `https://github.com/emg31795/whatnot-pokemon-identify`.
@@ -296,11 +296,13 @@ sane bid for that card.
 
 ## Open items
 
-**Committed locally, NOT pushed, NOT deployed (2026-10-09):** the Snorlax
-stamped-twin fix (stamp-aware + unique by-number selection), the PPT `" - "`
-attack-format parser fix with a prose fail-safe, and suppressing the `none`
-stamp badge. 73/73 Trainer replay unchanged, controls pass, 48/50 functions
-byte-identical. Production is still `dc41b862` until a deploy happens.
+**Deployed 2026-10-09** — stamp-aware + unique by-number selection, the PPT
+`" - "` attack-format parser fix with a prose fail-safe, and suppressing the
+`none` stamp badge. **`extension/content.js` changed, so the extension needs a
+manual reload in `chrome://extensions`** before the badge fix is visible.
+**Not yet observed on organic traffic:** the new
+`LEGACY-MODEL NUMBER RESCUE DECLINED` line and the stamp filter narrowing a
+real pool.
 
 **Open: the legacy-read `await` on both legacy-rescue paths has no time cap.**
 It is a bare `await legacyReadPromise`, bounded only by `GEMINI_TIMEOUT_MS`,
@@ -320,10 +322,13 @@ follow-up.
    shipping, so the correct form is `target / (1 + tax) - shipping`. A no-op
    at 0.00; a few cents too generous otherwise.
 
-**Fixed locally, not deployed:** the attack-mismatch false positive on PPT's
-third attack format (`"[3] Name - description"`). `extractAttackNames` now cuts
-at `" - "` and returns `[]` for prose-looking output so the rule skips;
+**Fixed and deployed:** the attack-mismatch false positive on PPT's third
+attack format (`"[3] Name - description"`). `extractAttackNames` now cuts at
+`" - "`, returns `[]` for prose-looking output, and returns `[]` rather than a
+partial list when an entry has no leading `[cost]` bracket;
 `extractFirstAttackName` stays byte-identical so scoring cannot move.
+Confirmed on production: Snorlax 89392 reads `attackName: "Layabout"` and now
+comes back **High with no mismatch**, where HEAD would have fired.
 
 **Watching, no action needed:** `SUB-FLOOR LEGACY-MODEL NUMBER RESCUE` and the
 PPT abort retry have not yet fired on organic traffic.
