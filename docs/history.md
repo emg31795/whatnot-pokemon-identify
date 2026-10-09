@@ -2374,6 +2374,90 @@ checklist before reporting something as finished:
 
 ## Recent / in-flight work
 
+- **Stamped-twin rescue bug (Snorlax 33/95 priced at $499.99 instead of
+  $30.23) + the PPT " - " attack format — INVESTIGATED, BUILT, COMMITTED
+  LOCALLY, NOT PUSHED, NOT DEPLOYED (2026-10-09).** Full trace, all tables and
+  the honest measurement limits in `docs/test-cases.md`'s matching entry.
+
+  Three real PPT rows share `33/95` AND `hp 100`: the correct **Call of Legends
+  Rare, tcgPlayerId 89392, $30.23, 31 listings**; `Snorlax - 33/95
+  (Prerelease)`, **213021, $499.99, 3 listings**; and `… (Prerelease) [Staff]`,
+  **228494, $1975.00, 0 listings**. Both Gemini models read `stampType: "none"`
+  on all three live scans, yet the downstream LEGACY-MODEL NUMBER RESCUE picked
+  the $499.99 row (Bid $195.45 shown) because it was a bare
+  `candidates.find(...)` — the **FIRST** number match in PPT's own array order,
+  with no uniqueness check and no stamp check. The Prerelease row sits at pool
+  index 16 and the correct one at 17. **89392 was already in the pool** (it is
+  in the logged `tiedIds=89391,89389,89392,89390`); nothing was missing, the
+  wrong row was chosen. Same systematic-bias shape as the 2026-09-13 Clefairy
+  Shadowless bug.
+
+  **This contradicted a judgment the code already encodes**: `scoreCandidate`
+  subtracts `SCORE.stampMismatch` (8, second only to `number`'s 20) when the
+  read says `"none"` and the candidate carries a stamp keyword. Every by-number
+  rescue bypasses scoring, so none of them ever saw it.
+
+  **Only 2 of the 3 reported scans hit the bug** — the third (`80fe28ea`, read
+  `EX27`) had its legacy shadow read come back `cardNumber: null` (glare), so
+  there was no legacy number to rescue with and it correctly withheld.
+
+  **Audit of every by-number path**: only the downstream rescue had the
+  first-match defect. The sub-floor (2026-10-07) and setName/orphan rescues
+  already required exactly-one-distinct, but **none had a stamp check**, so on
+  this pool they would have declined — safe, but still a miss.
+  `name-rescued-by-number` selects by `pickBestCandidate` *score* (which
+  already applies the -8 penalty and discloses ties), not first match, and was
+  deliberately left alone. Also found and NOT fixed: the downstream rescue
+  accepts a `strength: "weak"` number match, unlike the sub-floor and orphan
+  paths which deliberately require non-weak.
+
+  **Fix 1**: new `filterCandidatesByStampAgreement` + `distinctByDedupKey`;
+  the three by-number paths now drop printings whose stamp contradicts the read
+  and require **exactly one distinct** survivor, else no rescue. Deliberately
+  symmetric — the stamped-read direction is load-bearing, since without it a
+  correct `"Prerelease"` read would see all three rows survive and rescue
+  nothing. Both branches fall back to the unfiltered set rather than ever
+  emptying it, so a unique number match is provably unaffected.
+
+  **Fix 2, a separate pre-existing bug this exposed**: PPT stores 89392's
+  attacks with a literal `" - "` separator while the twins use `"\r\n<br>"`,
+  so the old parser turned the whole sentence into the "attack name" and the
+  2026-10-05 ATTACK MISMATCH rule fired on the CORRECT card — Low confidence, a
+  false warning, and (per the 2026-10-01 Corphish containment) the
+  alternate-printing banner suppressed on a card that has a Reverse Holofoil
+  printing. **Only `extractAttackNames` changed**; `extractFirstAttackName`
+  stays byte-identical, so scoring cannot move. Added a **fail-safe**: if any
+  parsed name still looks like prose (>40 chars or containing `". "`), return
+  `[]` so the rule SKIPS — silence is not evidence, and a missed warning is far
+  cheaper than a false one.
+
+  **Measurement**: the 73-scan Trainer corpus carries **no attacks at all**
+  (404/404 absent, because the `scored candidates=` log line omits them), so it
+  structurally cannot exercise the attack rule. Across the sources that can
+  (live Snorlax call + raw 10-07 logs): 126 records -> **10 distinct attack
+  arrays / 16 entries**, of which **1 uses the `" - "` format**, 1 parse
+  changed, **0 fail-safe firings**, 9 unchanged. The one change is the false
+  positive disappearing. **Thin sample, NOT a representative rate** — do not
+  quote 1/10 as prevalence.
+
+  **Results**: fidelity gate passed (replay-HEAD reproduces the $499.99 bug
+  before judging the fix). Both affected scans now return **89392 at Medium
+  with no attack-mismatch note**. Controls: A (stamped read) unchanged, B
+  (unique match) Low->**Medium** as the false positive clears, C (every match
+  stamped) now withholds — intended, $499.99 vs $1975 is genuinely
+  indistinguishable — D (one of each) picks the unstamped. **73/73 Trainer
+  replay unchanged**, identical PPT calls (108) and rescue counts. **48 of 50
+  top-level functions byte-identical**; only `extractAttackNames` and
+  `lookupCardPPT` changed; `module.exports` identical so `api/price.js` and
+  `api/flag.js` are unaffected. `extension/content.js` no longer renders the
+  `"none"` stamp badge (the schema default, so it had been showing on nearly
+  every scan). **ONE PPT call, ~10 credits, no 429** — minute-remaining read
+  32/60, i.e. Eric was scanning live, so nothing further was spent.
+
+  **Not yet observed on organic traffic**: the new
+  `LEGACY-MODEL NUMBER RESCUE DECLINED` log line, and the stamp filter
+  narrowing a real live pool.
+
 - **Sub-floor legacy-model number rescue + one PPT retry on abort — live
   full-art Trainer run where 51 of 73 real scans returned nothing.
   INVESTIGATED, BUILT, DEPLOYED (2026-10-07).** Full trace, all tables,

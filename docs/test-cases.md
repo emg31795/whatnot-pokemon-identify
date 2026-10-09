@@ -10526,6 +10526,260 @@ tie 1).
 
 ---
 
+## Fix: stamped-twin rescue bug — Snorlax 33/95 priced at $499.99 instead of $30.23, plus the PPT " - " attack format. BUILT AND COMMITTED LOCALLY, NOT DEPLOYED (2026-10-09)
+
+**Trigger.** Eric flagged three back-to-back Snorlax scans at ~20:27Z
+(requestIds `b93d5602-e7d1-40c5-9e7a-83f0169d41a3`,
+`2a7ed14e-351f-4a7c-b85c-56a3219a42b1`, `80fe28ea-b938-4ef2-bf36-0dfd648cbd68`)
+on `dpl_2j5pUPQdssRsjfncoRem8Mvyvb4E`. Two of them resolved to
+`Snorlax - 33/95 (Prerelease)` at **$499.99 NM, 3 listings, Bid $195.45** when
+the card in hand was the ordinary 33/95 Rare. Both Gemini models read
+`stampType: "none"` on every scan. Logs were saved to scratch first, per the
+1-hour-retention rule; **two of the pool lines were truncated by the MCP log
+tool at ~3000 chars, not by Vercel** — worth knowing for future log pulls.
+
+**Only 2 of the 3 scans hit the bug.** The third (`80fe28ea`) read `EX27` and
+its legacy shadow read came back `cardNumber: null` ("number area obscured by
+glare"), so there was no legacy number to rescue with and the code correctly
+withheld the price. It is the control case inside the reported trio.
+
+### Ground truth: THREE 33/95 Snorlax rows, not two
+One live PPT call (`search=Snorlax 33/95&limit=10`, HTTP 200, no 429):
+
+| name | tcgPlayerId | setName | rarity | market | listings | candidateStampType |
+|---|---|---|---|---|---|---|
+| `Snorlax`                              | **89392**  | Call of Legends | Rare  | **$30.23** | 31 | `null`       |
+| `Snorlax - 33/95 (Prerelease)`         | 213021 | Nintendo Promos | Promo | $499.99 | 3  | `Prerelease` |
+| `Snorlax - 33/95 (Prerelease) [Staff]` | 228494 | Nintendo Promos | Promo | $1975.00| 0  | `Staff`      |
+
+All three carry `hp: 100` and `cardNumber: 33/95`, so number+hp cannot separate
+them. All three produce **distinct** `candidateDedupKey` values (the
+`-\s*\d+/\d+$` strip does not fire, because these names end in `(Prerelease)` /
+`[Staff]`). **89392 was already in the pool** — it appears in the logged
+`tiedIds=89391,89389,89392,89390` of all three scans. Nothing was missing; the
+wrong row was chosen.
+
+### Root cause: `Array.prototype.find` — first match in PPT's array order
+`api/identify.js`, the downstream LEGACY-MODEL NUMBER RESCUE:
+
+```js
+const legacyMatch = candidates.find((c) => numbersMatch(legacyRead.cardNumber, c.number).match);
+if (legacyMatch) { best = legacyMatch; matchConfidence = "Medium"; ... }
+```
+
+No uniqueness check, no stamp check, and it accepts a `strength: "weak"` match.
+The Prerelease row sits at pool index 16 and the correct row at index 17, so the
+stamped one won purely on array order — the same systematic-bias shape as the
+2026-09-13 Clefairy Shadowless bug, which was fixed in `candidateDedupKey` but
+never in this rescue.
+
+**This contradicted a judgment the codebase already encodes.** `scoreCandidate`
+subtracts `SCORE.stampMismatch` (**8**, the second-largest weight after
+`number`'s 20) when `read.stampType === "none"` and the candidate carries a
+stamp keyword. Every by-number rescue path bypasses scoring, so none of them
+ever saw it. The fix applies the existing judgment to a by-number candidate
+set; it is not a new policy.
+
+### Audit of every path that selects a candidate by number
+| path | mechanism | name filter | unique? | stamp? | first-match bug |
+|---|---|---|---|---|---|
+| downstream LEGACY-MODEL NUMBER RESCUE | `candidates.find()` | inherited | **NO** | **NO** | **YES — the reported bug** |
+| sub-floor legacy rescue (2026-10-07) | filter + exactly-1-distinct | explicit | yes | **NO** | no |
+| setName search rescue | filter + exactly-1-distinct | explicit | yes | **NO** | no |
+| READ TOTAL ORPHAN (relaxed accept) | same filter chain as setName rescue | explicit | yes | **NO** | no |
+| name-rescued-by-number | `pickBestCandidate` (scored) | deliberately none | no | via the -8 penalty | no |
+
+Only the downstream rescue had the first-match defect. The other two rescues
+were structurally safe (they already required exactly-one-distinct), but none
+had a stamp check — so on this pool they would see 3 distinct qualifiers and
+**decline**: safe, but still a miss. The stamp filter turns those declines into
+correct resolutions.
+
+**`name-rescued-by-number` was deliberately NOT changed.** It selects by
+`pickBestCandidate` *score*, which already applies the -8 stamp penalty and
+discloses ties, not by first match. Imposing exactly-one-distinct there would be
+a large behavior change to a currently-working path.
+
+**Separate looseness found, NOT fixed:** the downstream rescue accepts a
+`strength: "weak"` `numbersMatch`, whereas the sub-floor and orphan paths
+deliberately require non-weak. Left alone to keep this diff to the reported bug.
+
+### Fix 1 — stamp-aware, unique by-number selection
+New `filterCandidatesByStampAgreement(candidates, read)`, applied to the three
+paths that select by number alone, plus `distinctByDedupKey` so the downstream
+rescue runs the same uniqueness rule the other two already did. The downstream
+rescue now requires **exactly one distinct printing** after filtering, or it
+does not rescue at all (falling through to the existing corroboration-floor /
+withhold behavior). Medium caps and note wording are unchanged.
+
+Deliberately **symmetric**, and the stamped-read direction is load-bearing
+rather than symmetry for its own sake: without it, a scan that correctly reads
+`"Prerelease"` would see all three rows survive, hit the new
+exactly-one-distinct requirement and rescue **nothing** — turning a case that
+works today into a withhold (this is control A below). Both branches fall back
+to the unfiltered set when the filter would empty it, so the rule can only
+narrow a choice that was already ambiguous:
+
+- read `"none"`/null + at least one unstamped candidate -> keep only unstamped
+- read `"none"`/null + **every** candidate stamped -> unchanged, no alternative
+- read `<stamp>` + at least one candidate with that stamp -> keep those
+- read `<stamp>` no candidate carries (e.g. `"1st Edition"`, which
+  `STAMP_KEYWORDS` cannot detect at all) -> unchanged
+- a set of 0 or 1 is returned untouched, so a unique number match is provably
+  unaffected
+
+A name re-filter was added to the downstream rescue as defense-in-depth. It is
+**provably a no-op today**: the only way `candidates` is not already
+name-filtered is `nameFilterRescuedByNumber`, and that path replaces `filtered`
+with rows that every one matched `read.cardNumber` exactly, which makes the
+enclosing `!anyNumberMatch` guard false and the block unreachable. Kept explicit
+so a future change to that guard cannot silently reintroduce a rescue over
+never-name-checked rows — the same reasoning already written out on the
+sub-floor rescue's own name filter.
+
+Unit test of the helper: **8/8 pass** (all four documented branches, plus
+1st-Edition-undetectable, single-candidate and empty-list).
+
+### Fix 2 — the PPT " - " attack format, and a fail-safe
+Fixing Fix 1 exposed a **separate, pre-existing bug**: the correct card came
+back **Low with a false attack-mismatch warning**. Proved pre-existing by
+control B, where Fix 1 is a no-op and committed HEAD alone already produced
+`attackMismatch: true` on 89392.
+
+PPT stores 89392's attacks with a literal `" - "` separator —
+`"[3] Layabout - Remove all damage counters from Snorlax.  Snorlax can't use..."`
+— while the Nintendo Promos twins use `"\r\n<br>"`. The old regex cuts only at
+`(`, CR, LF or `<`, so for 89392 the **entire sentence** became the "attack
+name", never fuzzy-matched the read `"Layabout"`, and the 2026-10-05 ATTACK
+MISMATCH rule fired on the correct card — capping it to Low, adding a false
+warning, and (per the 2026-10-01 Corphish containment) **suppressing the
+alternate-printing banner** on a card that has a Reverse Holofoil printing. A
+false positive here is expensive in both directions. This is a third PPT attack
+format, adjacent to the `"<b>Tail Rap -- 20x</b>"` shape the 2026-10-05 entry
+already flagged and deliberately declined to handle.
+
+**Only `extractAttackNames` changed.** `extractFirstAttackName` feeds
+`candidate.attackName` and therefore `scoreCandidate`, so it is left
+**byte-identical** — scoring, every tie-break and the whole historical
+regression corpus are unaffected by construction. `extractAttackNames` feeds
+only `attackNames`, read by nothing but the attack-mismatch rule. It now strips
+leading `[cost]` brackets and takes the text before the first `" - "`.
+
+**Fail-safe**, because this parser can only ever be a heuristic over somebody
+else's free-text field: if any parsed name still looks like prose (longer than
+`ATTACK_NAME_MAX_LEN = 40`, or containing `". "`), return `[]` for the whole
+candidate so the rule **skips** it. Silence is not evidence — the rule already
+requires a non-empty attack list, so `[]` means "cannot judge", never
+"mismatch". That is the safe direction: a missed warning costs a warning, a
+false warning costs a correct card its confidence and its printing banner.
+`" -- "` does not contain `" - "`, so the `<b>Tail Rap -- 20x</b>` format is
+untouched either way, and a leading-bracket-less entry still yields null and is
+still dropped exactly as before.
+
+Parser unit test, old vs new:
+
+| input shape | old | new |
+|---|---|---|
+| 89392, `" - "` format | `["Layabout - Remove all damage counters from Snorlax.  Snorlax can't use…", "Clomp Clomp Clobber"]` | `["Layabout","Clomp Clomp Clobber"]` |
+| 213021, `<br>` format | `["Layabout","Clomp Clomp Clobber"]` | unchanged |
+| multi-cost `[Fire][Colorless] Explosion Y (120)` | `["Explosion Y"]` | unchanged |
+| `[C] Hang Down (10)` | `["Hang Down"]` | unchanged |
+| `<b>Tail Rap -- 20x</b>` (no leading bracket) | `[]` | unchanged |
+| sentence-like, no dash | `["Remove all damage counters from Snorlax…"]` | **`[]` (fail-safe)** |
+| `[1] Tail Rap -- 20x (20)` | `["Tail Rap -- 20x"]` | unchanged |
+
+### Measurement of the " - " format across every saved pool
+Sources: the live PPT Snorlax call, the Snorlax fixtures, the 73-scan Trainer
+corpus, and the raw 2026-10-07 log files. The 2026-10-05 scratchpad was checked
+and contains **no PPT attack data** (it is TCGplayer/PriceCharting price data).
+
+- **The 73-scan Trainer corpus carries NO attacks at all** — 404/404 pool
+  candidates have the `attacks` key absent, because the `scored candidates=`
+  log line does not include it. So that corpus **structurally cannot exercise
+  the attack-mismatch rule**, which is also why it shows zero `attackMismatch`
+  in both directions.
+- Raw 10-07 logs: 218 `"attacks":` occurrences, 123 parsed successfully (the
+  rest cut by log truncation).
+- **126 candidate records harvested -> 10 DISTINCT attack arrays / 16
+  individual attack entries** (heavy duplication: the same cards recur across
+  overlapping log windows).
+
+| metric | result |
+|---|---|
+| candidates using the `" - "` format | **1 / 10** |
+| individual entries in that format | **1 / 16** |
+| parse CHANGED old vs new | **1** |
+| new fail-safe returned `[]` | **0** |
+| parse UNCHANGED | **9** |
+
+The single change is Snorlax 89392 itself, and it is a false positive
+disappearing. **This is a thin sample and NOT a representative rate** — 10
+distinct arrays, from one species plus one Trainer-heavy session that carries no
+attack data at all. The 2026-10-05 pass measured 170 candidates / 265 entries,
+but that data is gone. Do not quote 1/10 as a prevalence figure.
+
+### Results
+Snorlax replay, OLD = committed HEAD `dc41b862`, NEW = working tree.
+**Fidelity gate passed**: replay-HEAD reproduces production exactly (213021 at
+Medium on scans 0/1, withhold on scan 2) before the fix is judged.
+
+| scan | HEAD | NEW |
+|---|---|---|
+| `b93d5602` (read 25/99, legacy 33/95) | 213021 **$499.99** Medium | **89392 $30.23 Medium**, no attack note |
+| `2a7ed14e` (read 23/99, legacy 33/95) | 213021 **$499.99** Medium | **89392 $30.23 Medium**, no attack note |
+| `80fe28ea` (read EX27, legacy null) | withheld | withheld (unchanged) |
+
+| control | HEAD | NEW | verdict |
+|---|---|---|---|
+| A: read stamp IS Prerelease, stamped card correct | 213021 Medium | **213021 Medium** | PASS — unchanged, stamped read still picks stamped |
+| B: single unique number match, no twin | 89392 **Low**, `attackMismatch: true` | **89392 Medium**, no mismatch | PASS — Fix 1 is a no-op here; Fix 2 removes the false positive |
+| C: read "none", EVERY match stamped | 213021 Medium | **withheld** | intended — $499.99 vs $1975 is genuinely indistinguishable |
+| D: read "none", one stamped + one unstamped | 213021 Medium | **89392 Medium** | PASS — picks the unstamped |
+
+**73-scan Trainer replay: 73 / 73 UNCHANGED**, identical on every compared
+field and on flags, identical PPT call totals (108 both), identical rescue
+counts (8 SUB-FLOOR, 9 LEGACY-MODEL NUMBER RESCUE, 15 READ TOTAL ORPHAN, 4
+INSUFFICIENT CORROBORATION, 49 notFound / 24 found). No Trainer scan in that
+corpus has a stamped twin, so no change was expected.
+
+**Byte identity, `api/identify.js` vs committed HEAD:** 48 of 50 top-level
+functions byte-identical. Changed: **`extractAttackNames`** and
+**`lookupCardPPT`** only. Added: `filterCandidatesByStampAgreement`,
+`distinctByDedupKey`. Verified individually identical:
+`extractFirstAttackName`, `scoreCandidate`, `numbersMatch`, `normalizeNumber`,
+`pickBestCandidate`, `candidateDedupKey`, and the `SCORE` table — so the
+historical `normalizeNumber`, fuzzy-attack and 411-value suites cannot change.
+`module.exports` identical; `api/price.js` and `api/flag.js` both re-require and
+load clean. `node --check` passes on both touched files.
+
+**Frontend:** `extension/content.js` no longer renders the stamp badge when
+`stampType` is `"none"`. `"none"` is the schema's DEFAULT value — the prompt
+returns it whenever the stamp area is unclear, out of frame or simply absent —
+so the panel had been rendering a literal "none stamp" badge on nearly every
+scan, which reads as a finding about the card rather than the absence of one.
+`null`/`undefined`/`"1st Edition"` were already suppressed and are unchanged;
+`Prerelease`/`Staff`/`Pokemon Center`/`other` still render. `"other"` is kept
+deliberately: it means the model saw a stamp it could not name.
+
+**PPT credits: ONE call, ~10 credits, no 429.** Headers at the time read
+daily-remaining 17560/20000 and **minute-remaining 32/60** — about 28 units
+consumed by someone else in that window, i.e. Eric scanning live — so no further
+PPT calls were made. Every replay uses the mocked-fetch harness, which throws on
+any unexpected URL, so no real call could have slipped through.
+
+### Status and open items
+**Committed locally, NOT pushed, NOT deployed.** Production is still
+`dpl_2j5pUPQdssRsjfncoRem8Mvyvb4E` / `sourceHash dc41b862…`.
+
+- **Not yet observed on organic traffic:** the new
+  `LEGACY-MODEL NUMBER RESCUE DECLINED` log line, and the stamp filter actually
+  narrowing a real live pool.
+- The `" - "` prevalence figure is a thin sample (see above). A broader
+  measurement would need a fresh pool harvest.
+- Still open, unrelated to this fix: the legacy-read `await` on both
+  legacy-rescue paths has **no time cap** (bounded only by
+  `GEMINI_TIMEOUT_MS`, unlike the 500ms `LEGACY_SETNAME_HINT_TIMEOUT_MS` race).
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

@@ -37,6 +37,11 @@ go-ahead to deploy. This was violated once (2026-09-03) and corrected.
 **Free rein, no need to ask:** local edits, local commits, updating the docs
 below, reading logs, research, running things locally.
 
+**Working model:** a separate claude.ai assistant independently verifies Claude
+Code's reports against real state (Vercel, the repo) and drafts the prompts
+that come back here. So report **verifiable facts** — hashes, deployment IDs,
+requestIds, counts — not impressions, and expect them to be checked.
+
 **Other standing rules:**
 - **Never print, log or commit an API key.** `.env.local` is git-ignored and
   holds the real PPT/Anthropic keys; `source` it for verification, never echo it.
@@ -133,8 +138,10 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 - Deployment **`dpl_2j5pUPQdssRsjfncoRem8Mvyvb4E`**, aliased to
   `whatnot-pokemon-identify.vercel.app`.
-- **`sourceHash dc41b8624d9ed1458ff5349f9c6e45fa62537b4e`** == committed
-  `shasum api/identify.js` (byte-exact, CLI deploy from disk).
+- **`sourceHash dc41b8624d9ed1458ff5349f9c6e45fa62537b4e`** — byte-exact to the
+  `api/identify.js` it was built from (CLI deploy from disk). Note the working
+  tree is currently AHEAD of this (see Open items), so a local
+  `shasum api/identify.js` will not match until the next deploy.
 - Project `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team `leasedraftai`
   (`team_DZEpR5n7heCyZsNFjxZmxUP1`). **Not git-linked** — no build-on-push.
   GitHub: `https://github.com/emg31795/whatnot-pokemon-identify`.
@@ -250,8 +257,19 @@ months: `>=600/mo` Fast-flip, `>=50` Normal, `>=5` Slow, else Stagnant.
 Displayed market price and per-condition prices are **raw market** — none of
 this fee math touches them.
 
+**Caution on the standard regression card:** Pikachu XY95 (tcgPlayerId 114004)
+has TCG NM ~**$207**, but 2026-10-05 research found real eBay sales at
+~**$98-115** (PriceCharting agrees independently). Its documented break-even
+$169.79 / Bid $106.16 are a **formula check only** — do not treat them as a
+sane bid for that card.
+
 ## DO NOT (each cost real money or a real regression once)
 
+- **DO NOT select a candidate by number alone without being stamp-aware and
+  requiring exactly one distinct survivor.** A stamped twin sharing a number
+  (`Snorlax 33/95`: $30.23 vs $499.99 vs $1975) will otherwise win on PPT's
+  array order. `scoreCandidate` already docks 8 for a stamp the read says isn't
+  there; the rescues bypass scoring, so they must apply it themselves.
 - **DO NOT loosen the `set` substring test** so `"Celebrations"` reaches
   `"ME: 30th Celebration"`. Burger King Chimchar precedent: it makes the wrong
   candidate win *harder*.
@@ -278,11 +296,17 @@ this fee math touches them.
 
 ## Open items
 
-**Uncommitted in the working tree (2026-10-09):** the Snorlax stamped-twin
-fix — `filterCandidatesByStampAgreement` + a uniqueness requirement on the
-by-number rescue paths, and suppressing the `none` stamp badge in
-`content.js`. Tested locally (73/73 Trainer replay unchanged, controls pass),
-**not committed, pushed or deployed**, awaiting Eric's go-ahead.
+**Committed locally, NOT pushed, NOT deployed (2026-10-09):** the Snorlax
+stamped-twin fix (stamp-aware + unique by-number selection), the PPT `" - "`
+attack-format parser fix with a prose fail-safe, and suppressing the `none`
+stamp badge. 73/73 Trainer replay unchanged, controls pass, 48/50 functions
+byte-identical. Production is still `dc41b862` until a deploy happens.
+
+**Open: the legacy-read `await` on both legacy-rescue paths has no time cap.**
+It is a bare `await legacyReadPromise`, bounded only by `GEMINI_TIMEOUT_MS`,
+unlike the 500ms `LEGACY_SETNAME_HINT_TIMEOUT_MS` race the setName-hint path
+uses. Capping both with the same `Promise.race` pattern is the obvious
+follow-up.
 
 **Queued corrections to fold into the next real `api/identify.js` change**
 (deliberately not done as comment-only edits, to preserve deploy-hash parity):
@@ -296,10 +320,10 @@ by-number rescue paths, and suppressing the `none` stamp badge in
    shipping, so the correct form is `target / (1 + tax) - shipping`. A no-op
    at 0.00; a few cents too generous otherwise.
 
-**Known, not fixed:** the attack-mismatch rule can false-positive when PPT
-stores a card's attacks in a third format (`"[3] Name - description"` rather
-than `"[3] Name\r\n<br>description"`), which makes `extractAttackNames` return
-the whole sentence. Widening it shifts existing scoring, so it was declined.
+**Fixed locally, not deployed:** the attack-mismatch false positive on PPT's
+third attack format (`"[3] Name - description"`). `extractAttackNames` now cuts
+at `" - "` and returns `[]` for prose-looking output so the rule skips;
+`extractFirstAttackName` stays byte-identical so scoring cannot move.
 
 **Watching, no action needed:** `SUB-FLOOR LEGACY-MODEL NUMBER RESCUE` and the
 PPT abort retry have not yet fired on organic traffic.
