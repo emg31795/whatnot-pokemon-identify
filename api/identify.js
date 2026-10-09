@@ -345,6 +345,67 @@ function candidateStampType(candidate) {
   return null;
 }
 
+// ADDED 2026-10-09 (live Snorlax 33/95 — three real PPT rows share the number
+// 33/95 AND hp 100: the correct Call of Legends Rare (tcgPlayerId 89392,
+// $30.23) plus "Snorlax - 33/95 (Prerelease)" (213021, $499.99) and
+// "Snorlax - 33/95 (Prerelease) [Staff]" (228494, $1975) from Nintendo
+// Promos. Both Gemini models read stampType "none" on all three live scans,
+// yet the downstream LEGACY-MODEL NUMBER RESCUE picked the $499.99 Prerelease
+// row purely because Array.prototype.find takes the FIRST number match and
+// PPT happened to list it one index earlier.
+//
+// scoreCandidate ALREADY encodes the right judgment for this: a read of
+// "none" against a stamped candidate costs SCORE.stampMismatch (8), the
+// second-largest weight in the table. But every by-number rescue path
+// bypasses scoring entirely, so none of them ever sees it. This applies the
+// same judgment to a candidate set assembled by number alone.
+//
+// Deliberately symmetric, and the stamped-read direction is load-bearing
+// rather than symmetry for its own sake: without it, a scan that correctly
+// reads "Prerelease" would see all three rows survive, hit the
+// exactly-one-distinct requirement added alongside this, and rescue NOTHING
+// — turning a case that works today into a withhold. Keeping only the
+// candidates whose own stamp equals the read preserves it.
+//
+// Both branches fall back to the unfiltered set when the filter would empty
+// it, so this can only narrow a choice that was already ambiguous and can
+// never remove the last remaining candidate:
+//   - read "none"/null + at least one unstamped candidate -> keep only unstamped
+//   - read "none"/null + EVERY candidate stamped           -> unchanged
+//   - read <stamp> + at least one candidate with that stamp -> keep those
+//   - read <stamp> no candidate carries (e.g. "1st Edition", which
+//     STAMP_KEYWORDS cannot detect at all)                  -> unchanged
+// A set of 0 or 1 is returned untouched, so a unique number match is
+// provably unaffected. Safe on raw PPT rows as well as normalizePptCard
+// output: normalizePptCard passes `name` and `setName` straight through,
+// which are the only two fields candidateStampType reads.
+function filterCandidatesByStampAgreement(candidates, read) {
+  if (!Array.isArray(candidates) || candidates.length < 2) return candidates;
+  const readStamp = read && read.stampType && read.stampType !== "none" ? read.stampType : null;
+  if (readStamp) {
+    const agreeing = candidates.filter((c) => candidateStampType(c) === readStamp);
+    return agreeing.length ? agreeing : candidates;
+  }
+  const unstamped = candidates.filter((c) => candidateStampType(c) === null);
+  return unstamped.length ? unstamped : candidates;
+}
+
+// Collapse a candidate list to distinct printings by candidateDedupKey,
+// preserving order. Same loop the setName-search and sub-floor rescues
+// already run inline; factored out so the downstream legacy rescue can
+// apply the identical uniqueness rule without a third copy.
+function distinctByDedupKey(candidates) {
+  const out = [];
+  const seen = new Set();
+  for (const c of candidates || []) {
+    const key = candidateDedupKey(c);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
 function withCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -1872,9 +1933,54 @@ function extractFirstAttackName(attacks) {
 // Deliberately implemented by calling extractFirstAttackName on a
 // one-element array rather than refactoring a shared helper out of it:
 // that function is on the live scoring path and is left byte-identical.
+// FIX (2026-10-09, live Snorlax 33/95 — see docs/history.md): PPT stores
+// attack text in a THIRD format that this parser mangled. Call of Legends
+// Snorlax 33/95 (tcgPlayerId 89392) carries
+//   "[3] Layabout - Remove all damage counters from Snorlax.  Snorlax can't..."
+// i.e. the name and its description separated by a literal " - ", where the
+// Nintendo Promos twins (213021/228494) use "\r\n<br>". The old regex cuts
+// only at "(", CR, LF or "<", so for 89392 the ENTIRE SENTENCE became the
+// "attack name", never fuzzy-matched the read "Layabout", and the 2026-10-05
+// ATTACK MISMATCH rule fired on the CORRECT card — capping it to Low, adding
+// a false warning, and (per the 2026-10-01 Corphish containment) suppressing
+// the alternate-printing banner on a card that has a Reverse Holofoil
+// printing. A false positive here is expensive in both directions.
+//
+// Two deliberate scoping decisions:
+//   1. ONLY this function changes. `extractFirstAttackName` is what feeds
+//      `candidate.attackName` and therefore scoreCandidate, so it is left
+//      byte-identical — scoring, every tie-break and the whole historical
+//      regression corpus are unaffected by construction. This function feeds
+//      only `attackNames`, read by nothing but the attack-mismatch rule.
+//   2. A FAIL-SAFE, because this parser can only ever be a heuristic over
+//      somebody else's free-text field: if any name still looks like prose
+//      after parsing (longer than ATTACK_NAME_MAX_LEN, or containing ". "),
+//      return [] for the whole candidate so the rule SKIPS it entirely.
+//      Silence is not evidence — the rule already requires a non-empty
+//      attack list, so [] means "cannot judge", never "mismatch". That is
+//      the safe direction: a missed warning costs a warning, a false warning
+//      costs a correct card its confidence and its printing banner.
+//
+// A leading-bracket-less entry (PPT's "<b>Tail Rap -- 20x</b>" shape) still
+// yields null and is still dropped, exactly as before — note " -- " does not
+// contain the " - " separator, so that format is untouched either way.
+const ATTACK_NAME_MAX_LEN = 40;
+
 function extractAttackNames(attacks) {
   if (!Array.isArray(attacks) || !attacks.length) return [];
-  return attacks.map((a) => extractFirstAttackName([a])).filter(Boolean);
+  const names = [];
+  for (const a of attacks) {
+    const m = String(a || "").match(/^\s*(?:\[[^\]]*\]\s*)+([^(\r\n<]+)/);
+    if (!m) continue;
+    let name = m[1];
+    const dashAt = name.indexOf(" - ");
+    if (dashAt !== -1) name = name.slice(0, dashAt);
+    name = name.trim();
+    if (!name) continue;
+    if (name.length > ATTACK_NAME_MAX_LEN || name.includes(". ")) return [];
+    names.push(name);
+  }
+  return names;
 }
 
 function normalizePptCard(raw) {
@@ -2995,9 +3101,18 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
             return numberTotalsMatch(read.cardNumber, c.cardNumber);
           });
 
+        // ADDED 2026-10-09: same stamp-agreement narrowing as the two legacy
+        // rescues — see filterCandidatesByStampAgreement above. Applied to
+        // raw PPT rows here rather than normalizePptCard output, which is
+        // equivalent: normalizePptCard passes `name`/`setName` through
+        // untouched and those are the only fields candidateStampType reads.
+        // Covers the READ TOTAL ORPHAN path too, since the orphan relaxation
+        // lives inside the filter chain directly above.
+        const stampFilteredQualifiers = filterCandidatesByStampAgreement(qualifiers, read);
+
         const distinctQualifiers = [];
         const seenQualifierKeys = new Set();
-        for (const q of qualifiers) {
+        for (const q of stampFilteredQualifiers) {
           const key = candidateDedupKey(normalizePptCard(q));
           if (seenQualifierKeys.has(key)) continue;
           seenQualifierKeys.add(key);
@@ -3098,9 +3213,16 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
             const nm = numbersMatch(legacyRead.cardNumber, c.number);
             return nm.match && nm.strength !== "weak";
           });
+        // ADDED 2026-10-09: drop printings whose own stamp contradicts the
+        // read before the exactly-one-distinct test. Without it the real
+        // Snorlax 33/95 pool presents three distinct same-number, same-hp
+        // printings, this rescue declines, and the correct Call of Legends
+        // card is never found — safe, but a miss. See
+        // filterCandidatesByStampAgreement above.
+        const stampFilteredQualifiers = filterCandidatesByStampAgreement(qualifiers, read);
         const distinctQualifiers = [];
         const seenQualifierKeys = new Set();
-        for (const q of qualifiers) {
+        for (const q of stampFilteredQualifiers) {
           const key = candidateDedupKey(q);
           if (seenQualifierKeys.has(key)) continue;
           seenQualifierKeys.add(key);
@@ -3291,7 +3413,38 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
           try {
             const legacyRead = await legacyReadPromise;
             if (legacyRead && legacyRead.found && legacyRead.cardNumber) {
-              const legacyMatch = candidates.find((c) => numbersMatch(legacyRead.cardNumber, c.number).match);
+              // FIX (2026-10-09, live Snorlax 33/95): this was a bare
+              // candidates.find(...) — the FIRST number match in PPT's own
+              // array order, with no uniqueness check and no stamp check.
+              // See filterCandidatesByStampAgreement above for the real case
+              // and the $499.99-vs-$30.23 cost of getting it wrong. It now
+              // mirrors the sub-floor rescue's own discipline: name filter,
+              // stamp agreement, then EXACTLY ONE distinct printing or no
+              // rescue at all (falling through to the existing
+              // corroboration-floor / withhold behavior below).
+              //
+              // The name re-filter is defense-in-depth and provably a no-op
+              // today: the only way `candidates` is not already name-filtered
+              // is nameFilterRescuedByNumber, and that path replaces
+              // `filtered` with rows that every one matched read.cardNumber
+              // exactly — which makes the enclosing `!anyNumberMatch` guard
+              // false, so this block is unreachable. Kept explicit so a
+              // future change to that guard cannot silently reintroduce a
+              // rescue over never-name-checked rows, exactly the reasoning
+              // already written out on the sub-floor rescue's name filter.
+              const legacyNumberMatches = candidates
+                .filter((c) => normalizeNameForMatch(c.name).includes(wantedName))
+                .filter((c) => numbersMatch(legacyRead.cardNumber, c.number).match);
+              const legacyDistinct = distinctByDedupKey(
+                filterCandidatesByStampAgreement(legacyNumberMatches, read)
+              );
+              const legacyMatch = legacyDistinct.length === 1 ? legacyDistinct[0] : null;
+              if (!legacyMatch && legacyDistinct.length > 1) {
+                console.log(
+                  `[requestId=${requestId}]`,
+                  `[lookup] LEGACY-MODEL NUMBER RESCUE DECLINED: legacy read number=${legacyRead.cardNumber} matched ${legacyDistinct.length} distinct printings after stamp filtering (read stampType=${read.stampType}) — cannot tell them apart, falling through`
+                );
+              }
               if (legacyMatch) {
                 best = legacyMatch;
                 matchConfidence = "Medium";

@@ -1215,7 +1215,15 @@
           : ""
       }
       ${
-        data.stampType && data.stampType !== "1st Edition"
+        // FIX (2026-10-09): "none" is the schema's DEFAULT stampType value —
+        // the prompt tells the model to return it whenever the stamp area is
+        // unclear, out of frame or simply absent, i.e. on the overwhelming
+        // majority of ordinary cards. api/identify.js forwards read.stampType
+        // verbatim, so this rendered a literal "none stamp" badge on nearly
+        // every scan, which reads as a real finding about the card instead of
+        // the absence of one. "other" is still shown deliberately: it means
+        // the model SAW a stamp it could not name, which is worth surfacing.
+        data.stampType && data.stampType !== "none" && data.stampType !== "1st Edition"
           ? `<div class="wnpk-lang-badge" style="margin-bottom:6px;">${escapeHtml(data.stampType)} stamp</div>`
           : ""
       }
