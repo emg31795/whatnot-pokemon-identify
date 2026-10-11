@@ -130,6 +130,21 @@ const GEMINI_TIMEOUT_MS = 5000;
 // target on its own. Past this cap the hint is simply treated as absent
 // and the scan falls through to existing behavior.
 const LEGACY_SETNAME_HINT_TIMEOUT_MS = 500;
+
+// PHASE 2-LITE (2026-10-11): hard cap on label-driven PPT searches per
+// scan. Each is a full limit=30 request (30 credits, ~3 rate-limit units),
+// and this path only runs on a slab that the ordinary lookup already
+// failed to identify — so it must not be able to turn one failed scan into
+// an unbounded credit burn. 2 is enough for the real shape seen in the
+// logs: a completed-number query, then the most specific set word.
+const SLAB_LABEL_MAX_QUERIES = 2;
+
+// Cap on awaiting the legacy shadow read for labelText, same Promise.race
+// pattern and same reasoning as LEGACY_SETNAME_HINT_TIMEOUT_MS above: the
+// label is a bonus signal, never worth holding a live bid decision open
+// for. Slightly longer because this fires only on a slab whose ordinary
+// lookup already failed, where there is nothing else left to try.
+const SLAB_LABEL_WAIT_MS = 900;
 const CARDDB_TIMEOUT_MS = 2500;
 const CARDDB_RETRY_TIMEOUT_MS = 1200;
 
@@ -4234,6 +4249,257 @@ function assessGradedBucket(bucket, outlierFlag, nowMs = Date.now()) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// PHASE 2-LITE — SLAB LABEL PARSING AND LABEL-DRIVEN LOOKUP (2026-10-11)
+// ---------------------------------------------------------------------------
+//
+// Built from the FIRST real slab evidence this project has ever had: five
+// PSA slab scans on 2026-10-11 ~18:57Z, three of them the same Zapdos G
+// PSA 8 (cert 153791833). Full trace in docs/history.md.
+//
+// WHAT ACTUALLY FAILED, measured rather than assumed. The working theory
+// going in was that the name filter rejects Platinum-era suffix names
+// ("Zapdos G"). It does not. PPT stores this card as EXACTLY
+// `name: "Zapdos G"`, `cardNumber: "12/99"`, `setName: "Arceus"`
+// (tcgPlayerId 90726), so `normalizeNameForMatch` produces "zapdos g" on
+// both sides and the filter would have accepted it immediately. The card
+// never reached the filter: **PPT's own search ranking does not return it**.
+// `search="Zapdos G"` yields 30 other Zapdos cards (Galarian Zapdos V,
+// Zapdos ex, Moltres & Zapdos & Articuno GX...) and not this one — the
+// trailing "G" token contributes nothing to PPT's relevance ranking. So
+// this is a RETRIEVAL failure, and no amount of name normalization fixes
+// it. Confirmed by re-running production's exact query.
+//
+// What does fix it, both verified live against the real API:
+//   search="Zapdos G Arceus"  -> exactly 1 result, the right card
+//   search="Zapdos G 12/99"   -> exactly 1 result, the right card
+//   search="Zapdos G 12"      -> 2 results, both wrong (PPT filler)
+//
+// The label carries both missing pieces. "2009 POKEMON PLATINUM #12 ZAPDOS
+// G-REV.FOIL NM-MT ARCEUS 8 153791833" gives the set word ARCEUS and the
+// number #12 — and once the set is known its total (99) completes "12" to
+// "12/99", which is what turns a weak bare-number match into an exact one.
+// The bare "12" was the second half of the failure: the existing by-number
+// rescue searched "Zapdos G 12", got PPT filler, found no exact number
+// match, and returned notFound BEFORE control could ever reach the
+// setName-scoped rescue further down.
+//
+// Everything here is gated on a slab read with BOTH grader and grade. It
+// cannot touch a raw card.
+
+// PSA prints the set across two places: a brand-ish prefix ("POKEMON
+// PLATINUM", "POKEMON SWSH") and the actual set ("ARCEUS", "CROWN
+// ZENITH"). PPT drops era prefixes — the set is "Arceus", not "Platinum:
+// Arceus" (that query returns 0 results), and "Supreme Victors", not
+// "Platinum: Supreme Victors". So the words most likely to be PPT's set
+// name are the ones that are NOT era/brand noise.
+const SLAB_LABEL_NOISE_WORDS = new Set([
+  "POKEMON", "POKÉMON", "TCG", "PSA", "BGS", "BECKETT", "CGC", "SGC", "TAG", "ACE",
+  "GEM", "MT", "MINT", "NM", "NMMT", "NM-MT", "EX-MT", "VG", "EX", "GOOD", "PR",
+  "AUTHENTIC", "ALTERED", "TRADING", "CARD", "GAME", "JAPANESE", "ENGLISH",
+  // Era/brand prefixes PPT does not carry in setName.
+  "PLATINUM", "SWSH", "SM", "XY", "BW", "HGSS", "DP", "SV", "EX",
+]);
+
+// Printing qualifiers as PSA abbreviates them, mapped onto the printing
+// names PPT uses in `printingsAvailable`.
+const SLAB_VARIETY_TO_PRINTING = [
+  [/\bREV(?:ERSE)?[.\-\s]?FOIL\b|\bREVERSE\s+HOLO(?:FOIL)?\b/i, "Reverse Holofoil"],
+  [/\bHOLO(?:FOIL)?\b/i, "Holofoil"],
+];
+
+// Stamp-ish label qualifiers. Deliberately returned as a SEPARATE field
+// from the printing: per this project's standing rule, a label stamp may
+// inform matching but must never silently flip a default printing.
+const SLAB_LABEL_STAMPS = [
+  [/\b1ST\s*EDITION\b|\b1ST\s*ED\b/i, "1st Edition"],
+  [/\bSHADOWLESS\b/i, "Shadowless"],
+  [/\bSTAFF\b/i, "Staff"],
+  [/\bPRERELEASE\b/i, "Prerelease"],
+];
+
+// Parses a PSA/CGC/BGS-style label transcription into structured hints.
+// Pure and total: any unparseable field comes back null rather than
+// throwing or guessing. Exported for unit testing.
+function parseSlabLabel(labelText) {
+  if (!labelText || typeof labelText !== "string") return null;
+  // Labels arrive either space-separated or newline-separated depending on
+  // how the model transcribed them (both shapes were seen on the SAME card
+  // within three scans), so normalize whitespace first.
+  const text = labelText.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+
+  const yearMatch = text.match(/\b(19|20)\d{2}\b/);
+  const year = yearMatch ? yearMatch[0] : null;
+
+  // "#12" is the reliable number form on a PSA label. Deliberately NOT
+  // falling back to any bare integer: the label also carries a grade, a
+  // year and a 8-9 digit cert, and mistaking one of those for a card
+  // number would be worse than having no number at all.
+  const numMatch = text.match(/#\s*([A-Za-z]{0,3}\d+[A-Za-z]?)(?:\s*\/\s*(\d+))?/);
+  const cardNumber = numMatch ? (numMatch[2] ? `${numMatch[1]}/${numMatch[2]}` : numMatch[1]) : null;
+
+  let printing = null;
+  for (const [re, name] of SLAB_VARIETY_TO_PRINTING) {
+    if (re.test(text)) { printing = name; break; }
+  }
+  let stamp = null;
+  for (const [re, name] of SLAB_LABEL_STAMPS) {
+    if (re.test(text)) { stamp = name; break; }
+  }
+
+  // Candidate set words: alphabetic tokens that aren't noise, aren't the
+  // year, and aren't part of the card name. Kept in label order; the
+  // caller tries them most-specific-last first, because PSA writes the
+  // era prefix before the set ("POKEMON PLATINUM ... ARCEUS").
+  // Split on hyphens as well as spaces. PSA joins the card name to its
+  // variety with a hyphen ("ZAPDOS G-REV.FOIL"), so without this the
+  // whole thing stays one token, survives both the name and variety
+  // filters, and becomes a bogus set phrase — which cost a wasted
+  // 30-credit PPT query on the real Zapdos scans before it was fixed.
+  const tokens = text.split(/[\s\-]+/);
+  const setWords = [];
+  for (const rawTok of tokens) {
+    const tok = rawTok.replace(/[^A-Za-z&'.]/g, "").trim();
+    if (!tok || tok.length < 2) continue;
+    const upper = tok.toUpperCase();
+    if (SLAB_LABEL_NOISE_WORDS.has(upper)) continue;
+    if (/^\d+$/.test(tok)) continue;
+    setWords.push(tok);
+  }
+
+  return {
+    year,
+    cardNumber,
+    printing,
+    stamp,
+    setWords,
+    raw: text,
+  };
+}
+
+// Builds the set-name candidate phrases to try, longest/most-specific
+// first. For "2009 POKEMON PLATINUM #12 ZAPDOS G-REV.FOIL NM-MT ARCEUS 8"
+// with cardName "Zapdos G", the surviving set words are ZAPDOS, G,
+// REV.FOIL, ARCEUS -> after dropping the card's own name tokens and the
+// variety, "ARCEUS" is what's left, which is exactly PPT's setName.
+function slabLabelSetPhrases(label, cardName) {
+  if (!label || !Array.isArray(label.setWords)) return [];
+  const nameTokens = new Set(
+    String(cardName || "")
+      .split(/\s+/)
+      .map((t) => t.replace(/[^A-Za-z]/g, "").toUpperCase())
+      .filter(Boolean)
+  );
+  const varietyTokens = new Set([
+    "REVFOIL", "REV", "FOIL", "HOLO", "HOLOFOIL", "REVERSE", "FA", "FULLART",
+    "REVFOILNMMT", "NMMT", "GEMMT", "SHADOWLESS", "STEDITION", "EDITION", "ST",
+  ]);
+  const kept = label.setWords.filter((w) => {
+    const u = w.replace(/[^A-Za-z]/g, "").toUpperCase();
+    if (!u) return false;
+    if (nameTokens.has(u)) return false;
+    if (varietyTokens.has(u)) return false;
+    return true;
+  });
+  if (!kept.length) return [];
+  const phrases = [];
+  // The whole remaining run, then each single word from the end backwards
+  // (PSA writes the specific set after the era prefix).
+  if (kept.length > 1) phrases.push(kept.join(" "));
+  for (let i = kept.length - 1; i >= 0; i--) phrases.push(kept[i]);
+  return [...new Set(phrases)];
+}
+
+// One label-driven retrieval attempt. Returns a single candidate or null.
+// Guards are the same ones every other rescue in this file uses, for the
+// same reasons: name filter, stamp awareness, and EXACTLY ONE distinct
+// survivor — see the "DO NOT select a candidate by number alone" rule.
+async function lookupCardFromSlabLabel(read, label, requestId) {
+  if (!label) return null;
+  const searchName = normalizeNameForSearchQuery(read.cardName);
+  if (!searchName) return null;
+
+  const phrases = slabLabelSetPhrases(label, read.cardName);
+  // The completed-number query is tried FIRST when the label gave a number
+  // with a total, since "Zapdos G 12/99" was verified to return exactly the
+  // right card on its own.
+  const queries = [];
+  if (label.cardNumber && label.cardNumber.includes("/")) queries.push(`${searchName} ${label.cardNumber}`);
+  for (const p of phrases) queries.push(`${searchName} ${normalizeNameForSearchQuery(p)}`);
+
+  const wantedName = normalizeNameForMatch(read.cardName);
+  const labelNum = label.cardNumber ? normalizeNumber(label.cardNumber) : null;
+
+  for (const q of queries.slice(0, SLAB_LABEL_MAX_QUERIES)) {
+    console.log(`[requestId=${requestId}]`, `[lookup] SLAB LABEL SEARCH: "${q}"`);
+    const res = await fetchPokemonPriceTracker(q, { language: read.language });
+    if (res && res.error === "rate-limited") return { error: "rate-limited", retryAfter: res.retryAfter, isDailyLimit: res.isDailyLimit };
+    const rows = res && Array.isArray(res.data) ? res.data : [];
+    if (!rows.length) continue;
+
+    // `normalizePptCard` deliberately does not carry `printingsAvailable`
+    // (it is not a scoring signal and nothing on the raw path reads it),
+    // but the label-variety printing selection below needs it to check
+    // that a printing the LABEL claims actually exists in the catalog
+    // rather than asserting one. Attached here, on this path only, rather
+    // than widening normalizePptCard — which is shared with the whole raw
+    // matching engine and is deliberately held byte-identical.
+    let pool = rows
+      .map((raw) => {
+        const c = normalizePptCard(raw);
+        c.printingsAvailable = Array.isArray(raw.printingsAvailable) ? raw.printingsAvailable : [];
+        return c;
+      })
+      .filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
+    if (!pool.length) {
+      console.log(`[requestId=${requestId}]`, `[lookup] SLAB LABEL SEARCH: ${rows.length} rows, 0 survived the name filter for "${read.cardName}"`);
+      continue;
+    }
+
+    // If the label gave a number, require it to match. The label number is
+    // the most trustworthy number available on a slab — it is printed flat
+    // and horizontal, where the card's own number is small, angled and
+    // behind glare. A bare label numerator ("12") is allowed to match a
+    // catalog "12/99", which is exactly the completion the old by-number
+    // rescue could not do.
+    if (labelNum && labelNum.num != null) {
+      const byNumber = pool.filter((c) => {
+        const cn = normalizeNumber(c.number);
+        if (!cn || cn.num == null) return false;
+        if (cn.prefix !== labelNum.prefix) return false;
+        if (cn.num !== labelNum.num) return false;
+        // A label total, when present, must agree.
+        if (labelNum.total != null && cn.total != null && labelNum.total !== cn.total) return false;
+        return true;
+      });
+      if (byNumber.length) pool = byNumber;
+      else {
+        console.log(`[requestId=${requestId}]`, `[lookup] SLAB LABEL SEARCH: no candidate matched label number ${label.cardNumber}`);
+        continue;
+      }
+    }
+
+    pool = filterCandidatesByStampAgreement(pool, read);
+    const distinct = distinctByDedupKey(pool);
+    if (distinct.length !== 1) {
+      console.log(
+        `[requestId=${requestId}]`,
+        `[lookup] SLAB LABEL SEARCH DECLINED: ${distinct.length} distinct candidates survived (need exactly 1) for "${q}"`
+      );
+      continue;
+    }
+
+    const accepted = distinct[0];
+    console.log(
+      `[requestId=${requestId}]`,
+      `[lookup] SLAB LABEL RESCUE: accepted ${accepted.name} ${accepted.number} (${accepted.setName}, tcgPlayerId=${accepted.tcgPlayerId}) via "${q}"`
+    );
+    return accepted;
+  }
+  return null;
+}
+
 // PHASE 0a predicate — see the long rationale at its call site in the
 // handler. A slab is only treated as a slab when the label yielded a
 // grader or a grade; a bare `isSlab` flag with nothing read off the label
@@ -4666,6 +4932,59 @@ async function handler(req, res) {
       );
     }
 
+    // PHASE 2-LITE (2026-10-11): the ordinary lookup failed to identify the
+    // card in this slab, so fall back to the LABEL. See
+    // lookupCardFromSlabLabel above for the measured reason this exists —
+    // the Zapdos G PSA 8 failure was PPT retrieval, not name matching, and
+    // the label carries the two things that fix it (the set word and a
+    // number that can be completed with the set total).
+    //
+    // Deliberately only on a FAILED slab lookup: a slab the normal path
+    // already identified is left completely alone, so this cannot regress
+    // a working scan, and it costs nothing on the common path.
+    let slabLabel = null;
+    let slabLabelRescued = null;
+    const baseFailed = !baseLookup || !baseLookup.found;
+    if (baseFailed && legacyReadPromise) {
+      let labelTimer = null;
+      try {
+        // Capped race, never a bare await — same pattern and same reason
+        // as LEGACY_SETNAME_HINT_TIMEOUT_MS.
+        const timeoutPromise = new Promise((resolve) => {
+          labelTimer = setTimeout(() => resolve({ __labelTimedOut: true }), SLAB_LABEL_WAIT_MS);
+        });
+        const legacyRead = await Promise.race([legacyReadPromise.catch(() => null), timeoutPromise]);
+        if (legacyRead && legacyRead.__labelTimedOut) {
+          console.log(`[identify] requestId=${requestId} slab labelText not ready within ${SLAB_LABEL_WAIT_MS}ms — continuing without it`);
+        } else if (legacyRead && legacyRead.labelText) {
+          slabLabel = parseSlabLabel(legacyRead.labelText);
+          if (slabLabel) {
+            console.log(
+              `[identify] requestId=${requestId} SLAB LABEL PARSED:`,
+              "number=", slabLabel.cardNumber,
+              "printing=", slabLabel.printing,
+              "stamp=", slabLabel.stamp,
+              "year=", slabLabel.year,
+              "setWords=", JSON.stringify(slabLabel.setWords)
+            );
+          }
+        }
+      } catch (e) {
+        console.error(`[identify] requestId=${requestId} slab label unavailable (treating as absent):`, e && e.message);
+      } finally {
+        if (labelTimer) clearTimeout(labelTimer);
+      }
+
+      if (slabLabel) {
+        try {
+          const found = await lookupCardFromSlabLabel(read, slabLabel, requestId);
+          if (found && !found.error) slabLabelRescued = found;
+        } catch (e) {
+          console.error(`[identify] requestId=${requestId} slab label lookup threw (non-fatal):`, e && e.message);
+        }
+      }
+    }
+
     // PHASE 0e: spread `baseLookup` FIRST on both paths, exactly as the
     // fallback path already did. The old graded-with-price path rebuilt
     // this object field-by-field and so silently dropped `ambiguousNote`,
@@ -4677,14 +4996,70 @@ async function handler(req, res) {
     // project's core design principle on the one path where a wrong
     // number is most expensive. It also stops defaulting matchConfidence
     // to "Medium", which was quietly upgrading an unmatched slab.
+    // PHASE 2-LITE: a label-rescued candidate becomes the identification
+    // when the ordinary lookup found nothing. Capped at Medium, exactly
+    // like every other rescue path in this file — the label is strong
+    // evidence but it is still one model's transcription of small text,
+    // and `matchBasis` records how the match was actually made.
+    let slabIdentity = null;
+    if (slabLabelRescued) {
+      // PHASE 2-LITE (c): the label's variety picks the printing. PSA
+      // prints "REV.FOIL" for a reverse holo, and PPT exposes the real
+      // printing list per card, so this selects among printings the
+      // catalog actually has rather than asserting one. Falls back to the
+      // catalog's own primaryPrinting when the label said nothing — never
+      // a guess, and never an auto-flip on a vision read of the CARD (the
+      // standing rule); this is the printed label, a different and much
+      // stronger signal.
+      const available = Array.isArray(slabLabelRescued.printingsAvailable) ? slabLabelRescued.printingsAvailable : [];
+      const labelPrinting = slabLabel && slabLabel.printing && available.includes(slabLabel.printing) ? slabLabel.printing : null;
+      if (slabLabel && slabLabel.printing && !labelPrinting) {
+        console.log(
+          `[identify] requestId=${requestId} SLAB LABEL PRINTING "${slabLabel.printing}" not in catalog printings ${JSON.stringify(available)} — falling back to primaryPrinting`
+        );
+      }
+      const chosenPrinting = labelPrinting || slabLabelRescued.prices?.primaryPrinting || null;
+      console.log(
+        `[identify] requestId=${requestId} SLAB LABEL IDENTIFIED: ${slabLabelRescued.name} ${slabLabelRescued.number} (${slabLabelRescued.setName}) printing=${chosenPrinting}${
+          labelPrinting ? " (from label variety)" : " (catalog default)"
+        }`
+      );
+      slabIdentity = {
+        found: true,
+        cardName: slabLabelRescued.name,
+        setName: slabLabelRescued.setName,
+        cardImageUrl: slabLabelRescued.cardImageUrl || null,
+        matchConfidence: "Medium",
+        matchBasis: "slab-label",
+        ambiguousNote: null,
+        attackMismatch: false,
+        tcgplayerUrl: slabLabelRescued.tcgPlayerUrl || null,
+        pricingLookup: {
+          tcgPlayerId: slabLabelRescued.tcgPlayerId || null,
+          tag: null,
+          siblingTcgPlayerId: null,
+          siblingTag: null,
+          siblingSetName: null,
+          stampType: read.stampType,
+          primaryPrinting: chosenPrinting,
+          listingCount: slabLabelRescued.prices?.listings ?? null,
+        },
+      };
+    }
+
     const slabBase = {
-      ...(baseLookup && baseLookup.found ? baseLookup : { found: true, cardName: read.cardName }),
+      ...(baseLookup && baseLookup.found ? baseLookup : slabIdentity || { found: true, cardName: read.cardName }),
       cardLanguage: read.language,
       confidence: read.confidence,
       isSlab: true,
       grader: read.grader,
       grade: read.grade,
       certNumber: read.certNumber,
+      // PHASE 2-LITE (d): lets the panel distinguish "we never identified
+      // the card in this slab" from "we identified it but the graded
+      // bucket is too thin" — two very different things that previously
+      // shared one misleading message about graded sales.
+      slabCardIdentified: !!((baseLookup && baseLookup.found) || slabIdentity),
     };
 
     if (gradedResult && gradedResult.gradedPrice != null) {
@@ -4858,6 +5233,9 @@ module.exports.pickDefaultVariantKey = pickDefaultVariantKey;
 // exports above: attaching named properties to the handler function value
 // does not change how Vercel treats this file's default export.
 module.exports.shouldTreatAsSlab = shouldTreatAsSlab;
+module.exports.parseSlabLabel = parseSlabLabel;
+module.exports.slabLabelSetPhrases = slabLabelSetPhrases;
+module.exports.lookupCardFromSlabLabel = lookupCardFromSlabLabel;
 module.exports.identifyWithGemini = identifyWithGemini;
 module.exports.SLAB_LABEL_PROBE_ENABLED = SLAB_LABEL_PROBE_ENABLED;
 module.exports.LEGACY_LABEL_PROBE_PROMPT = LEGACY_LABEL_PROBE_PROMPT;

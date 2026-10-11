@@ -1435,7 +1435,18 @@
     // graded price are now distinguished instead of sharing one vague
     // message.
     if (data.isSlab && data.gradedPriceUnavailable) {
-      const thinMsg = data.gradedThin
+      // CHANGED 2026-10-11 (Phase 2-lite d): three genuinely different
+      // failures used to share one message about graded sales, which was
+      // actively misleading in the commonest case. The Zapdos G PSA 8
+      // scans said "couldn't find graded sales for that exact grader and
+      // grade" when PPT in fact had 17 PSA 8 sales at a $49.89 median —
+      // the real failure was that we never identified the CARD, so no
+      // graded lookup was even possible. Say which one actually happened.
+      const thinMsg = !data.slabCardIdentified
+        ? `⚠ Couldn't identify the card in this slab${
+            data.grader ? " (" + escapeHtml(data.grader) + (data.grade ? " " + escapeHtml(data.grade) : "") + ")" : ""
+          }. The label was read, but the card behind it couldn't be matched in our catalog — so no price of any kind is shown. Nothing here is a valuation.`
+        : data.gradedThin
         ? `⚠ Not enough recent graded sales for ${escapeHtml(data.grader || "this grader")} ${escapeHtml(
             data.grade || ""
           )}${
@@ -1443,9 +1454,9 @@
               ? ` — only ${data.gradedSampleCount} sale${data.gradedSampleCount === 1 ? "" : "s"} in the last ~90 days`
               : ""
           }. No graded price is shown, because one or two sales cannot tell you what this slab is worth.`
-        : `⚠ This looks like a graded slab${
-            data.grader ? " (" + escapeHtml(data.grader) + (data.grade ? " " + escapeHtml(data.grade) : "") + ")" : ""
-          }, but we couldn't find graded sales for that exact grader and grade. No graded price is shown.`;
+        : `⚠ This card was identified, but we couldn't find graded sales for ${escapeHtml(
+            data.grader || "that grader"
+          )} ${escapeHtml(data.grade || "")}. No graded price is shown.`;
 
       $("#wnpk-body").innerHTML = `
         ${header}
