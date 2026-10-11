@@ -14,9 +14,19 @@ A free personal Chrome extension replicating pallet.trade's core feature:
 while watching a Whatnot Pokémon auction, click "Identify Card" and it
 captures the video frame, identifies the card via AI vision on a Vercel
 backend, looks up real market pricing, and renders it in an on-page panel.
-Personal use only. **Scope is Pokémon raw cards (Phase 1).** Graded slabs
-(Phase 2) and sealed packs (Phase 3) are not built out — don't start them
-without an explicit go-ahead.
+Personal use only. **Scope is Pokémon raw cards (Phase 1).** Sealed packs
+(Phase 3) are not built out — don't start without an explicit go-ahead.
+
+**Graded slabs: Phase 0 + a shadow-only Phase 1 shipped 2026-10-11** (test
+#96). The graded path now actually works mechanically — before this it could
+never return a price at all (it read two field names that don't exist in
+PPT's API) — but **it is UNPROVEN end-to-end: no genuine slab has ever been
+scanned through it.** Both Gemini models fired `isSlab` zero times across 73
+consecutive real scans, so proving it needs a slab-heavy stream. A bare
+`isSlab` flag with no readable label is now deliberately ignored and the card
+takes the raw path. No graded Suggested Bid yet (Phase 3) — graded bid math
+needs its own shipping constant first, since a slab can't ship at the raw
+path's $0.955 sub-$20 rate. Don't start Phase 2/3 proper without a go-ahead.
 
 **Key design principle, learned the hard way: when the data doesn't support a
 confident answer, say so.** Low confidence + an explicit warning is a feature.
@@ -127,6 +137,16 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 - **`LEGACY_GEMINI_SHADOW_MODEL`** (`gemini-3.6-flash`) — regression watch
   (`[legacy-model-shadow-test]`, every request). Its read is ALSO consumed for
   real by the number-rescue and setName-hint paths.
+- **`SLAB_LABEL_PROBE`** (default **on** when unset; set to `off` to disable)
+  — Phase 1 slab-label probe. Adds `labelText` + label instructions to the
+  **legacy shadow model's prompt/schema only**; primary and Haiku prompts are
+  untouched. Logs `[slab-label-probe]`. Because the legacy read also feeds
+  three production rescue paths, `off` makes that call send a byte-identical
+  pre-probe body. **Env vars are snapshotted at build time — flipping this
+  needs a redeploy.** Deployed state is readable from `GET /api/identify` →
+  `slabLabelProbe`. Watch metric + baseline: legacy `cardNumber` non-null rate
+  **56.9%** (41/72, preserved 2026-10-07 window); a drop of more than a few
+  points over a comparable sample is the trigger to set it `off`.
 - **PokemonPriceTracker** — $9.99/mo, the only catalog source. 60 units/min,
   20,000 credits/day; `limit=30` = 3 units / ~30 credits, so a long stream can
   exhaust the day. 30s `lookupCardPPT` cache keyed on language+name+number; a
@@ -295,6 +315,18 @@ sane bid for that card.
   The API wants raw base64 and 400s, manufacturing a fake error cluster.
 
 ## Open items
+
+**Deployed 2026-10-11 — graded-slab Phase 0 + shadow-only Phase 1** (test
+#96; 199 local tests). Watch two things on organic traffic: (1) the legacy
+`cardNumber` non-null rate against its **56.9%** baseline — if it drops, set
+`SLAB_LABEL_PROBE=off` and redeploy; (2) `[slab-label-probe]`
+`legacyLabelTextLen`, the Phase 1 payoff metric — if a slab label is almost
+never legible, Phase 2 proper should NOT be built and the honest answer is
+the raw path plus the existing warning. **`extension/content.js` changed, so
+the extension needs a manual reload in `chrome://extensions`.** Not yet
+observed on organic traffic: `SLAB FLAG IGNORED`, `GRADED FETCH SKIPPED`,
+`GRADED PRICE WITHHELD`, any `[slab-label-probe]` line with a real label, and
+the graded-price branch firing at all.
 
 **Deployed 2026-10-09** — stamp-aware + unique by-number selection, the PPT
 `" - "` attack-format parser fix with a prose fail-safe, and suppressing the

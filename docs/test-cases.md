@@ -10805,6 +10805,203 @@ any unexpected URL, so no real call could have slipped through.
   legacy-rescue paths has **no time cap** (bounded only by
   `GEMINI_TIMEOUT_MS`, unlike the 500ms `LEGACY_SETNAME_HINT_TIMEOUT_MS` race).
 
+## #96 — 2026-10-11 — Graded-slab Phase 0 + Phase 1 (shadow probe) as built
+
+**Local-only build + 199 unit/replay tests. The slab path itself is
+UNPROVEN until a real slab scan passes — see the warning at the end.**
+
+### What was wrong (all three found by reading the code against a live probe)
+
+1. **`lookupGradedPrice` could never have returned a price.** It read
+   `c.gradedSales || c.ebayComps || c.ebay`. The first two field names do
+   not exist in PPT's API and appear nowhere in this repo except that one
+   line; the real field is `card.ebay.salesByGrade`. So `rawComps` always
+   resolved to the `c.ebay` *wrapper* object, whose keys are
+   `salesByGrade`/`priceHistory`/`salesVelocity`, producing
+   `{grader:"salesByGrade", grade:null, price:undefined}` — and
+   `comp.price != null` then failed on every call. **The
+   graded-with-price render branch has almost certainly never executed in
+   production**, which is also why neither of the other two bugs was ever
+   visible.
+2. **Half-grade keys never parsed.** PPT's real keys use an UNDERSCORE
+   (`cgc8_5`, `cgc7_5`, `tag6_5`, `bgs9_5`). The old regex
+   `/^([a-zA-Z]+)\s*(\d+(?:\.\d+)?)$/` failed on 5 of the 21 real keys on
+   the probe card — worst for BGS, whose signature grade IS 9.5. New
+   information, not a correction: prior research recorded these keys only
+   with wildcards (`cgc*`) and whole-grade examples, so the half-grade
+   case had simply never been observed.
+3. **Every slab scan burned ~60 wasted PPT credits.** `lookupGradedPrice`
+   was called unconditionally and fetched *before* checking grader/grade
+   (the check was inside the comp loop), and `includeEbay=true` doubles
+   the call. It was also awaited sequentially ahead of `lookupCardPPT`,
+   adding a full extra PPT round-trip to the slowest path in the app.
+
+### Phase 0 as built
+
+- **0a — a bare `isSlab` flag is now ignored.** `shouldTreatAsSlab(read)`
+  requires `isSlab === true` AND a non-empty `grader` or `grade`
+  (whitespace-tolerant, so a model "filling in" a blank cannot trip it).
+  Logs `[identify] SLAB FLAG IGNORED: no grader/grade`. Rationale is the
+  isSlab divergence recorded in `history.md`: a slab whose label we cannot
+  read is, for every purpose here, just a card — and the raw path gives a
+  genuine price with the safe error direction (a raw price UNDER-values a
+  slab; underbidding costs nothing).
+- **0b — graded fetch only when both grader and grade normalize**, and it
+  now runs in `Promise.all` with the base lookup instead of blocking it.
+  Logs `GRADED FETCH SKIPPED` on a partial label.
+- **0c — field path + key parsing fixed.** `parseGradedBucketKey` handles
+  underscore and period half grades and correctly rejects `ungraded`.
+  `normalizeGraderForCompare` maps a label's `BECKETT` onto PPT's `bgs`;
+  `normalizeGradeForCompare` handles `"PSA 10"`, `"Gem Mint 10"`,
+  `"10.0"`, `9.5`.
+- **0d — thin-data gate.** Withhold on `count < 3` or a `lastSaleDate`
+  older than 90 days. A bucket that exists but is thin returns
+  `gradedThin`, so the panel distinguishes "not enough recent sales at
+  PSA 10" from "that grade was never found".
+- **0e — disclosures preserved.** Both slab paths now spread `baseLookup`
+  (as the fallback path already did). The old graded-with-price path
+  rebuilt the result field-by-field and silently dropped `ambiguousNote`,
+  `attackMismatch`, `matchBasis`, `pricingLookup`, `listingCount` and
+  `printingUndetermined`, and defaulted `matchConfidence` to `"Medium"` —
+  i.e. a graded slab could show a confident dollar figure with every
+  uncertainty disclosure suppressed, on the one path where a wrong number
+  is most expensive. Also added a `.catch` on the slab-path base lookup,
+  closing a pre-existing asymmetry where a throw there became a 500.
+- **0f — no graded Suggested Bid** (that is Phase 3). The slab panel shows
+  a raw NM figure labeled "raw card price, NOT this slab's value… a
+  minimum, not a target", with no bid and no break-even. Graded bid math
+  needs its own shipping constant first: a slab cannot ship at the raw
+  path's $0.955 sub-$20 envelope rate, so a raw-derived bid on a slab
+  would be wrong in the expensive direction.
+- **Frontend:** dropped the `!isSlab` gate on the `/api/price` call. That
+  gate was the direct cause of the long-standing `Raw market: —` dead row
+  (known and honestly flagged at the 2026-09-10 decoupling, left alone
+  because slabs were Phase 2): the slab branch still rendered
+  `data.marketPrice`/`data.conditionPrices` from the *identify* response
+  after those fields had moved to `/api/price`.
+
+### The thin-data gate thresholds, and two measured walk-backs
+
+**`count >= 3`, plus a 90-day staleness cap. `medianPrice` only.**
+
+- The gate exists for one real number: on the probe card the `cgc10`
+  bucket is a **single sale at $7,999.95** against a `psa10` median of
+  **$500.00** across 57 sales. 13 of 21 buckets had count <= 2, so thin
+  buckets are the normal case. `count >= 3` kills all 10 single-sale
+  buckets and both n=2 buckets, keeping 8. PPT's `count` is window-scoped
+  (the 21 bucket counts sum to exactly the card's `totalSales` of 203 over
+  a ~90-day range), so it reads as "3+ sales at this grade in ~90 days".
+- **Walk-back 1 — `smartMarketPrice` is NOT safe as the headline.** The
+  original research recommended preferring it when its confidence was not
+  `low`. The probe data disproves that: `psa10` reads median $500.00 vs
+  smartMarketPrice **$1,175.50** (2.35x, outlier-flagged, 14-day window),
+  and `ungraded` reads $19.99 vs $70.00. The smart price gets dragged by a
+  single high sale; the median resists it. Implementation uses
+  `medianPrice` only — never average, never max.
+- **Walk-back 2 — do NOT withhold on `confidence === "low"` or the
+  outlier flag.** Both were originally proposed as withhold conditions.
+  Measured: `confidence === "low"` holds for **16 of 21** buckets,
+  including `cgc9` (n=10) and `cgc8_5` (n=9); and
+  `smartPriceOutlierByGrade` is set on `psa10` (n=57) and `ungraded`
+  (n=20) — the two most useful buckets on the card. Withholding on either
+  would have broken the feature rather than protected it. Both are now
+  advisory caveats shown beside the figure instead.
+
+### Phase 1 — shadow-only slab-label probe, with a kill switch
+
+Adds `labelText` (verbatim transcription of the whole slab label) plus
+grader/grade/cert instructions, and an explicit slab definition that
+excludes sleeves, toploaders, team bags and one-touch holders — **to the
+legacy shadow model's prompt/schema ONLY.** The primary Gemini prompt and
+the Haiku prompt are byte-identical to HEAD. No new API call (the legacy
+call is already in flight on every request) and no latency on the response
+path. Logged on a separate short `[slab-label-probe]` line, capped at 400
+chars, rather than widening `[legacy-model-shadow-test]` — that line
+already stringifies the whole read and would blow past the ~3000-char MCP
+log truncation, silently hiding the fields it is relied on for.
+
+**Honest risk, and why it has a switch.** This is *not* zero-production-
+risk: the legacy read is not purely a shadow, it is consumed for real by
+three production paths (the setName hint, the sub-floor number rescue, the
+downstream number rescue). Adding schema fields can in principle perturb
+the `cardNumber`/`setName` reads those depend on. Mitigations:
+1. Prompt and schema are **strictly additive** — `GEMINI_PROMPT` is
+   interpolated verbatim and every existing `GEMINI_SCHEMA` property is
+   spread through unchanged (asserted byte-identical in the tests).
+2. **`SLAB_LABEL_PROBE` env var, default ON when unset.** Set to `off` to
+   make the legacy call send a byte-identical pre-probe request body (it
+   passes no prompt/schema override, so `identifyWithGemini`'s own
+   defaults apply). Env vars are snapshotted at build time, so flipping it
+   needs a redeploy. Deployed state is readable from
+   `GET /api/identify` → `slabLabelProbe`.
+3. The existing `[legacy-model-shadow-test]` line already diffs legacy
+   against primary every request, so drift is observable in logs already
+   being collected.
+
+**Pre-deploy baseline for the regression watch** (durable copy of the
+numbers; raw pull was in non-durable scratch): over the preserved
+2026-10-07 73-scan window, legacy `cardNumber` **non-null rate 41/72 =
+56.9%** (primary 63.9%), `cardNumber` exact agreement 38/72 = 52.8%,
+`setName` 83.3%, `cardName` 76.4%, legacy `found` 71/72. A ~45-min live
+production window just before deploy had only 9 scans: agreement 8/9, both
+non-null rates 6/9. **Every legacy rescue counter was 0 in that window**,
+so rescue-firing rate is structurally uninformative as a post-deploy
+comparison at this sample size — the real test is the legacy `cardNumber`
+non-null rate against the 56.9% baseline. A drop of more than a few points
+over a comparable sample is the trigger to set `SLAB_LABEL_PROBE=off`.
+
+### Tests — 199 pass, 0 fail (local harness, no network)
+
+The one place that fetches (`lookupGradedPrice`) is driven by stubbing
+`globalThis.fetch` with the **real saved probe response** (Charizard EX
+XY29, 21 real buckets), so zero PPT credits.
+
+- All 21 real bucket keys parse correctly; the old regex is shown failing
+  on exactly the 5 half grades.
+- Gate: 8 buckets shown / 12 withheld. **`cgc10`'s single $7,999.95 sale
+  is withheld and the string `7999` appears nowhere in the result
+  object.** `psa10` prices at its $500 median, not its $1,175.50 smart
+  price. `cgc9` (n=10) and `cgc8_5` (n=9) still price, carrying advisories.
+- **Phase 0a replay over the 73 preserved scans: 37 of Haiku's 39
+  `isSlab=true` reads now price as raw**; only the two genuine `PSA 10`
+  reads stay on the slab path; all 179 non-slab reads unaffected.
+- End-to-end: half grades resolve, `BECKETT` maps to the `bgs9` bucket, a
+  partial label makes **zero** PPT calls, an absent grade returns null
+  (distinct from thin), and a response carrying the old `ebay` wrapper
+  shape with no `salesByGrade` yields nothing rather than garbage.
+- `SLAB_LABEL_PROBE` both states, asserted on the **real request body**:
+  unset/`on`/`""`/`1` → probe on; `off`/`OFF`/`  off  ` → probe off, and
+  the off body is byte-identical to an options-less call and its prompt
+  equals HEAD's `GEMINI_PROMPT` exactly.
+- Byte-identity: 19 protected functions (the whole raw matching/pricing
+  engine, `scoreCandidate`, `pickBestCandidate`, `numbersMatch`,
+  `lookupCardPPT`, `extractAttackNames`, …) all byte-identical to HEAD, no
+  extractor skips. `GEMINI_PROMPT`, `GEMINI_SCHEMA` and `HAIKU_SCHEMA`
+  byte-identical. The raw `else` branch byte-identical.
+
+### Corrected: the Gemini failure rate
+
+An earlier draft of the Phase 0a reasoning sized the fallback risk with a
+"14–17% healthy Gemini failure rate". **That is wrong** — 14–17% is the
+**old** primary's baseline (`gemini-3.6-flash`, tests #70/#71/#76), and
+that model is now the legacy *shadow*, not the primary. The current
+primary (`gemini-3.5-flash-lite`) measures **3.8%** (test #85), **5.6%**
+(test #86) and **1.4%** in the 2026-10-07 window (1 absent call of 73; 2
+further scans were successful calls returning `found:false`, which is not
+a provider failure). So the share of all scans a bare `isSlab` flag could
+misroute is roughly **0.7–2.8%**, not ~8%. Small, but pure loss: those are
+ordinary raw cards that already had a good price available.
+
+### THE SLAB PATH IS UNPROVEN
+
+Everything above is verified by unit tests, replays against real logged
+reads, and a real PPT response — but **no genuine graded slab has been
+scanned end-to-end through this code.** Both Gemini models fired `isSlab`
+zero times across 73 consecutive real scans, so a real slab scan requires
+finding a slab-heavy stream. Until that passes, treat the graded-price
+branch as untested in production, per this project's own standing rule
+that a clean deploy is not a confirmed fix.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

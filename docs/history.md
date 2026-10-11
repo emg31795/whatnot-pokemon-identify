@@ -6031,6 +6031,67 @@ checklist before reporting something as finished:
   would eliminate the manual-paste deploy risks described above; an
   explicit decision for the user to make.
 
+## 2026-10-11 — graded-slab research: the `isSlab` model divergence
+
+Durable record of the measurement that Phase 0a is built on. Source: 73
+consecutive real scans from the preserved 2026-10-07 log pull
+(`scans_full.json`), which lives only in a non-durable session scratchpad
+— these counts are the durable form, copied here deliberately so the
+scratch file can be lost without losing the finding.
+
+**All three models received the byte-identical `GEMINI_PROMPT`** (Haiku
+reuses it verbatim; the legacy shadow did too, before the Phase 1 probe).
+Same frames, same prompt:
+
+| model | role | found reads | `isSlab=true` | grader read | cert read |
+|---|---|---|---|---|---|
+| `gemini-3.5-flash-lite` | primary, drives production | 70 | **0 (0%)** | 0 | 0 |
+| `gemini-3.6-flash` | legacy regression shadow | 72 | **0 (0%)** | 0 | 0 |
+| `claude-haiku-4-5` | active fallback + shadow | 73 | **39 (53%)** | 2 | 0 |
+
+- **`certNumber` was read successfully ZERO times by any model** across
+  all 73 scans. This is the single most important number for Phase 2/4
+  planning: a cert-lookup feature has no input today.
+- Of Haiku's 39 slab calls, **37 carried no grader and no grade at all**;
+  the 2 that did were both `PSA`/`10` (Nessa, Iono), both with a null cert.
+- **Glare is not the discriminator** — mentioned in 37/39 of Haiku's
+  slab-true reasons AND 33/34 of its slab-false reasons. But 31 of the 39
+  explicitly name a slab/case/holder, so Haiku does believe it sees one.
+- Haiku's concurrent *card-name* reads in this window were poor
+  (Oinkologne vs the primary's Shauna; Enamorus vs Doctor), and the card
+  names across the run (Iono, Nessa, Peonia, Rika, Satsuma, Zinnia…) show
+  a modern Trainer-singles run. **The data cannot settle which model is
+  wrong** — there is no ground truth in it — but the balance of evidence
+  favours Haiku over-calling sleeves/toploaders as slabs, which matches
+  the suspicion already recorded in `docs/test-cases.md` at the Vanillite
+  scan.
+- The one confirmed genuine slab on record remains **test #28**
+  (2026-08-27, Dark Gengar in a TAG 9), where the then-primary Gemini DID
+  set `isSlab=true`. So detection is not impossible; slab-heavy traffic
+  has simply never been measured.
+
+**Corrected failure-rate figure.** An earlier draft of this reasoning
+sized the fallback risk using a "14-17% healthy Gemini failure rate".
+That is wrong: 14-17% is the **old** primary's baseline (`gemini-3.6-flash`,
+tests #70/#71/#76), and that model is now the legacy *shadow*, not the
+primary. The current primary (`gemini-3.5-flash-lite`) measures **3.8%**
+(test #85), **5.6%** (test #86) and **1.4%** in this 2026-10-07 window
+(1 absent call of 73; a further 2 were successful calls returning
+`found:false`, which is not a provider failure). So the share of all
+scans a bare `isSlab` flag could misroute is roughly **0.7-2.8%**, not
+~8%.
+
+**Also corrected, from a live `includeEbay=true` probe the same day:**
+PPT's `salesByGrade` half-grade keys use an **underscore** (`cgc8_5`,
+`tag6_5`, `bgs9_5`), not a period. Prior research here recorded these keys
+only with wildcards (`cgc*`, `bgs*`) and whole-grade examples, so nothing
+written before was wrong — the half-grade case had simply never been
+observed, which is why `lookupGradedPrice`'s key regex was never known to
+be inadequate. And `smartMarketPrice` is **not** safe as a headline
+figure: on the probe card `psa10` reads median **$500.00** vs
+smartMarketPrice **$1,175.50** (outlier-flagged, 14-day window), and
+`ungraded` reads $19.99 vs $70.00. Use `medianPrice`.
+
 ## Where to look for more detail
 
 - `docs/ROADMAP.md` — project scope, phases, and checklist. Read this to
