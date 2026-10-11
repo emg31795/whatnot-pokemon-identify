@@ -6161,6 +6161,45 @@ Full detail in test #98. The parts worth not re-deriving:
   the real template code. Content scripts run in Chrome's isolated world,
   so it is not exposed to the page.
 
+## 2026-10-11 (late) — the graded lookup was pricing the wrong card
+
+Full trace in test #99. **Both live graded bids this project has ever
+produced were wrong**, and both for the same reason.
+
+- `lookupGradedPrice` ran its OWN search on the card name, filtered by a
+  **name substring only**, and took the **first card in PPT's array order**
+  with a bucket for the scanned grader+grade. It never used the tcgPlayerId
+  `lookupCardPPT` had already matched.
+- **Mega Dragonite ex 232/193 CGC 10** was identified correctly (665895, raw
+  NM $14.27) but priced from sibling **665921** (250/193 MUR, raw $192.43):
+  CGC 10 $348 / bid $180.36, against the card's own correct $40.00 on n=527.
+- **Toxtricity 109/103 CGC 10** — the earlier "first live graded bid" — was
+  the same bug. 716911 has `salesByGrade: {}`; the $24.99 came from
+  **Toxtricity VMAX 315/190**, a different card and card type.
+- **SM210 was right only by luck** of array order; Hidden Fates 44/68 would
+  have been shown SM210's $155.20 instead of its own $54.97.
+- **Not PPT contamination** — PPT's data for the scanned cards is correct and
+  matches PriceCharting.
+
+**Fix:** graded data comes from the matched card only, fetched by
+`tcgPlayerId`, with the returned id and card number verified before pricing.
+The name-search path is **removed with no fallback**. Three API facts encoded:
+a `tcgPlayerId` query returns `data` as a **single object**, Japanese needs
+`language=japanese`, and `limit=1` costs **2 credits vs 60** for the old
+search.
+
+**Cost:** the graded fetch is now sequential after identification (it has to
+be). Measured 116–394ms against live PPT, on slab scans only; raw scans are
+unaffected.
+
+**Two caveats recorded:** a log-only `GRADED SANITY TRIPWIRE` (grade ≤9 median
+> 4x raw NM) gates nothing, because it misses the Toxtricity case and fires on
+Zapdos G's own correct PSA 9 at 8.7x — and a grade-10 ratio cap is unusable,
+since that card's correct PSA 10 is 108x raw. And **`salesByGrade` is not
+purely eBay**: Dragonite 232 is 87% Fanatics / 13% eBay, which matters because
+our fee model assumes an eBay sale. No per-sale detail (titles/numbers) exists
+in the API, so filtering sales by card number is impossible.
+
 ## Where to look for more detail
 
 - `docs/ROADMAP.md` — project scope, phases, and checklist. Read this to

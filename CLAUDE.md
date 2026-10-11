@@ -162,6 +162,17 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
   `slabLabelProbe`. Watch metric + baseline: legacy `cardNumber` non-null rate
   **56.9%** (41/72, preserved 2026-10-07 window); a drop of more than a few
   points over a comparable sample is the trigger to set it `off`.
+- **Graded data must come from the MATCHED card.** `lookupGradedPrice` takes
+  the matched `tcgPlayerId` and fetches by id (`fetchPptCardByTcgPlayerId`),
+  verifying the returned id and card number before pricing. There is NO
+  name-search fallback — it used to search by name and take PPT's first
+  array match, which priced the wrong sibling on both live graded bids ever
+  produced (test #99). Three API facts: a `tcgPlayerId` query returns `data`
+  as a **single object, not an array**; Japanese needs `language=japanese`;
+  `limit=1` costs 2 credits vs 60 for a `limit=30` search.
+- **`salesByGrade` is NOT purely eBay data** despite living under
+  `card.ebay` — Dragonite 232 measured 87% Fanatics / 13% eBay. The fee model
+  assumes an eBay sale. No per-sale titles or numbers exist in the API.
 - **PokemonPriceTracker** — $9.99/mo, the only catalog source. 60 units/min,
   20,000 credits/day; `limit=30` = 3 units / ~30 credits, so a long stream can
   exhaust the day. 30s `lookupCardPPT` cache keyed on language+name+number; a

@@ -145,6 +145,12 @@ const SLAB_LABEL_MAX_QUERIES = 2;
 // for. Slightly longer because this fires only on a slab whose ordinary
 // lookup already failed, where there is nothing else left to try.
 const SLAB_LABEL_WAIT_MS = 900;
+
+// LOG-ONLY sanity tripwire threshold - see the GRADED SANITY TRIPWIRE
+// block in lookupGradedPrice. Applies to grades <= 9 only and currently
+// suppresses nothing; it exists to gather real traffic before any
+// decision about gating on it.
+const GRADED_SANITY_LOW_GRADE_RATIO = 4;
 const CARDDB_TIMEOUT_MS = 2500;
 const CARDDB_RETRY_TIMEOUT_MS = 1200;
 
@@ -4596,101 +4602,218 @@ function shouldTreatAsSlab(read) {
   return hasGrader || hasGrade;
 }
 
-async function lookupGradedPrice(read) {
-  // PHASE 0b: callers must already have established that BOTH grader and
-  // grade are present — this function can only ever match an exact
-  // grader+grade bucket, so without both it is a guaranteed-useless PPT
-  // call that still costs 60 credits (limit=30 x includeEbay doubling).
-  // Guarded here too rather than trusting the call site.
+// Fetches ONE card by its TCGplayer id, with eBay/graded data.
+//
+// Separate from fetchPokemonPriceTracker on purpose: that function is the
+// raw path's shared search and is held byte-identical. This is a
+// single-card lookup with three behaviours that differ, all confirmed
+// against the live API (2026-10-11):
+//   1. A `tcgPlayerId` query returns `data` as a SINGLE OBJECT, not an
+//      array. The array-shaped guard used everywhere else yields an empty
+//      pool for it.
+//   2. Japanese cards need `language=japanese`, or the query returns 0
+//      rows (the default pool is English) — Mega Dragonite ex 232/193
+//      returns nothing without it.
+//   3. `limit=1` costs 2 credits with includeEbay, against 60 for the
+//      limit=30 name search this replaces: 30x cheaper AND correct.
+async function fetchPptCardByTcgPlayerId(tcgPlayerId, language) {
+  if (tcgPlayerId == null || String(tcgPlayerId).trim() === "") return null;
+  const params = new URLSearchParams({
+    tcgPlayerId: String(tcgPlayerId),
+    limit: "1",
+    includeEbay: "true",
+  });
+  if (String(language).toLowerCase() === "japanese") params.set("language", "japanese");
+  const url = `${PPT_BASE_URL}?${params.toString()}`;
+  const headers = { Authorization: `Bearer ${process.env.POKEMONPRICETRACKER_API_KEY}` };
+
+  let resp;
+  try {
+    resp = await fetchWithTimeout(url, { headers }, CARDDB_TIMEOUT_MS);
+  } catch (e) {
+    console.error("[lookup] graded by-id request threw:", e && e.message, "- retrying once");
+    try {
+      resp = await fetchWithTimeout(url, { headers }, CARDDB_RETRY_TIMEOUT_MS);
+    } catch (eRetry) {
+      console.error("[lookup] graded by-id retry also threw:", eRetry && eRetry.message);
+      return null;
+    }
+  }
+
+  if (!resp.ok) {
+    if (resp.status === 429) {
+      const body = await resp.text().catch(() => "");
+      const isDailyLimit = /daily/i.test(body);
+      console.error("[lookup] graded by-id RATE LIMITED:", body.slice(0, 200));
+      return { error: "rate-limited", isDailyLimit };
+    }
+    console.error("[lookup] graded by-id FAILED - status=", resp.status, "tcgPlayerId=", tcgPlayerId);
+    return null;
+  }
+
+  const json = await resp.json().catch(() => null);
+  if (!json) return null;
+  const d = json.data;
+  if (!d) return null;
+  if (Array.isArray(d)) return d.length ? d[0] : null;
+  return d;
+}
+
+// FIX (2026-10-11) - THE GRADED LOOKUP NOW USES THE MATCHED CARD ONLY.
+//
+// What this replaces, and why. The previous implementation ran its OWN
+// search on `read.cardName`, filtered by a NAME SUBSTRING only (no card
+// number, no setName, no uniqueness rule), and returned the FIRST card in
+// PPT's array order that happened to have a bucket for the scanned
+// grader+grade. It never received the tcgPlayerId that lookupCardPPT had
+// already matched. Two real production scans show what that cost:
+//
+//   Mega Dragonite ex 232/193 CGC 10 (requestId d6e8d6e9, 21:58Z) matched
+//   correctly as tcgPlayerId 665895 (raw NM $14.27, bestScore 40,
+//   tieCount 1). The panel showed CGC 10 $348 / bid $180.36. Every
+//   displayed figure belonged to sibling 665921 (250/193 MUR, raw
+//   $192.43) - CGC 8.5 n=2 $144, CGC 9 $231.50, CGC 10 n=15 $348, all
+//   byte-identical. 665895's OWN data is correct and plausible: CGC 10
+//   $40.00 on n=527, CGC 9 $16.20, CGC 8.5 $11.90, matching the real
+//   market. The siblings simply sorted first.
+//
+//   Toxtricity 109/103 CGC 10 (tcgPlayerId 716911) has
+//   `salesByGrade: {}` and totalSales 0 - PPT has NO graded data for it.
+//   The "$24.99" shown came from Toxtricity VMAX 315/190 (571238), a
+//   different card and a different card TYPE, which passed the filter
+//   only because its name contains "toxtricity".
+//
+// SM210 was right purely by luck of array order; had the Hidden Fates
+// 44/68 printing been scanned, it would have been shown SM210's $155.20
+// against its own real $54.97.
+//
+// So: no name search, and no fallback to one. Graded data comes from the
+// matched card's own record or not at all. `matchedCard` carries the
+// tcgPlayerId and number that lookupCardPPT (or the slab-label path)
+// already established.
+async function lookupGradedPrice(read, matchedCard) {
   const wantGrader = normalizeGraderForCompare(read.grader);
   const wantGrade = normalizeGradeForCompare(read.grade);
   if (!wantGrader || !wantGrade) return null;
 
-  // See normalizeNameForSearchQuery above — same hyphen-in-search fix as
-  // lookupCardPPT, applied here too since graded lookups hit the same
-  // PPT search endpoint with the same read.cardName.
-  const data = await fetchPokemonPriceTracker(normalizeNameForSearchQuery(read.cardName), { graded: true, language: read.language });
-  if (!data || data.error) return null;
+  // No identified card means no graded price. There is deliberately no
+  // fallback here: a graded figure attached to a card we could not
+  // identify is exactly the error this fix exists to remove.
+  const wantId = matchedCard && matchedCard.tcgPlayerId != null ? String(matchedCard.tcgPlayerId) : null;
+  if (!wantId) return null;
 
-  const rawList = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
-  const wantedName = normalizeNameForMatch(read.cardName);
-  const filtered = rawList.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
-  if (filtered.length === 0) return null;
+  const card = await fetchPptCardByTcgPlayerId(wantId, read.language);
+  if (!card) return null;
+  if (card.error === "rate-limited") return { error: "rate-limited", isDailyLimit: card.isDailyLimit };
 
-  // Remembers the best THIN match seen, so a bucket that exists but is
-  // too thin produces an honest "not enough sales at that grade" instead
-  // of being indistinguishable from "that grade was never found".
-  let thinMatch = null;
+  // Identity verification. PPT should only ever return the id we asked
+  // for, but this is the exact invariant the bug violated, so it is
+  // checked rather than assumed.
+  const gotId = card.tcgPlayerId != null ? String(card.tcgPlayerId) : null;
+  if (gotId !== wantId) {
+    console.error(
+      `[lookup] GRADED ID MISMATCH: asked for tcgPlayerId=${wantId}, PPT returned ${gotId} (${card.name}) - refusing to price`
+    );
+    return null;
+  }
+  // Number cross-check. lookupCardPPT's result object does not carry the
+  // winning candidate's number, so fall back to the vision read's own
+  // number - which is arguably the stronger check anyway, since it
+  // validates the priced card against what was physically read off the
+  // slab rather than against another derived value.
+  const expectNumber = matchedCard.number || read.cardNumber || null;
+  if (expectNumber && card.cardNumber && !numbersMatch(expectNumber, card.cardNumber).match) {
+    console.error(
+      `[lookup] GRADED NUMBER MISMATCH: expected ${expectNumber} but tcgPlayerId=${wantId} is ${card.cardNumber} - refusing to price`
+    );
+    return null;
+  }
 
-  for (const c of filtered) {
-    const salesByGrade = c.ebay && c.ebay.salesByGrade;
-    if (!salesByGrade || typeof salesByGrade !== "object") continue;
-    const outliers = (c.ebay && c.ebay.smartPriceOutlierByGrade) || {};
+  const salesByGrade = card.ebay && card.ebay.salesByGrade;
+  if (!salesByGrade || typeof salesByGrade !== "object" || !Object.keys(salesByGrade).length) {
+    console.log(`[lookup] no graded sales at all for tcgPlayerId=${wantId} (${card.name})`);
+    return null;
+  }
+  const outliers = (card.ebay && card.ebay.smartPriceOutlierByGrade) || {};
 
-    // Parse every bucket once: used both to find the exact match and to
-    // build the nearby-grade context rows.
-    const comps = [];
-    for (const [key, bucket] of Object.entries(salesByGrade)) {
-      const parsed = parseGradedBucketKey(key);
-      if (!parsed) continue; // `ungraded` and anything unexpected
-      comps.push({ key, ...parsed, bucket, outlier: outliers[key] === true });
-    }
+  const comps = [];
+  for (const [key, bucket] of Object.entries(salesByGrade)) {
+    const parsed = parseGradedBucketKey(key);
+    if (!parsed) continue;
+    comps.push({ key, ...parsed, bucket, outlier: outliers[key] === true });
+  }
 
-    const exact = comps.find((x) => x.grader === wantGrader && x.grade === wantGrade);
-    if (!exact) continue;
-
-    const verdict = assessGradedBucket(exact.bucket, exact.outlier);
-    if (!verdict.ok) {
-      if (!thinMatch) {
-        thinMatch = {
-          gradedPrice: null,
-          gradedThin: true,
-          gradedThinReason: verdict.reason,
-          gradedSampleCount: verdict.count ?? 0,
-          grader: wantGrader,
-          grade: wantGrade,
-        };
+  // LOG-ONLY SANITY TRIPWIRE (2026-10-11). A card graded 9 or below is a
+  // played-to-near-mint copy and should not trade far above raw NM, so a
+  // large multiple hints that a bucket may not belong to this card.
+  // DELIBERATELY LOG-ONLY, gating nothing: measured against real data it
+  // has no false positives on the cards checked so far, but it also
+  // MISSES the Toxtricity case (2.3x), and vintage cards legitimately run
+  // high - Zapdos G 12/99's own correct PSA 7 is 2.2x and PSA 8 is 2.7x
+  // raw. A ratio cap on grade 10 is unusable outright: that same card's
+  // own correct PSA 10 is $1,999.99 against raw $18.46, i.e. 108x. Real
+  // traffic first, before this ever suppresses anything.
+  // Raw NM from the RETURNED card: it is the matched card by construction
+  // (ids verified equal above), so this works on both call paths without
+  // depending on what the caller happened to carry.
+  const rawNm = card.prices && card.prices.market != null ? Number(card.prices.market) : null;
+  if (rawNm && rawNm > 0) {
+    for (const x of comps) {
+      const gradeNum = parseFloat(x.grade);
+      const med = x.bucket && x.bucket.medianPrice != null ? Number(x.bucket.medianPrice) : null;
+      if (!Number.isFinite(gradeNum) || gradeNum > 9 || med == null) continue;
+      const ratio = med / rawNm;
+      if (ratio > GRADED_SANITY_LOW_GRADE_RATIO) {
+        console.log(
+          `[lookup] GRADED SANITY TRIPWIRE (log only, nothing suppressed): tcgPlayerId=${wantId} ${card.name} ` +
+            `${x.grader} ${x.grade} median=$${med} vs rawNM=$${rawNm} ratio=${ratio.toFixed(1)}x ` +
+            `threshold=${GRADED_SANITY_LOW_GRADE_RATIO}x n=${x.bucket.count}`
+        );
       }
-      continue;
     }
+  }
 
-    // PHASE 3 (2026-10-11): the eBay window is carried out so the graded
-    // sell-through tier can be computed against the window PPT actually
-    // reports rather than an assumed 90 days — see computeGradedSellThrough
-    // for the two real cards whose windows differ by 2.5x.
-    const gradedBid = computeGradedBidForBucket(verdict, c.ebay.dateRangeStart, c.ebay.dateRangeEnd) || {};
+  const exact = comps.find((x) => x.grader === wantGrader && x.grade === wantGrade);
+  if (!exact) {
+    console.log(`[lookup] no ${wantGrader} ${wantGrade} bucket for tcgPlayerId=${wantId} (${card.name})`);
+    return null;
+  }
 
+  const verdict = assessGradedBucket(exact.bucket, exact.outlier);
+  if (!verdict.ok) {
     return {
-      gradedPrice: verdict.price,
-      gradedSampleCount: verdict.count,
-      gradedLastSaleDate: verdict.lastSaleDate,
-      gradedLowConfidence: verdict.lowConfidence,
-      gradedOutlierAffected: verdict.outlierAffected,
-      gradedWindowStart: c.ebay.dateRangeStart || null,
-      gradedWindowEnd: c.ebay.dateRangeEnd || null,
-      ...gradedBid,
+      gradedPrice: null,
+      gradedThin: true,
+      gradedThinReason: verdict.reason,
+      gradedSampleCount: verdict.count ?? 0,
       grader: wantGrader,
       grade: wantGrade,
-      // Context rows only — explicitly NOT a pricing input. Never
-      // substitute a different grader at the same number (the probe card
-      // reads cgc9 $40.99 vs bgs9 $39.99 vs psa9 $67.80, a ~1.7x spread
-      // at nominally "grade 9") and never interpolate a half grade from
-      // its neighbours. Each row carries its own sale count so a count-1
-      // row is visibly thin rather than looking like a peer of the
-      // headline figure.
-      nearbyGradedPrices: comps
-        .filter((x) => x !== exact && x.bucket && x.bucket.medianPrice != null)
-        .sort((a, b) => Number(b.bucket.count || 0) - Number(a.bucket.count || 0))
-        .slice(0, 5)
-        .map((x) => ({
-          label: `${x.grader} ${x.grade}`,
-          price: Number(x.bucket.medianPrice),
-          count: Number(x.bucket.count) || 0,
-        })),
     };
   }
 
-  return thinMatch;
+  const gradedBid = computeGradedBidForBucket(verdict, card.ebay.dateRangeStart, card.ebay.dateRangeEnd) || {};
+
+  return {
+    gradedPrice: verdict.price,
+    gradedSampleCount: verdict.count,
+    gradedLastSaleDate: verdict.lastSaleDate,
+    gradedLowConfidence: verdict.lowConfidence,
+    gradedOutlierAffected: verdict.outlierAffected,
+    gradedWindowStart: card.ebay.dateRangeStart || null,
+    gradedWindowEnd: card.ebay.dateRangeEnd || null,
+    ...gradedBid,
+    grader: wantGrader,
+    grade: wantGrade,
+    nearbyGradedPrices: comps
+      .filter((x) => x !== exact && x.bucket && x.bucket.medianPrice != null)
+      .sort((a, b) => Number(b.bucket.count || 0) - Number(a.bucket.count || 0))
+      .slice(0, 5)
+      .map((x) => ({
+        label: `${x.grader} ${x.grade}`,
+        price: Number(x.bucket.medianPrice),
+        count: Number(x.bucket.count) || 0,
+      })),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -4993,13 +5116,18 @@ async function handler(req, res) {
     // usable label" here rather than buying a 60-credit PPT call that the
     // function would then reject anyway.
     const canFetchGraded = !!(normalizeGraderForCompare(read.grader) && normalizeGradeForCompare(read.grade));
-    const gradedPromise = canFetchGraded
-      ? lookupGradedPrice(read).catch((e) => {
-          console.error(`[identify] requestId=${requestId} graded lookup threw:`, e && e.message);
-          return null;
-        })
-      : Promise.resolve(null);
-
+    // CHANGED 2026-10-11: the graded fetch is now SEQUENTIAL, after
+    // identification, instead of running in parallel with it. It has to
+    // be: graded data is now looked up by the matched card's own
+    // tcgPlayerId, which does not exist until lookupCardPPT (or the
+    // slab-label path below) has finished. Correctness over speed - the
+    // parallel version was fast because it was guessing, and on real
+    // scans it priced the wrong card (see lookupGradedPrice's comment).
+    //
+    // The cost is bounded and small: the by-id call is `limit=1`, far
+    // lighter than the limit=30 name search it replaces, and it only runs
+    // on a slab whose label gave both grader and grade.
+    //
     // The `.catch` on the base lookup closes a pre-existing asymmetry
     // rather than changing intended behaviour: the raw branch below has
     // always wrapped lookupCardPPT in a try/catch, but the slab branch
@@ -5008,13 +5136,11 @@ async function handler(req, res) {
     // degrades to the same `{found:true, cardName}` fallback that a
     // non-found baseLookup has always produced here — the slab badge and
     // the honest "no graded price" message still render.
-    const [gradedResult, baseLookup] = await Promise.all([
-      gradedPromise,
-      lookupCardPPT(read, requestId, legacyReadPromise).catch((e) => {
-        console.error(`[identify] requestId=${requestId} slab-path base lookup threw:`, e && e.message);
-        return null;
-      }),
-    ]);
+    const tGradedStart = Date.now();
+    const baseLookup = await lookupCardPPT(read, requestId, legacyReadPromise).catch((e) => {
+      console.error(`[identify] requestId=${requestId} slab-path base lookup threw:`, e && e.message);
+      return null;
+    });
 
     if (!canFetchGraded) {
       console.log(
@@ -5157,6 +5283,42 @@ async function handler(req, res) {
       slabLabelPrinting: slabLabel ? slabLabel.printing : null,
       slabLabelStamp: slabLabel ? slabLabel.stamp : null,
     };
+
+    // GRADED FETCH (2026-10-11): runs here, after identification, against
+    // the card we actually matched - from the ordinary lookup or, when
+    // that failed, from the slab-label path. No matched card means no
+    // graded price, full stop.
+    //
+    // `matchedCard` is built from whichever path won. The slab-label path
+    // yields a full normalized candidate (number and prices included);
+    // lookupCardPPT's result object carries only the tcgPlayerId, which is
+    // enough - lookupGradedPrice falls back to the vision read's number
+    // for the cross-check and reads raw NM off the card PPT returns.
+    const matchedCard = slabLabelRescued
+      ? { tcgPlayerId: slabLabelRescued.tcgPlayerId, number: slabLabelRescued.number, prices: slabLabelRescued.prices }
+      : baseLookup && baseLookup.found && baseLookup.pricingLookup
+      ? { tcgPlayerId: baseLookup.pricingLookup.tcgPlayerId, number: null, prices: null }
+      : null;
+
+    let gradedResult = null;
+    if (canFetchGraded && matchedCard && matchedCard.tcgPlayerId) {
+      try {
+        gradedResult = await lookupGradedPrice(read, matchedCard);
+      } catch (e) {
+        console.error(`[identify] requestId=${requestId} graded lookup threw:`, e && e.message);
+        gradedResult = null;
+      }
+      console.log(
+        `[identify] requestId=${requestId} GRADED LOOKUP by tcgPlayerId=${matchedCard.tcgPlayerId} took ${
+          Date.now() - tGradedStart
+        }ms total (identification + graded)`
+      );
+    } else if (canFetchGraded) {
+      console.log(
+        `[identify] requestId=${requestId} GRADED FETCH SKIPPED: no card matched, so there is nothing to price graded sales against.`
+      );
+    }
+    if (gradedResult && gradedResult.error === "rate-limited") gradedResult = null;
 
     if (gradedResult && gradedResult.gradedPrice != null) {
       result = {
@@ -5364,5 +5526,7 @@ module.exports.normalizeGraderForCompare = normalizeGraderForCompare;
 module.exports.normalizeGradeForCompare = normalizeGradeForCompare;
 module.exports.assessGradedBucket = assessGradedBucket;
 module.exports.lookupGradedPrice = lookupGradedPrice;
+module.exports.fetchPptCardByTcgPlayerId = fetchPptCardByTcgPlayerId;
+module.exports.GRADED_SANITY_LOW_GRADE_RATIO = GRADED_SANITY_LOW_GRADE_RATIO;
 module.exports.GRADED_MIN_SALES = GRADED_MIN_SALES;
 module.exports.GRADED_MAX_LAST_SALE_AGE_DAYS = GRADED_MAX_LAST_SALE_AGE_DAYS;

@@ -11251,6 +11251,122 @@ rendering a real **$154.17** for SM210 when driven with the actual
 `/api/price` response — confirming the `Raw NM —` in the earlier snapshot
 was a harness artifact (the harness never fires `/api/price`), not a gap.
 
+## #99 — 2026-10-11 — Graded lookup priced the WRONG CARD; now keyed to the matched card
+
+**The first live graded bid this project ever produced was wrong.** Both it
+and the Dragonite bid an hour later came from a different card.
+
+### What happened
+
+Mega Dragonite ex 232/193 CGC 10 (requestId d6e8d6e9, 21:58Z) was
+**identified correctly** — tcgPlayerId 665895, bestScore 40, tieCount 1, both
+models reading the label and cert exactly. The panel then showed
+**CGC 10 $348 · Bid $180.36**. Real market is ~$15 raw, with graded sales
+$12–58.
+
+Every displayed figure belonged to sibling **665921 (250/193 MUR, raw
+$192.43)**:
+
+| | panel showed | 665895 (scanned) | 665921 |
+|---|---|---|---|
+| raw NM | — | **$14.27** | $192.43 |
+| CGC 8.5 | n=2 $144 | n=6 $11.90 | **n=2 $144** |
+| CGC 9 | $231.50 | n=63 $16.20 | **n=2 $231.50** |
+| CGC 10 | n=15 $348 | n=527 $40.00 | **n=15 $348** |
+
+**This was not PPT contamination.** PPT's data for 665895 is correct and
+plausible — CGC 10 $40.00 on raw $14.27 (2.8x), matching the real market —
+and PPT's own raw NM ($14.27) matches PriceCharting's ~$14.86.
+
+### Root cause
+
+`lookupGradedPrice` ran its **own search** on `read.cardName`, filtered by a
+**name substring only** (no card number, no setName, no uniqueness rule), and
+returned the **first card in PPT's array order** with a bucket for the scanned
+grader+grade. It never received the tcgPlayerId that `lookupCardPPT` had
+already matched. The four Dragonite printings sort 250/193 first; it had a
+`cgc10` bucket; it won.
+
+**Not isolated.** The earlier "first live graded bid" — Toxtricity 109/103
+CGC 10 at $24.99 — was the same bug. That card (716911) has
+`salesByGrade: {}` and `totalSales: 0`; PPT has **no graded data for it at
+all**. The $24.99 came from **Toxtricity VMAX 315/190 (571238)** — a different
+card and a different card *type*, which passed the filter because its name
+contains "toxtricity".
+
+**SM210 was right only by luck** of array order. Had the Hidden Fates 44/68
+printing been scanned, it would have shown SM210's $155.20 against that card's
+real $54.97.
+
+**Zapdos G failed safely** for an unrelated reason: no candidate name contained
+"zapdos g", so the filter emptied and it returned null — which is why it showed
+an honest "no graded sales" rather than a wrong price.
+
+### The fix
+
+Graded data now comes from the **matched card only**. `lookupGradedPrice(read,
+matchedCard)` fetches by `tcgPlayerId` via a new `fetchPptCardByTcgPlayerId`,
+then verifies the returned id equals the requested one and the card number
+matches before pricing anything. **The name-search path is removed entirely,
+with no fallback** — no matched card means no graded price.
+
+Three API behaviours confirmed live and encoded in the new fetch:
+1. A `tcgPlayerId` query returns `data` as a **single object, not an array**.
+2. Japanese cards need **`language=japanese`** or the query returns 0 rows.
+3. `limit=1` costs **2 credits** against the old name search's **60** — the fix
+   is 30x cheaper as well as correct.
+
+### Live verification (real API, preview `34774dc6…`)
+
+| case | before | after |
+|---|---|---|
+| Dragonite 232 CGC 10 | $348, n=15, bid $180.36 | **$40.00, n=527, bid $20.50** |
+| Toxtricity 109 CGC 10 | $24.99 (a VMAX) | **no graded price** |
+| SM210 PSA 9 | $155.20, n=558, bid $90.67 | **unchanged** |
+| Hidden Fates 44/68 PSA 9 | would have shown $155.20 | **$54.965, n=319** |
+
+### Latency
+
+The graded fetch is now **sequential after identification** — it must be,
+since it keys off a tcgPlayerId that does not exist until identification
+finishes. Measured against live PPT: **116ms / 134ms / 394ms** (mean ~215ms).
+That is added to the critical path on **slab scans only**; raw scans are
+completely unaffected because the graded path never runs for them. A slab scan
+goes from ~2.46s to roughly ~2.6–2.9s, still inside the 1–3s target. The
+parallel version was faster only because it was guessing.
+
+### Log-only sanity tripwire
+
+`GRADED SANITY TRIPWIRE` logs when a grade ≤9 median exceeds **4x** the card's
+raw NM. **It suppresses nothing** and gates nothing. Measured against real
+data it has no false positives on the cards checked, but it **misses the
+Toxtricity case (2.3x)**, and vintage cards legitimately run high — Zapdos G
+12/99's own correct PSA 7 is 2.2x, PSA 8 2.7x, and **PSA 9 8.7x (it trips the
+wire on correct data)**. A ratio cap on grade 10 is unusable outright: that
+card's own correct PSA 10 is $1,999.99 against raw $18.46, i.e. **108x**. Real
+traffic first.
+
+### `salesByGrade` is not purely eBay data
+
+Despite living under `card.ebay`, the buckets mix sources. Measured:
+Dragonite 232 is **87% Fanatics / 13% eBay** (678 vs 99); Dragonite 250 is 65%
+eBay; Zapdos G is 84% eBay. Our fee model assumes an eBay sale and
+cross-checks are against eBay sold, so a mostly-Fanatics bucket is a different
+market. Also confirmed: **no per-sale detail exists** (no titles, no card
+numbers) — `priceHistory` is per-grade-per-date aggregates — so filtering
+sales by card number is impossible with this API.
+
+### Tests — 487 pass (213 + 103 + 89 + 82), 0 fail
+
+Covering: Dragonite 232 → its own $40/n=527 with no trace of $348/$231.50/$144
+anywhere in the result; Toxtricity → no graded sales, never reaching a VMAX
+sibling; SM210 unchanged; Hidden Fates 44/68 → its own $54.965; Zapdos G →
+its own data with the thin gate intact; a Japanese and an English card;
+id-mismatch, number-mismatch, no-matched-card, no-grader/grade, 429 and
+unknown-id all yielding no price; zero PPT calls when there is nothing to
+price; and source assertions that the name-search path is gone and the
+tripwire contains no `return`.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
