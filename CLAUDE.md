@@ -156,12 +156,20 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_GCZccTiVtGSdbMHptCFGyHW3EZEm`** (2026-10-09), aliased to
+- Deployment **`dpl_5S5eubh9PbQqKpcejRNACCzVxfL7`** (2026-10-11), aliased to
   `whatnot-pokemon-identify.vercel.app`. Preview of the same build:
-  `dpl_42LHhHcLRcqwYSQ55Hvi85UQ1mq6`.
-- **`sourceHash c5d664f99f89e10e28e44416979ab7a4b52e41ae`** == `shasum
+  `dpl_4opyt7AjedpcRJyzVDK67edUKiag`.
+- **`sourceHash f5d2733fe3bf893cb646c3e3563777dc2d6f18b5`** == `shasum
   api/identify.js` on disk, byte-exact on both deployments (CLI deploy from
-  disk). Built from commit `9933e86`.
+  disk). Built from commit `c37f575` (code is commit `51d04d3`; the docs
+  commit on top touches no `api/` file). `GET /api/identify` also reports
+  **`slabLabelProbe: "on"`** and `normalizeDiacriticTest: "pokemon collector"`.
+- E2E verified on production 2026-10-11: **Pikachu XY95** (tcgPlayerId
+  114004) High / `score-only` / no slab fields, NM $207.48, Bid $106.18,
+  1778ms; **Snorlax 89392** High / `attackMismatch: false` / `score-only`,
+  2013ms — both unchanged. Zero errors, zero PPT 429s.
+- Previous production: `dpl_GCZccTiVtGSdbMHptCFGyHW3EZEm` (2026-10-09),
+  `sourceHash c5d664f99f89e10e28e44416979ab7a4b52e41ae`, commit `9933e86`.
 - Project `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team `leasedraftai`
   (`team_DZEpR5n7heCyZsNFjxZmxUP1`). **Not git-linked** — no build-on-push.
   GitHub: `https://github.com/emg31795/whatnot-pokemon-identify`.
