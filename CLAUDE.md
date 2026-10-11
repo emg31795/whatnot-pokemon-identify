@@ -288,6 +288,18 @@ applied to every sale deliberately — conservative, so it can only understate
 bid room. Reference: market $5 → **$3.81**, $10 → **$7.93**, $30 → **$19.97**,
 $100 → **$79.08**.
 
+**Graded slabs (Phase 3, 2026-10-11):** same fee model and margin table,
+with **flat $5.80 shipping** (`GRADED_SHIPPING_PER_CARD`) instead of the
+raw `< 20 ? 0.955 : 5.80` split — a slab cannot ship in a plain envelope,
+so the raw rate would over-bid a cheap slab. A graded bid is computed only
+when the exact grader+grade bucket passed the thin-data gate AND the card
+was identified. **Graded sell-through is window-aware, never `count / 3`**:
+PPT's eBay window varies a lot (80 days on one real card, 197 on another
+the same day) and a naive divide can flip Slow to Normal. Reference: SM210
+PSA 9 median $155.20 → list $156.20 → BE $125.68 → Normal → bid $90.67.
+**PPT's `ungraded` bucket is NOT a safe raw proxy** — SM210's reads $200
+median against a $153.84 raw market, catching the box set.
+
 **3. Suggested Bid** — the only place Whatnot purchase costs appear:
 ```
 suggestedBid = (breakEven / (1 + margin) - WHATNOT_SHIPPING_PER_CARD)

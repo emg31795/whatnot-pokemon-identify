@@ -6132,6 +6132,35 @@ record is test #97 in `docs/test-cases.md`. The essentials:
   shadow read, so switching the probe off to protect the legacy rescues
   would also disable slab identification.
 
+## 2026-10-11 (Phase 3) — graded Suggested Bid and the slab panel
+
+Full detail in test #98. The parts worth not re-deriving:
+
+- **Graded shipping is flat $5.80**, not the raw path's
+  `list < 20 ? 0.955 : 5.80`. $0.955 is a plain-envelope rate for a raw
+  card; a slab costed at it would be **over**-bid. `computeBreakEvenMaxBid`
+  stays byte-identical — `computeGradedBreakEven` is a parallel function.
+- **PPT's eBay window is NOT always 90 days** — 80 days for Zapdos G 12/99,
+  **197** for Moltres & Zapdos & Articuno GX SM210, both measured the same
+  day. A naive `count / 3` overstates SM210's pace ~2.2x and can flip Slow
+  to Normal, loosening the bid. Graded sell-through is computed against the
+  reported window.
+- **Reference case:** SM210 PSA 9, median $155.20 / 558 sales → list
+  $156.20 → break-even $125.68 → Normal → bid **$90.67**.
+- **SM210's PSA 9 ≈ raw NM is genuine**, not contamination: the ladder runs
+  psa8 $126.12 (n=53) → psa9 $155.20 (n=558) → psa10 $419.99 (n=1067), the
+  premium concentrating in PSA 10 as it should for a modern card, with
+  cgc9/bgs9/ace9/tag9 all clustered $120-170 around it.
+- **PPT's `ungraded` bucket is not a safe raw proxy.** SM210's reads median
+  $199.995 (n=243, max $580) against a TCGplayer raw market of $153.84 — it
+  is catching the Tag Team Powers box set, not loose singles.
+- A shared tooltip hardcoded `Total Sold (3mo)`, wrong for a 197-day graded
+  window; it now reports the real window and still defaults to `3mo` for
+  raw.
+- `window.__wnpkTest` is a deliberate test seam so panel snapshots exercise
+  the real template code. Content scripts run in Chrome's isolated world,
+  so it is not exposed to the page.
+
 ## Where to look for more detail
 
 - `docs/ROADMAP.md` — project scope, phases, and checklist. Read this to

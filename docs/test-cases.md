@@ -11131,6 +11131,126 @@ replay drives the real `lookupCardFromSlabLabel` against real saved PPT
 bodies, but the handler wiring is covered by source assertions, not
 execution. A real slab e2e needs a live scan.
 
+## #98 — 2026-10-11 — Phase 3: graded Suggested Bid + slab panel rebuild
+
+### Graded bid math
+
+Only computed when the exact grader+grade bucket already **passed the
+thin-data gate** AND the card was **actually identified** — a bid is a
+stronger claim than a price, so it takes the stricter of the two
+preconditions. Fee model, fixed fee, margin table and tier cutoffs are all
+the raw path's, unchanged.
+
+**One deliberate difference: shipping is a flat `GRADED_SHIPPING_PER_CARD
+= 5.80`.** `computeBreakEvenMaxBid` uses `list < 20 ? 0.955 : 5.80`, where
+$0.955 is a plain-envelope rate for a raw card in a sleeve. A slab cannot
+ship that way — rigid, ~4-5oz, effectively needs tracking — so a sub-$20
+slab costed at $0.955 would be **over**-bid, the expensive error direction.
+`computeBreakEvenMaxBid` is untouched and byte-identical;
+`computeGradedBreakEven` is a parallel function, not a parameterization.
+
+**Reference case (hand-verified):** Moltres & Zapdos & Articuno GX SM210,
+PSA 9, median **$155.20** over 558 sales →
+list **$156.20** → break-even **$125.68** → Normal tier →
+Suggested Bid **$90.67**.
+
+### Sell-through is window-aware, NOT `count / 3`
+
+**PPT's eBay window is not always 90 days.** Measured on two real cards the
+same day:
+
+| card | window | days |
+|---|---|---|
+| Zapdos G 12/99 (Arceus) | 2026-07-21 → 2026-10-09 | **80** |
+| Moltres & Zapdos & Articuno GX SM210 | 2026-03-27 → 2026-10-10 | **197** |
+
+Dividing a 197-day count by 3 overstates that card's monthly pace by
+~2.2× and can push a Slow card into Normal, which **directly loosens the
+bid**. The pace is therefore computed against the window PPT actually
+reports, falling back to 90 days only when the window is missing or
+nonsensical. Regression test: 160 sales over 197 days is **Slow**, the same
+160 over 80 days is **Normal**, and the naive `count/3` would have said
+Normal for both.
+
+Real example: Zapdos G PSA 8, 17 sales over 80 days → Slow (50% margin) →
+median $49.89, list $50.90, break-even $36.77, **bid $22.99**.
+
+### SM210 ladder check — the PSA 9 ≈ raw NM figure is real
+
+Checked because 558 sales in 90 days and PSA 9 ≈ raw NM looked high. The
+ladder is coherent and the data holds:
+
+| bucket | count | median |
+|---|---|---|
+| psa8 | 53 | $126.12 |
+| **psa9** | **558** | **$155.20** |
+| psa10 | 1067 | $419.99 |
+
+A textbook modern-card curve: the premium concentrates in PSA 10 (2.7×
+PSA 9), so PSA 9 trading near raw NM ($153.84) is normal, not a
+contamination signal. Cross-grader corroboration at grade 9 clusters
+tightly — cgc9 $120 (n=144), bgs9 $132 (n=17), ace9 $158.73 (n=9), tag9
+$169.99 (n=37). If the three Hidden Fates printings ($45-55) were bleeding
+in, these would all be dragged far lower; they are not, and the four MZA
+printings hold distinctly different medians, which blending would collapse.
+**SM210 is genuinely that one printing.**
+
+**But a real finding: PPT's `ungraded` bucket is NOT a safe raw proxy.**
+For SM210 it reads median **$199.995** (n=243, max $580) — higher than PSA
+9 and higher than TCGplayer raw market ($153.84). It is almost certainly
+catching the Tag Team Powers box set rather than loose raw singles. Do not
+use `ungraded` as a stand-in for a raw price.
+
+### Panel: three states, in the raw panel's fonts/order/warning style
+
+1. **Priced** — `Graded value: $155.20 · Bid: $90.67` on one line with the
+   same tier chip raw cards use; one badge line (grader + grade + cert +
+   any label variety); caption `558 sales · last 197 days`; a compact
+   ladder showing the scanned grader's own neighbours (PSA 8 / **9** / 10,
+   ascending, self in bold) with other graders collapsed under
+   **More grades**; a one-line collapsed raw reference.
+2. **Identified but bucket too thin** — names the grader, grade and sale
+   count; keeps the ladder as context; **no price, no bid, no tier chip**.
+3. **Card not identified** — no numbers of any kind, no ladder, no raw
+   reference: *"Couldn't identify the card in this slab… Nothing here is a
+   valuation."*
+
+The long italic paragraph under the raw reference is **gone** — it repeated
+on every slab and pushed the numbers that matter below the fold. The raw
+reference is now one line: `Raw NM $154.17 (ungraded reference)`, with the
+"floor only, no bid derived from this" explanation moved to a tooltip.
+
+**Tooltip fix found while snapshotting:** the shared tier chip's tooltip
+hardcoded `Total Sold (3mo)`, which is simply the wrong window for a bucket
+measured over 197 days. It now reports the real window (`197d`) and
+defaults to `3mo`, so every raw call site is unchanged.
+
+### Test seam
+
+`window.__wnpkTest` exposes the render entry points so the panel's states
+are snapshot-tested against the **actual template code** rather than a
+reimplementation — a snapshot that duplicates the logic it checks proves
+nothing. Safe in production: content scripts run in Chrome's **isolated
+world**, so this is not exposed to whatnot.com or any other extension, and
+it holds no state and starts nothing.
+
+### Known limitation, flagged not hidden
+
+The badge's **label-variety chip only appears when the label PATH ran**,
+i.e. when the ordinary lookup failed. Parsing the label on every successful
+slab scan would add a 900ms await to the common path purely to decorate a
+badge. A slab identified normally therefore shows a plainer badge.
+
+### Tests — 403 pass (211 + 103 + 89), 0 fail
+
+Includes the SM210 bid matching the hand calculation to the cent, the
+window-aware pace regression, "no bid unless gated" (the cgc10 single
+$7,999.95 sale can never produce one), DOM snapshots of all three states
+captured from the real `renderResult` in a browser, and the raw reference
+rendering a real **$154.17** for SM210 when driven with the actual
+`/api/price` response — confirming the `Raw NM —` in the earlier snapshot
+was a harness artifact (the harness never fires `/api/price`), not a gap.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
