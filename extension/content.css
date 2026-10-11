@@ -467,3 +467,32 @@
   border: 2px dashed #ff8c1a;
   background: rgba(255, 140, 26, 0.15);
 }
+
+/* ADDED 2026-10-11 (Phase 3 slab panel). Deliberately reuses the raw
+   panel's existing type scale and colors — these only add the few shapes
+   the slab layout needs that the raw panel has no equivalent for. */
+.wnpk-raw-ref {
+  font-size: 12px;
+  opacity: 0.75;
+  margin: 6px 0 2px;
+}
+.wnpk-grade-self {
+  font-weight: 600;
+}
+.wnpk-grade-self span {
+  opacity: 1;
+}
+.wnpk-more-grades {
+  margin-top: 4px;
+}
+.wnpk-more-grades > summary {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+  cursor: pointer;
+  padding: 3px 0;
+}
+.wnpk-more-grades > summary:hover {
+  opacity: 1;
+}

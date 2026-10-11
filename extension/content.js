@@ -1018,7 +1018,13 @@
     return pace < 50 ? pace.toFixed(1) : String(Math.round(pace));
   }
 
-  function sellThroughBadgeHtml(sellThrough, breakEven) {
+  // `windowLabel` added 2026-10-11 (Phase 3): the raw path's sell-through
+  // is always a 3-month figure, but a GRADED bucket's window is whatever
+  // PPT reports for that card — measured at 80 days on one real card and
+  // 197 on another the same day. Hardcoding "(3mo)" in the tooltip would
+  // state a window that is simply not the one the number came from.
+  // Defaults to "3mo" so every existing raw call site is unchanged.
+  function sellThroughBadgeHtml(sellThrough, breakEven, windowLabel) {
     if (!sellThrough || !sellThrough.tier) return "";
     const cls = SELL_THROUGH_TIER_CLASS[sellThrough.tier] || "";
     const pace = sellThrough.monthlyPace;
@@ -1033,7 +1039,8 @@
     // actually computed from) in place of the old Total Sold/Current
     // Quantity/Months of Supply trio — Current Quantity no longer exists
     // for this feature at all.
-    const salesLine = `Total Sold (3mo): ${sellThrough.totalSold} · Pace: ${formatMonthlyPace(pace)}/mo`;
+    const win = windowLabel || (sellThrough.windowDays ? `${sellThrough.windowDays}d` : "3mo");
+    const salesLine = `Total Sold (${win}): ${sellThrough.totalSold} · Pace: ${formatMonthlyPace(pace)}/mo`;
     const titleParts = [salesLine, beParts.length ? `Break-even (zero-profit floor): ${beParts.join(" · ")}` : ""].filter(Boolean);
     const titleAttr = titleParts.length ? ` title="${escapeHtml(titleParts.join(" — "))}"` : "";
     return `<div class="wnpk-sell-through ${cls}"${titleAttr}>${escapeHtml(sellThrough.tier)} <span class="wnpk-sell-through-detail">· ${escapeHtml(detail)}</span></div>`;
@@ -1104,36 +1111,23 @@
     const section = $("#wnpk-price-section");
     if (!section) return;
 
+    // ONE collapsed line. The long italic paragraph this replaced repeated
+    // on every slab and pushed the numbers that matter below the fold.
+    // Still explicit that this is an UNGRADED figure — the one thing that
+    // must never be ambiguous on a slab panel.
     const nm = priceData && priceData.conditionPrices ? priceData.conditionPrices.NM : null;
 
     if (priceData && priceData.pricingError) {
-      section.innerHTML = `
-        <div class="wnpk-cond-label">UNGRADED REFERENCE</div>
-        <div class="wnpk-warning wnpk-price-error">🛑 NO LIVE PRICE: ${escapeHtml(priceData.pricingError)}</div>
-      `;
+      section.innerHTML = `<div class="wnpk-raw-ref">Raw NM — <span class="wnpk-estimate-note">no live ungraded price</span></div>`;
       return;
     }
-
     if (nm == null) {
-      section.innerHTML = `
-        <div class="wnpk-cond-label">UNGRADED REFERENCE</div>
-        <div class="wnpk-cond-row"><span>Raw Near Mint</span><span>—</span></div>
-        <div class="wnpk-estimate-note">No live ungraded price for this printing${
-          priceData && priceData.noPriceNote ? " — " + escapeHtml(priceData.noPriceNote) : "."
-        }</div>
-      `;
+      section.innerHTML = `<div class="wnpk-raw-ref">Raw NM — <span class="wnpk-estimate-note">(ungraded reference unavailable)</span></div>`;
       return;
     }
-
-    section.innerHTML = `
-      <div class="wnpk-cond-label">UNGRADED REFERENCE <span class="wnpk-estimate-note">— raw card price, NOT this slab's value</span></div>
-      <div class="wnpk-cond-row"><span>Raw Near Mint</span><span>$${nm.toFixed(2)}</span></div>
-      <div class="wnpk-estimate-note">
-        This is what the card is worth <strong>ungraded</strong>, shown only as a floor.
-        A graded slab is normally worth more, so treat this as a minimum, not a target.
-        No suggested bid is shown for slabs.
-      </div>
-    `;
+    section.innerHTML = `<div class="wnpk-raw-ref" title="What this card is worth UNGRADED. Shown as a floor only — a graded slab is normally worth more. No bid is derived from this figure.">Raw NM $${nm.toFixed(
+      2
+    )} <span class="wnpk-estimate-note">(ungraded reference)</span></div>`;
   }
 
   function renderPriceSection(priceData, identifyData) {
@@ -1357,37 +1351,74 @@
          href="${tcgLinkHref}">${tcgLinkLabel}</a>
     `;
 
-    // Graded slab with a real graded-market price found.
-    // Shared by both slab branches below: the label badge, and the
-    // ungraded-reference container that the separate /api/price call fills
-    // in via renderSlabReferencePrice. `pricingLookup` now survives on
-    // slab results (Phase 0e), so this resolves for slabs exactly the way
-    // it already did for raw cards — which is what finally removes the
-    // long-standing "Raw market: —" dead row.
-    const slabBadge = `<div class="wnpk-slab-badge">${escapeHtml(data.grader || "Graded")}${
-      data.grade ? " " + escapeHtml(data.grade) : ""
-    }${data.certNumber ? " · Cert " + escapeHtml(data.certNumber) : ""}</div>`;
+    // -----------------------------------------------------------------
+    // GRADED SLAB PANEL (rebuilt 2026-10-11, Phase 3)
+    // -----------------------------------------------------------------
+    // Same fonts, order and warning style as the raw panel: header ->
+    // confidence warnings -> headline price + tier chip -> badge ->
+    // caption -> ladder -> collapsed raw reference -> footer.
+    //
+    // THREE DISTINCT STATES, because they mean genuinely different things
+    // and used to share one misleading message:
+    //   1. card not identified   -> no numbers of any kind
+    //   2. identified, bucket thin -> ladder for context, NO price, NO bid
+    //   3. priced                -> graded value + bid
+    const slabBadge = (() => {
+      const bits = [];
+      if (data.grader) bits.push(escapeHtml(data.grader) + (data.grade ? " " + escapeHtml(data.grade) : ""));
+      else if (data.grade) bits.push(escapeHtml(data.grade));
+      else bits.push("Graded");
+      if (data.certNumber) bits.push("Cert " + escapeHtml(data.certNumber));
+      // Label variety/stamp, when the slab label actually printed one.
+      if (data.slabLabelPrinting) bits.push(escapeHtml(data.slabLabelPrinting));
+      if (data.slabLabelStamp) bits.push(escapeHtml(data.slabLabelStamp));
+      return `<div class="wnpk-slab-badge">${bits.join(" · ")}</div>`;
+    })();
+
+    // Collapsed one-liner, filled by the separate /api/price call. The
+    // long italic paragraph that used to live here is gone — it repeated
+    // on every slab and buried the numbers that matter.
     const slabRefSection = data.pricingLookup
-      ? `<div id="wnpk-price-section"><div class="wnpk-cond-label">Loading ungraded reference…</div></div>`
-      : `<div class="wnpk-cond-label">No ungraded reference available for this match.</div>`;
+      ? `<div id="wnpk-price-section"><div class="wnpk-raw-ref">Raw NM — <span class="wnpk-estimate-note">loading ungraded reference…</span></div></div>`
+      : "";
 
+    // Compact grade ladder: the scanned grader's own neighbours first
+    // (e.g. PSA 8 / 9 / 10), other graders collapsed behind a <details>.
+    // Other grades are CONTEXT ONLY and never feed the bid — a different
+    // grader at the same number can differ ~1.7x (cgc9 $40.99 vs psa9
+    // $67.80 on one real card).
+    function gradeLadderHtml(rows, thisGrader, thisGrade, thisPrice) {
+      if (!Array.isArray(rows) || !rows.length) return "";
+      const g = String(thisGrader || "").toUpperCase();
+      const same = rows.filter((r) => String(r.label || "").toUpperCase().startsWith(g + " "));
+      const others = rows.filter((r) => !String(r.label || "").toUpperCase().startsWith(g + " "));
+      const gradeOf = (r) => parseFloat(String(r.label).replace(/[^0-9.]/g, "")) || 0;
+      const row = (r, isSelf) =>
+        `<div class="wnpk-cond-row${isSelf ? " wnpk-grade-self" : ""}"><span>${escapeHtml(r.label)}${
+          r.count != null ? ` <span class="wnpk-estimate-note">n=${r.count}</span>` : ""
+        }</span><span>$${r.price.toFixed(2)}</span></div>`;
+      const selfRow = thisPrice != null ? { label: `${thisGrader} ${thisGrade}`, price: thisPrice, count: data.gradedSampleCount } : null;
+      const ladder = same.concat(selfRow ? [selfRow] : []).sort((a, b) => gradeOf(a) - gradeOf(b));
+      const sameHtml = ladder.map((r) => row(r, selfRow && r === selfRow)).join("");
+      const othersHtml = others.length
+        ? `<details class="wnpk-more-grades"><summary>More grades</summary><div class="wnpk-cond-list">${others
+            .map((r) => row(r, false))
+            .join("")}</div></details>`
+        : "";
+      return `${sameHtml ? `<div class="wnpk-cond-list">${sameHtml}</div>` : ""}${othersHtml}`;
+    }
+
+    // STATE 3 — priced.
     if (data.isSlab && data.gradedPrice != null) {
-      // Each nearby row carries its own sale count (Phase 0d) so a
-      // count-1 row is visibly thin rather than looking like a peer of the
-      // headline figure. These are CONTEXT only and never a pricing input.
-      const nearbyRows = (data.nearbyGradedPrices || [])
-        .map(
-          (n) =>
-            `<div class="wnpk-cond-row"><span>${escapeHtml(n.label)}${
-              n.count != null ? ` <span class="wnpk-estimate-note">(n=${n.count})</span>` : ""
-            }</span><span>$${n.price.toFixed(2)}</span></div>`
-        )
-        .join("");
+      const bid = data.gradedSuggestedBid;
+      const headline =
+        `Graded value: $${data.gradedPrice.toFixed(2)}` +
+        (bid != null ? ` · Bid: ${bid > 0 ? "$" + bid.toFixed(2) : "Skip"}` : "");
 
-      // Advisory caveats — these do NOT withhold the price (see
-      // assessGradedBucket in api/identify.js for why withholding on
-      // either of them would have suppressed buckets with ~10 real sales,
-      // and the two most useful buckets, respectively).
+      const caption = `${data.gradedSampleCount} sale${data.gradedSampleCount === 1 ? "" : "s"} · last ${
+        data.gradedSellThrough && data.gradedSellThrough.windowDays ? data.gradedSellThrough.windowDays : 90
+      } days`;
+
       const gradedCaveats = `
         ${
           data.gradedOutlierAffected
@@ -1404,45 +1435,22 @@
       $("#wnpk-body").innerHTML = `
         ${header}
         ${confidenceWarnings}
+        <div class="wnpk-market-price">${headline}</div>
+        <div id="wnpk-sell-through">${sellThroughBadgeHtml(data.gradedSellThrough, null)}</div>
         ${slabBadge}
-        <div class="wnpk-market-price">
-          Graded value: ${"$" + data.gradedPrice.toFixed(2)}
-        </div>
-        <div class="wnpk-cond-label">
-          MEDIAN OF EBAY SOLD COMPS${
-            data.gradedSampleCount != null
-              ? ` <span class="wnpk-estimate-note">— ${data.gradedSampleCount} sale${
-                  data.gradedSampleCount === 1 ? "" : "s"
-                } at ${escapeHtml(data.grader || "")} ${escapeHtml(data.grade || "")}, last ~90 days</span>`
-              : ""
-          }
-        </div>
+        <div class="wnpk-cond-label"><span class="wnpk-estimate-note">${escapeHtml(caption)}</span></div>
         ${gradedCaveats}
-        ${nearbyRows ? `<div class="wnpk-cond-label"><span class="wnpk-estimate-note">Other grades, for context only</span></div><div class="wnpk-cond-list">${nearbyRows}</div>` : ""}
+        ${gradeLadderHtml(data.nearbyGradedPrices, data.grader, data.grade, data.gradedPrice)}
         ${slabRefSection}
         ${footer}
       `;
       return;
     }
 
-    // Detected as a slab with a readable label, but no usable graded price.
-    // CHANGED 2026-10-11 (Phase 0d/0e): this used to render
-    // `data.marketPrice` and `data.conditionPrices` from the identify
-    // response, which have not existed there since the 2026-09-10 pricing
-    // decoupling — so it always showed "Raw market: —" over an empty
-    // condition table. The raw reference now arrives properly via
-    // /api/price, and the two genuinely different reasons for having no
-    // graded price are now distinguished instead of sharing one vague
-    // message.
+    // STATES 1 and 2 — no graded price.
     if (data.isSlab && data.gradedPriceUnavailable) {
-      // CHANGED 2026-10-11 (Phase 2-lite d): three genuinely different
-      // failures used to share one message about graded sales, which was
-      // actively misleading in the commonest case. The Zapdos G PSA 8
-      // scans said "couldn't find graded sales for that exact grader and
-      // grade" when PPT in fact had 17 PSA 8 sales at a $49.89 median —
-      // the real failure was that we never identified the CARD, so no
-      // graded lookup was even possible. Say which one actually happened.
-      const thinMsg = !data.slabCardIdentified
+      const notIdentified = !data.slabCardIdentified;
+      const thinMsg = notIdentified
         ? `⚠ Couldn't identify the card in this slab${
             data.grader ? " (" + escapeHtml(data.grader) + (data.grade ? " " + escapeHtml(data.grade) : "") + ")" : ""
           }. The label was read, but the card behind it couldn't be matched in our catalog — so no price of any kind is shown. Nothing here is a valuation.`
@@ -1451,19 +1459,20 @@
             data.grade || ""
           )}${
             data.gradedSampleCount != null
-              ? ` — only ${data.gradedSampleCount} sale${data.gradedSampleCount === 1 ? "" : "s"} in the last ~90 days`
+              ? ` — only ${data.gradedSampleCount} sale${data.gradedSampleCount === 1 ? "" : "s"} recently`
               : ""
-          }. No graded price is shown, because one or two sales cannot tell you what this slab is worth.`
+          }. No graded price or bid is shown, because one or two sales cannot tell you what this slab is worth.`
         : `⚠ This card was identified, but we couldn't find graded sales for ${escapeHtml(
             data.grader || "that grader"
-          )} ${escapeHtml(data.grade || "")}. No graded price is shown.`;
+          )} ${escapeHtml(data.grade || "")}. No graded price or bid is shown.`;
 
       $("#wnpk-body").innerHTML = `
         ${header}
         <div class="wnpk-warning">${thinMsg}</div>
         ${confidenceWarnings}
         ${slabBadge}
-        ${slabRefSection}
+        ${notIdentified ? "" : gradeLadderHtml(data.nearbyGradedPrices, data.grader, data.grade, null)}
+        ${notIdentified ? "" : slabRefSection}
         ${footer}
       `;
       return;
@@ -1512,5 +1521,18 @@
     const div = document.createElement("div");
     div.textContent = str == null ? "" : String(str);
     return div.innerHTML;
+  }
+
+  // TEST SEAM (2026-10-11). Exposes the real render entry points so the
+  // panel's three slab states can be snapshot-tested against the ACTUAL
+  // template code rather than a re-implementation of it in a test file —
+  // a snapshot that duplicates the logic it is checking proves nothing.
+  //
+  // Safe in production: a content script runs in Chrome's ISOLATED world,
+  // so `window` here is not the page's `window` and nothing is exposed to
+  // whatnot.com or to any other extension. It holds no state and starts
+  // nothing; removing it would only cost the panel its tests.
+  if (typeof window !== "undefined") {
+    window.__wnpkTest = { renderResult, renderPriceSection, renderSlabReferencePrice };
   }
 })();

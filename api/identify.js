@@ -4500,6 +4500,87 @@ async function lookupCardFromSlabLabel(read, label, requestId) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// PHASE 3 — GRADED SUGGESTED BID (2026-10-11)
+// ---------------------------------------------------------------------------
+//
+// Same fee model as the raw path, with ONE deliberate difference: shipping.
+// `computeBreakEvenMaxBid` uses `assumedSalePrice < 20 ? 0.955 : 5.80`,
+// where $0.955 is a plain-envelope rate for a raw card in a sleeve. A slab
+// cannot ship that way — it is rigid, ~4-5oz in a bubble mailer, and
+// effectively requires tracked shipping. So a sub-$20 slab costed at $0.955
+// would be OVER-bid, which is the expensive error direction. Graded
+// shipping is therefore flat.
+//
+// computeBreakEvenMaxBid itself is deliberately NOT modified: it is shared
+// with the whole raw pricing path and is held byte-identical. This is a
+// parallel function, not a parameterization of that one.
+const GRADED_SHIPPING_PER_CARD = 5.8;
+
+function computeGradedBreakEven(gradedMedianPrice) {
+  if (gradedMedianPrice == null || !Number.isFinite(gradedMedianPrice)) return null;
+  let assumedSalePrice = gradedMedianPrice * LISTING_MARKUP_MULTIPLIER + LISTING_ADD_AMOUNT;
+  const tier = LISTING_PRICE_TIERS.find((t) => assumedSalePrice >= t.min && assumedSalePrice <= t.max);
+  if (tier) assumedSalePrice = tier.newPrice;
+  const fixedFee = assumedSalePrice <= 10 ? 0.3 : 0.4;
+  const ebayFee = EBAY_FEE_RATE_ON_LIST_PRICE * assumedSalePrice + fixedFee;
+  return {
+    listPrice: Math.round(assumedSalePrice * 100) / 100,
+    breakEven: Math.round((assumedSalePrice - ebayFee - GRADED_SHIPPING_PER_CARD) * 100) / 100,
+  };
+}
+
+// Sell-through for a SINGLE graded bucket.
+//
+// CORRECTION to the obvious implementation (`count / 3`): PPT's eBay
+// window is NOT always 90 days. Measured on two real cards the same day —
+// Zapdos G 12/99 spans 2026-07-21 -> 2026-10-09 (80 days) while
+// Moltres & Zapdos & Articuno GX SM210 spans 2026-03-27 -> 2026-10-10
+// (197 days, i.e. ~6.5 months). Dividing a 197-day count by 3 would
+// overstate that card's monthly pace by ~2.2x and could push a Slow card
+// into Normal, which directly loosens the bid. So the pace is computed
+// against the window PPT actually reports, falling back to 90 days only
+// when the window is missing or nonsensical.
+//
+// Tier cutoffs are the raw path's, unchanged, via classifySellThroughTier.
+const GRADED_DEFAULT_WINDOW_DAYS = 90;
+const DAYS_PER_MONTH = 30.44;
+
+function computeGradedSellThrough(bucketCount, windowStart, windowEnd) {
+  if (bucketCount == null || !Number.isFinite(Number(bucketCount))) return null;
+  let windowDays = null;
+  if (windowStart && windowEnd) {
+    const ms = new Date(windowEnd).getTime() - new Date(windowStart).getTime();
+    if (Number.isFinite(ms) && ms > 0) windowDays = ms / 86400000;
+  }
+  if (!windowDays || windowDays < 1) windowDays = GRADED_DEFAULT_WINDOW_DAYS;
+  const monthlyPace = Number(bucketCount) / (windowDays / DAYS_PER_MONTH);
+  return {
+    monthlyPace,
+    tier: classifySellThroughTier(monthlyPace),
+    totalSold: Number(bucketCount),
+    windowDays: Math.round(windowDays),
+  };
+}
+
+// Full graded bid for one bucket. Returns null unless the bucket already
+// passed the thin-data gate — a bid on 1-2 sales is exactly the thing the
+// gate exists to prevent, and a bid is a stronger claim than a price.
+function computeGradedBidForBucket(verdict, windowStart, windowEnd) {
+  if (!verdict || !verdict.ok || verdict.price == null) return null;
+  const be = computeGradedBreakEven(verdict.price);
+  if (!be || be.breakEven == null) return null;
+  const sellThrough = computeGradedSellThrough(verdict.count, windowStart, windowEnd);
+  if (!sellThrough) return null;
+  const suggestedBid = computeSuggestedBid(be.breakEven, sellThrough.tier);
+  return {
+    gradedListPrice: be.listPrice,
+    gradedBreakEven: be.breakEven,
+    gradedSuggestedBid: suggestedBid,
+    gradedSellThrough: sellThrough,
+  };
+}
+
 // PHASE 0a predicate — see the long rationale at its call site in the
 // handler. A slab is only treated as a slab when the label yielded a
 // grader or a grade; a bare `isSlab` flag with nothing read off the label
@@ -4573,12 +4654,21 @@ async function lookupGradedPrice(read) {
       continue;
     }
 
+    // PHASE 3 (2026-10-11): the eBay window is carried out so the graded
+    // sell-through tier can be computed against the window PPT actually
+    // reports rather than an assumed 90 days — see computeGradedSellThrough
+    // for the two real cards whose windows differ by 2.5x.
+    const gradedBid = computeGradedBidForBucket(verdict, c.ebay.dateRangeStart, c.ebay.dateRangeEnd) || {};
+
     return {
       gradedPrice: verdict.price,
       gradedSampleCount: verdict.count,
       gradedLastSaleDate: verdict.lastSaleDate,
       gradedLowConfidence: verdict.lowConfidence,
       gradedOutlierAffected: verdict.outlierAffected,
+      gradedWindowStart: c.ebay.dateRangeStart || null,
+      gradedWindowEnd: c.ebay.dateRangeEnd || null,
+      ...gradedBid,
       grader: wantGrader,
       grade: wantGrade,
       // Context rows only — explicitly NOT a pricing input. Never
@@ -5060,6 +5150,12 @@ async function handler(req, res) {
       // bucket is too thin" — two very different things that previously
       // shared one misleading message about graded sales.
       slabCardIdentified: !!((baseLookup && baseLookup.found) || slabIdentity),
+      // PHASE 3: label variety/stamp for the panel's badge line. Shown as
+      // what the LABEL says, never used to override a printing the
+      // catalog does not list (that check lives in the printing selection
+      // above).
+      slabLabelPrinting: slabLabel ? slabLabel.printing : null,
+      slabLabelStamp: slabLabel ? slabLabel.stamp : null,
     };
 
     if (gradedResult && gradedResult.gradedPrice != null) {
@@ -5071,7 +5167,24 @@ async function handler(req, res) {
         gradedLowConfidence: gradedResult.gradedLowConfidence,
         gradedOutlierAffected: gradedResult.gradedOutlierAffected,
         nearbyGradedPrices: gradedResult.nearbyGradedPrices,
+        // PHASE 3: a graded bid is only ever attached when the bucket
+        // cleared the thin-data gate AND the card was actually identified
+        // — a bid is a stronger claim than a price, so it gets the
+        // stricter precondition of the two.
+        ...(slabBase.slabCardIdentified
+          ? {
+              gradedListPrice: gradedResult.gradedListPrice,
+              gradedBreakEven: gradedResult.gradedBreakEven,
+              gradedSuggestedBid: gradedResult.gradedSuggestedBid,
+              gradedSellThrough: gradedResult.gradedSellThrough,
+            }
+          : {}),
       };
+      if (slabBase.slabCardIdentified && gradedResult.gradedSuggestedBid != null) {
+        console.log(
+          `[identify] requestId=${requestId} GRADED BID: ${gradedResult.grader} ${gradedResult.grade} median=$${gradedResult.gradedPrice} list=$${gradedResult.gradedListPrice} breakEven=$${gradedResult.gradedBreakEven} bid=$${gradedResult.gradedSuggestedBid} tier=${gradedResult.gradedSellThrough?.tier} pace=${gradedResult.gradedSellThrough?.monthlyPace?.toFixed(1)}/mo over ${gradedResult.gradedSellThrough?.windowDays}d`
+        );
+      }
     } else if (gradedResult && gradedResult.gradedThin) {
       // PHASE 0d: the exact grader+grade bucket EXISTS but is too thin to
       // price from. Distinct from "never found" so the panel can say which
@@ -5234,6 +5347,10 @@ module.exports.pickDefaultVariantKey = pickDefaultVariantKey;
 // does not change how Vercel treats this file's default export.
 module.exports.shouldTreatAsSlab = shouldTreatAsSlab;
 module.exports.parseSlabLabel = parseSlabLabel;
+module.exports.computeGradedBreakEven = computeGradedBreakEven;
+module.exports.computeGradedSellThrough = computeGradedSellThrough;
+module.exports.computeGradedBidForBucket = computeGradedBidForBucket;
+module.exports.GRADED_SHIPPING_PER_CARD = GRADED_SHIPPING_PER_CARD;
 module.exports.slabLabelSetPhrases = slabLabelSetPhrases;
 module.exports.lookupCardFromSlabLabel = lookupCardFromSlabLabel;
 module.exports.identifyWithGemini = identifyWithGemini;
