@@ -171,24 +171,25 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_5H1C6MrxSNqCVod4BH7pZ42kz1uz`** (2026-10-11, Phase 2-lite),
+- Deployment **`dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm`** (2026-10-11, Phase 3),
   aliased to `whatnot-pokemon-identify.vercel.app`. Preview of the same build:
-  `dpl_2uRXd6ztERLLQT5UCkn7LnVsHJt2`.
-- **`sourceHash 1d714d476a2e7a738f611c9a25ec5d82cd5032ba`** == `shasum
+  `dpl_GhDABpZN9ivtb1ndaeau5xvVTuBf`.
+- **`sourceHash 092de9b5cdc24bad6043a05a571539e69017ba2a`** == `shasum
   api/identify.js` on disk, byte-exact on both deployments (CLI deploy from
-  disk). Built from commit `044fd2f` (code is `b97633e`). `GET /api/identify`
-  reports **`slabLabelProbe: "on"`** and
-  `normalizeDiacriticTest: "pokemon collector"`.
-- E2E verified 2026-10-11: **Pikachu XY95** High / `score-only` / bestScore 30 /
-  tcgPlayerId 114004, 1935ms; **Snorlax 89392** High / `attackMismatch: false` /
-  bestScore 26, 1564ms. Both unchanged, zero errors.
-- **No real slab has been scanned end-to-end through Phase 2-lite** — that
-  needs a live slab scan. The three Zapdos G scans are replayed offline
-  against real saved PPT bodies, but the handler wiring is covered by source
-  assertions, not execution.
-- Earlier production: `dpl_5S5eubh9PbQqKpcejRNACCzVxfL7` (Phase 0/1,
-  `sourceHash f5d2733f…`, commit `c37f575`);
-  `dpl_GCZccTiVtGSdbMHptCFGyHW3EZEm` (2026-10-09, `c5d664f9…`, `9933e86`).
+  disk). Built from commit `7940425` (code is `46c021e`). `GET /api/identify`
+  reports **`slabLabelProbe: "on"`**.
+- E2E verified 2026-10-11: **Pikachu XY95** High / `score-only` / tcgPlayerId
+  114004, 1528ms; **Snorlax 89392** High / `attackMismatch: false`, 1921ms.
+  Both unchanged, no slab/graded fields, zero errors in the window.
+- **No real slab has been scanned end-to-end through Phase 2-lite or Phase 3.**
+  Needs a live slab scan. Organic traffic since deploy shows Haiku still
+  over-calling `isSlab` on raw cards (a Ponyta, grader/grade null, Gemini
+  false) — which is exactly what Phase 0a exists to absorb, though the
+  `SLAB FLAG IGNORED` line only fires when the ACTIVE read claims a slab.
+- Earlier production: `dpl_5H1C6MrxSNqCVod4BH7pZ42kz1uz` (Phase 2-lite,
+  `1d714d47…`, `044fd2f`); `dpl_5S5eubh9PbQqKpcejRNACCzVxfL7` (Phase 0/1,
+  `f5d2733f…`, `c37f575`); `dpl_GCZccTiVtGSdbMHptCFGyHW3EZEm` (2026-10-09,
+  `c5d664f9…`, `9933e86`).
 - Project `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team `leasedraftai`
   (`team_DZEpR5n7heCyZsNFjxZmxUP1`). **Not git-linked** — no build-on-push.
   GitHub: `https://github.com/emg31795/whatnot-pokemon-identify`.
