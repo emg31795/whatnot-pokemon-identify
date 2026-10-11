@@ -6092,6 +6092,46 @@ figure: on the probe card `psa10` reads median **$500.00** vs
 smartMarketPrice **$1,175.50** (outlier-flagged, 14-day window), and
 `ungraded` reads $19.99 vs $70.00. Use `medianPrice`.
 
+## 2026-10-11 (later) — first real slab evidence, and the corrected root cause
+
+Five genuine PSA slab scans on organic traffic ~18:57Z, hours after Phase
+0/1 deployed. Raw log lines lived only in non-durable scratch; the durable
+record is test #97 in `docs/test-cases.md`. The essentials:
+
+- **The Phase 1 probe paid for itself immediately.** The primary model fired
+  `isSlab` and read the label; both Gemini models agreed on PSA / 8 /
+  cert 153791833 across three scans of the same Zapdos G. `labelText` came
+  back fully legible, e.g. `2009 POKEMON PLATINUM #12 ZAPDOS G-REV.FOIL
+  NM-MT ARCEUS 8 153791833`. Haiku misread the cert twice.
+- **The label beat the card art**: primary `cardNumber` read "12",
+  "15/127", "12" across the three scans; the label said `#12` every time.
+- **Corrected root cause.** The failure was NOT the name filter rejecting
+  "Zapdos G" — PPT stores that name verbatim (`cardNumber "12/99"`,
+  `setName "Arceus"`, tcgPlayerId **90726**), so the filter would have
+  accepted it. PPT's **search ranking** never returned the card:
+  `search="Zapdos G"` yields 30 other Zapdos cards. Compounding it, the
+  by-number rescue searched the bare `"12"`, got PPT filler, and
+  **returned `notFound` before control could reach the setName-scoped
+  rescue**. Verified live: `"Zapdos G Arceus"` and `"Zapdos G 12/99"` each
+  return exactly the right card; `"Zapdos G 12"` returns two wrong ones.
+- **Set names drop era prefixes.** The set is `"Arceus"`, not
+  `"Platinum: Arceus"` — the latter returns 0 results and still bills 30
+  credits, because `limit` is what PPT bills, not the result count.
+- **The PSA 8 bucket existed all along**: count **17**, median **$49.89**,
+  confidence medium. The panel was reporting "couldn't find graded sales
+  for that exact grader and grade" while that sat in the API. Also seen:
+  `sgc8`, `ace6`, `cgc6_5`.
+- **Two bugs caught while building Phase 2-lite**, either of which would
+  have silently defeated it: `normalizePptCard` drops `printingsAvailable`
+  (so the label variety could never select Reverse Holofoil), and PSA
+  hyphenates name-to-variety (`ZAPDOS G-REV.FOIL`), which became a bogus
+  set phrase and a wasted 30-credit query until tokens were split on
+  hyphens.
+- **Coupling to remember:** slab-label identification depends on
+  `SLAB_LABEL_PROBE` staying **on** — `labelText` comes from the legacy
+  shadow read, so switching the probe off to protect the legacy rescues
+  would also disable slab identification.
+
 ## Where to look for more detail
 
 - `docs/ROADMAP.md` — project scope, phases, and checklist. Read this to

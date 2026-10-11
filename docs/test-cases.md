@@ -11002,6 +11002,135 @@ finding a slab-heavy stream. Until that passes, treat the graded-price
 branch as untested in production, per this project's own standing rule
 that a clean deploy is not a confirmed fix.
 
+## #97 — 2026-10-11 — FIRST REAL SLAB EVIDENCE, and Phase 2-lite
+
+Five genuine PSA slab scans arrived on organic traffic ~18:57Z, hours after
+Phase 0/1 deployed. **Phase 0a and the Phase 1 probe both worked on their
+first real slab**, and the probe immediately paid for itself.
+
+| requestId | grader/grade | cert | labelText |
+|---|---|---|---|
+| effbe565 | PSA 8 | 153791833 | `2009 POKEMON PLATINUM #12 ZAPDOS G-REV.FOIL NM-MT ARCEUS 8 153791833` |
+| 0e5d2f0b | PSA 8 | 153791833 | same, newline-separated |
+| 8c5c44b6 | PSA 8 | 153791833 | same, `PSA` before the cert |
+| d974a7bf | PSA 8 | 161698839 | `2023 POKEMON SWSH #160 FA/PIKACHU NM-MT CROWN ZENITH 8 PSA 161698839` |
+| fc2e00eb | PSA 10 (primary) | 68524671 | `2023 POKEMON SWSH FA/PIKACHU CROWN ZENITH PSA` (legacy grade/cert null) |
+
+**The primary model DID fire `isSlab` and DID read the label** — so the
+earlier "0 of ~142 found reads" finding was about that particular traffic,
+not a model incapacity. Both Gemini models agreed on grader PSA, grade 8 and
+cert 153791833 across all three Zapdos scans. Haiku misread the cert twice
+(18374833, 15379183), which is exactly why the cert path needs the
+cross-check described in the research write-up.
+
+**The label beat the card art on the number.** Primary `cardNumber` across
+the three Zapdos scans read "12", "15/127", "12" — one outright misread —
+while the label said `#12` every time.
+
+### Corrected root cause: PPT search ranking, not the name filter
+
+The working theory was that the name filter rejects Platinum-era suffix
+names like "Zapdos G". **It does not.** PPT stores the card as exactly
+`name: "Zapdos G"`, `cardNumber: "12/99"`, `setName: "Arceus"`,
+tcgPlayerId **90726**, rarity "Holo Rare", `printingsAvailable
+['Reverse Holofoil','Holofoil']`, primaryPrinting "Holofoil". So
+`normalizeNameForMatch` yields "zapdos g" on both sides and the filter
+would have accepted it immediately.
+
+**The card never reached the filter.** `search="Zapdos G"` returns 30 other
+Zapdos cards (Galarian Zapdos V, Zapdos ex, Moltres & Zapdos & Articuno
+GX…) and not this one — the trailing "G" contributes nothing to PPT's
+relevance ranking. A retrieval failure, which no name normalization fixes.
+Confirmed by re-running production's exact query.
+
+Verified live, the fixes that do work:
+
+| query | result |
+|---|---|
+| `"Zapdos G Arceus"` | **1 result, the right card** |
+| `"Zapdos G 12/99"` | **1 result, the right card** |
+| `"Zapdos G 12"` | 2 results, both wrong (PPT filler) |
+
+Production searched the bare `"12"` — all the card art gave — got filler,
+found no exact number match, and **returned `notFound` from the by-number
+rescue before control could reach the setName-scoped rescue further down**.
+That control-flow gap is the second half of the failure. The label carried
+both missing pieces: the set word ARCEUS, and a number the set total
+completes to "12/99".
+
+### Set names drop era prefixes
+
+PPT's set is **"Arceus"**, not "Platinum: Arceus" — that query returns 0
+results **and still bills 30 credits**, since `limit` is what is billed, not
+the result count. Same pattern on "Supreme Victors". Platinum-era suffixes
+are stored plainly and need no translation: "Zapdos G", "Tangrowth Lv.X",
+"Gengar Lv.X", "Arceus Lv.X (96)", "Arceus (AR9)", "Shinx (Shiny)".
+
+### The PSA 8 bucket was there the whole time
+
+eBay window 2026-07-21 → 2026-10-09, totalSales 70, monthlyTotal 7.
+
+| bucket | count | median | conf | outlier |
+|---|---|---|---|---|
+| **psa8** | **17** | **$49.89** | medium | false |
+| psa9 | 13 | $159.99 | medium | false |
+| psa10 | 7 | $1999.99 | medium | false |
+| cgc10 | 7 | $137.50 | low | false |
+| psa7 | 7 | $39.95 | low | false |
+| ungraded | 4 | $93.75 | low | **true** |
+| cgc9 | 3 | $49.99 | low | false |
+| cgc8_5 | 3 | $16.80 | low | false |
+
+**psa8 clears the thin-data gate** (17 ≥ 3, last sale ~39 days). It would
+have shown **$49.89** — while the panel was saying "couldn't find graded
+sales for that exact grader and grade". Third independent vindication of
+using `medianPrice`: psa8's `smartMarketPrice` is **$81.88**, 64% higher.
+New keys confirmed: **`sgc8`**, **`ace6`**, and another underscore half
+grade **`cgc6_5`**.
+
+### Phase 2-lite as built
+
+`parseSlabLabel` → `slabLabelSetPhrases` → `lookupCardFromSlabLabel`, the
+last running **only when the ordinary lookup already failed**, so it cannot
+regress a working scan and costs nothing on the common path. Capped at
+`SLAB_LABEL_MAX_QUERIES=2`, label awaited through a 900ms `Promise.race`
+(never a bare await), same guards as every other rescue (name filter, stamp
+awareness, exactly one distinct survivor), capped Medium with
+`matchBasis: "slab-label"`. Printing comes from the label variety
+(REV.FOIL → Reverse Holofoil) but only when the catalog lists it. Panel now
+has three distinct states instead of one misleading message.
+
+**Two bugs found while building, each of which would have silently defeated
+the feature:**
+1. **`normalizePptCard` drops `printingsAvailable`**, so the label-variety
+   selection would always have fallen back to Holofoil and never picked
+   Reverse Holofoil. Attached on the slab path only rather than widening a
+   function shared with the whole raw matching engine.
+2. **PSA joins the card name to its variety with a hyphen**
+   (`ZAPDOS G-REV.FOIL`), which survived both the name and variety filters
+   and became a bogus set phrase — a wasted 30-credit query. Splitting on
+   hyphens brings the real scans down to **one** query.
+
+**Result: all three Zapdos scans now identify Zapdos G 12/99 Arceus
+(tcgPlayerId 90726) in a single query**, including the one whose primary
+read misread the number as "15/127". 311 tests pass (208 + 103), byte
+identity now measured against the deployed HEAD so Phase 0's functions are
+protected too.
+
+### Dependency worth remembering
+
+**Slab-label identification depends on `SLAB_LABEL_PROBE` staying on.**
+`labelText` comes from the legacy shadow read, so setting the probe off to
+protect the legacy rescues would also disable this path. The two are now
+coupled; that trade-off is real and should be a conscious choice.
+
+### Still unproven
+
+No slab has been scanned end-to-end through this code in production. The
+replay drives the real `lookupCardFromSlabLabel` against real saved PPT
+bodies, but the handler wiring is covered by source assertions, not
+execution. A real slab e2e needs a live scan.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

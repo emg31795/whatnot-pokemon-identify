@@ -17,8 +17,23 @@ backend, looks up real market pricing, and renders it in an on-page panel.
 Personal use only. **Scope is Pokémon raw cards (Phase 1).** Sealed packs
 (Phase 3) are not built out — don't start without an explicit go-ahead.
 
-**Graded slabs: Phase 0 + a shadow-only Phase 1 shipped 2026-10-11** (test
-#96). The graded path now actually works mechanically — before this it could
+**Graded slabs: Phase 0, shadow Phase 1 and Phase 2-lite shipped 2026-10-11**
+(tests #96, #97). Phase 2-lite identifies a slab from its LABEL when the
+ordinary lookup fails: `parseSlabLabel` -> `slabLabelSetPhrases` ->
+`lookupCardFromSlabLabel` (max 2 PPT queries, 900ms capped label wait, same
+guards as every other rescue, capped Medium, `matchBasis "slab-label"`).
+Printing comes from the label variety (REV.FOIL -> Reverse Holofoil) only
+when the catalog lists it. **This depends on `SLAB_LABEL_PROBE` staying on**
+— `labelText` comes from the legacy shadow read, so switching the probe off
+to protect the legacy rescues also disables slab identification.
+
+Two traps found the hard way and worth not re-discovering: **PPT set names
+drop era prefixes** (`"Arceus"`, not `"Platinum: Arceus"` — the latter
+returns 0 and still bills 30 credits, since `limit` is billed, not results),
+and **`normalizePptCard` drops `printingsAvailable`**, so anything needing
+it must read the raw row.
+
+Earlier context (test #96). The graded path now actually works mechanically — before this it could
 never return a price at all (it read two field names that don't exist in
 PPT's API) — but **it is UNPROVEN end-to-end: no genuine slab has ever been
 scanned through it.** Both Gemini models fired `isSlab` zero times across 73
