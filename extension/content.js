@@ -631,10 +631,24 @@
     // after, so a slow or failing TCGplayer price fetch can no longer
     // delay the card ID the user is actually waiting on (real measured
     // cost of the old combined path: up to ~5.3s of pure dead time on a
-    // scan whose ID was ready in ~1.5s). Graded slabs (data.isSlab) are
-    // untouched by this change — graded pricing still comes back
-    // synchronously on the first call, same as always.
-    if (response.data.found && !response.data.isSlab && response.data.pricingLookup) {
+    // scan whose ID was ready in ~1.5s).
+    //
+    // CHANGED 2026-10-11 (Phase 0e): the `!response.data.isSlab` gate is
+    // gone. It was the direct cause of the slab panel showing "Raw market:
+    // —" with an empty condition table ever since the decoupling: the
+    // slab fallback branch still rendered `data.marketPrice` /
+    // `data.conditionPrices` from the IDENTIFY response, but those fields
+    // moved to /api/price and slabs were the one case never wired up to
+    // call it. (Known and honestly flagged at the time — see
+    // docs/history.md — and left alone because slabs were Phase 2.)
+    //
+    // Slabs now fetch pricing like any other card, and `pricingLookup`
+    // survives on the slab result because the branch spreads `baseLookup`
+    // (Phase 0e in api/identify.js). What a slab does with that price is
+    // different: it renders a single ungraded NM reference figure, clearly
+    // labeled as a raw price and WITHOUT any Suggested Bid, rather than
+    // the full condition/bid table. See renderSlabReferencePrice below.
+    if (response.data.found && response.data.pricingLookup) {
       fetchAndRenderPricing(response.data);
     }
   }
@@ -1072,7 +1086,63 @@
   // variant is currently selected; optional so the error-fallback call
   // site below (which has no variants/dropdown to sync at all) doesn't
   // need to pass anything new.
+  // ADDED 2026-10-11 (Phase 0e/0f): a graded slab's price section is a
+  // single ungraded reference figure, not the raw card's condition/bid
+  // table. Dispatched from the top of renderPriceSection so BOTH of
+  // fetchAndRenderPricing's existing call sites (success and the error
+  // fallback) keep working untouched, and so the slab block lands in the
+  // same `#wnpk-price-section` container the existing plumbing already
+  // creates and replaces.
+  //
+  // Deliberately shows NO Suggested Bid and NO break-even. Graded bid math
+  // is Phase 3 and needs its own shipping constant (a slab cannot ship at
+  // the raw path's $0.955 sub-$20 envelope rate), so showing a raw-card
+  // bid next to a slab would be wrong in the expensive direction — it
+  // would over-bid. A raw price shown as a floor is the safe error
+  // direction; a raw-derived bid is not.
+  function renderSlabReferencePrice(priceData, identifyData) {
+    const section = $("#wnpk-price-section");
+    if (!section) return;
+
+    const nm = priceData && priceData.conditionPrices ? priceData.conditionPrices.NM : null;
+
+    if (priceData && priceData.pricingError) {
+      section.innerHTML = `
+        <div class="wnpk-cond-label">UNGRADED REFERENCE</div>
+        <div class="wnpk-warning wnpk-price-error">🛑 NO LIVE PRICE: ${escapeHtml(priceData.pricingError)}</div>
+      `;
+      return;
+    }
+
+    if (nm == null) {
+      section.innerHTML = `
+        <div class="wnpk-cond-label">UNGRADED REFERENCE</div>
+        <div class="wnpk-cond-row"><span>Raw Near Mint</span><span>—</span></div>
+        <div class="wnpk-estimate-note">No live ungraded price for this printing${
+          priceData && priceData.noPriceNote ? " — " + escapeHtml(priceData.noPriceNote) : "."
+        }</div>
+      `;
+      return;
+    }
+
+    section.innerHTML = `
+      <div class="wnpk-cond-label">UNGRADED REFERENCE <span class="wnpk-estimate-note">— raw card price, NOT this slab's value</span></div>
+      <div class="wnpk-cond-row"><span>Raw Near Mint</span><span>$${nm.toFixed(2)}</span></div>
+      <div class="wnpk-estimate-note">
+        This is what the card is worth <strong>ungraded</strong>, shown only as a floor.
+        A graded slab is normally worth more, so treat this as a minimum, not a target.
+        No suggested bid is shown for slabs.
+      </div>
+    `;
+  }
+
   function renderPriceSection(priceData, identifyData) {
+    // Phase 0e/0f dispatch — see renderSlabReferencePrice above.
+    if (identifyData && identifyData.isSlab) {
+      renderSlabReferencePrice(priceData, identifyData);
+      return;
+    }
+
     const section = $("#wnpk-price-section");
     if (!section) return; // panel has since moved on to a different scan/state
 
@@ -1288,51 +1358,101 @@
     `;
 
     // Graded slab with a real graded-market price found.
+    // Shared by both slab branches below: the label badge, and the
+    // ungraded-reference container that the separate /api/price call fills
+    // in via renderSlabReferencePrice. `pricingLookup` now survives on
+    // slab results (Phase 0e), so this resolves for slabs exactly the way
+    // it already did for raw cards — which is what finally removes the
+    // long-standing "Raw market: —" dead row.
+    const slabBadge = `<div class="wnpk-slab-badge">${escapeHtml(data.grader || "Graded")}${
+      data.grade ? " " + escapeHtml(data.grade) : ""
+    }${data.certNumber ? " · Cert " + escapeHtml(data.certNumber) : ""}</div>`;
+    const slabRefSection = data.pricingLookup
+      ? `<div id="wnpk-price-section"><div class="wnpk-cond-label">Loading ungraded reference…</div></div>`
+      : `<div class="wnpk-cond-label">No ungraded reference available for this match.</div>`;
+
     if (data.isSlab && data.gradedPrice != null) {
+      // Each nearby row carries its own sale count (Phase 0d) so a
+      // count-1 row is visibly thin rather than looking like a peer of the
+      // headline figure. These are CONTEXT only and never a pricing input.
       const nearbyRows = (data.nearbyGradedPrices || [])
         .map(
           (n) =>
-            `<div class="wnpk-cond-row"><span>${escapeHtml(n.label)}</span><span>$${n.price.toFixed(
-              2
-            )}</span></div>`
+            `<div class="wnpk-cond-row"><span>${escapeHtml(n.label)}${
+              n.count != null ? ` <span class="wnpk-estimate-note">(n=${n.count})</span>` : ""
+            }</span><span>$${n.price.toFixed(2)}</span></div>`
         )
         .join("");
+
+      // Advisory caveats — these do NOT withhold the price (see
+      // assessGradedBucket in api/identify.js for why withholding on
+      // either of them would have suppressed buckets with ~10 real sales,
+      // and the two most useful buckets, respectively).
+      const gradedCaveats = `
+        ${
+          data.gradedOutlierAffected
+            ? `<div class="wnpk-warning">⚠ Sales at this grade include at least one outlier price. The figure above is the median, which resists that, but spot-check the comps before bidding near it.</div>`
+            : ""
+        }
+        ${
+          data.gradedLowConfidence
+            ? `<div class="wnpk-warning">⚠ Recent sales at this grade are sparse enough that our data source rates its own price estimate low-confidence. The median above is real but thinly supported.</div>`
+            : ""
+        }
+      `;
 
       $("#wnpk-body").innerHTML = `
         ${header}
         ${confidenceWarnings}
-        <div class="wnpk-slab-badge">${escapeHtml(data.grader)} ${escapeHtml(data.grade)}${
-        data.certNumber ? " · Cert " + escapeHtml(data.certNumber) : ""
-      }</div>
+        ${slabBadge}
         <div class="wnpk-market-price">
           Graded value: ${"$" + data.gradedPrice.toFixed(2)}
         </div>
         <div class="wnpk-cond-label">
-          FROM EBAY SOLD COMPS ${nearbyRows ? "<span class=\"wnpk-estimate-note\">(nearby grades)</span>" : ""}
+          MEDIAN OF EBAY SOLD COMPS${
+            data.gradedSampleCount != null
+              ? ` <span class="wnpk-estimate-note">— ${data.gradedSampleCount} sale${
+                  data.gradedSampleCount === 1 ? "" : "s"
+                } at ${escapeHtml(data.grader || "")} ${escapeHtml(data.grade || "")}, last ~90 days</span>`
+              : ""
+          }
         </div>
-        ${nearbyRows ? `<div class="wnpk-cond-list">${nearbyRows}</div>` : ""}
+        ${gradedCaveats}
+        ${nearbyRows ? `<div class="wnpk-cond-label"><span class="wnpk-estimate-note">Other grades, for context only</span></div><div class="wnpk-cond-list">${nearbyRows}</div>` : ""}
+        ${slabRefSection}
         ${footer}
       `;
       return;
     }
 
-    // Detected as a slab, but no graded-price data available (API key not
-    // set up yet, or that exact grade wasn't found) — say so plainly rather
-    // than silently showing a misleading raw-card price.
+    // Detected as a slab with a readable label, but no usable graded price.
+    // CHANGED 2026-10-11 (Phase 0d/0e): this used to render
+    // `data.marketPrice` and `data.conditionPrices` from the identify
+    // response, which have not existed there since the 2026-09-10 pricing
+    // decoupling — so it always showed "Raw market: —" over an empty
+    // condition table. The raw reference now arrives properly via
+    // /api/price, and the two genuinely different reasons for having no
+    // graded price are now distinguished instead of sharing one vague
+    // message.
     if (data.isSlab && data.gradedPriceUnavailable) {
+      const thinMsg = data.gradedThin
+        ? `⚠ Not enough recent graded sales for ${escapeHtml(data.grader || "this grader")} ${escapeHtml(
+            data.grade || ""
+          )}${
+            data.gradedSampleCount != null
+              ? ` — only ${data.gradedSampleCount} sale${data.gradedSampleCount === 1 ? "" : "s"} in the last ~90 days`
+              : ""
+          }. No graded price is shown, because one or two sales cannot tell you what this slab is worth.`
+        : `⚠ This looks like a graded slab${
+            data.grader ? " (" + escapeHtml(data.grader) + (data.grade ? " " + escapeHtml(data.grade) : "") + ")" : ""
+          }, but we couldn't find graded sales for that exact grader and grade. No graded price is shown.`;
+
       $("#wnpk-body").innerHTML = `
         ${header}
-        <div class="wnpk-warning">⚠ This looks like a graded slab${
-          data.grader ? " (" + escapeHtml(data.grader) + (data.grade ? " " + escapeHtml(data.grade) : "") + ")" : ""
-        }, but graded-market pricing isn't set up yet (or that exact grade wasn't found). Showing the raw-card estimate below, which will UNDER-value a graded slab — do not rely on it for grading premiums.</div>
+        <div class="wnpk-warning">${thinMsg}</div>
         ${confidenceWarnings}
-        <div class="wnpk-market-price">
-          Raw market: ${data.marketPrice != null ? "$" + data.marketPrice.toFixed(2) : "—"}
-        </div>
-        <div class="wnpk-cond-label">
-          RAW CONDITION PRICES <span class="wnpk-estimate-note">${conditionLabelNote(data.conditionPricesEstimated, data.conditionPricesPartial)} — not graded value</span>
-        </div>
-        <div class="wnpk-cond-list">${conditionRowsHtml(data.conditionPrices)}</div>
+        ${slabBadge}
+        ${slabRefSection}
         ${footer}
       `;
       return;

@@ -268,6 +268,24 @@ const GEMINI_OUTPUT_USD_PER_1M = 2.5;
 // testing didn't catch. TO UN-FLIP: see the GEMINI_MODEL comment above.
 const LEGACY_GEMINI_SHADOW_MODEL = process.env.LEGACY_GEMINI_SHADOW_MODEL || null;
 
+// PHASE 1 SLAB-LABEL PROBE KILL SWITCH (2026-10-11). See
+// LEGACY_LABEL_PROBE_PROMPT below for what the probe is and why it needs
+// a switch at all: the legacy shadow read is NOT purely a shadow — it is
+// consumed for real by three production rescue paths (the setName hint,
+// the sub-floor number rescue and the downstream number rescue) — so
+// adding fields to its schema carries a small but real risk of perturbing
+// the cardNumber/setName reads those rescues depend on.
+//
+// DEFAULTS ON when unset, so the probe collects data from the moment it
+// deploys. Set SLAB_LABEL_PROBE=off to disable it, which makes the legacy
+// shadow call send a request body byte-identical to the pre-probe one (it
+// passes no prompt/schema override at all, so identifyWithGemini's own
+// defaults apply — see legacyShadowOptions at the call site).
+//
+// Env vars are snapshotted at BUILD time on Vercel, so flipping this
+// requires a redeploy, not just a dashboard edit.
+const SLAB_LABEL_PROBE_ENABLED = String(process.env.SLAB_LABEL_PROBE ?? "on").trim().toLowerCase() !== "off";
+
 // Old gemini-3.6-flash pricing (confirmed live 2026-09-03 — see the FIX
 // comment on GEMINI_INPUT/OUTPUT_USD_PER_1M above), kept here under the
 // legacy model's name purely so the shadow test's own cost logging stays
@@ -490,25 +508,90 @@ If the card appears to be inside a graded slab (a thick plastic holder with a pr
 
 If no card is visible in the frame at all, set found to false.`;
 
+// ---------------------------------------------------------------------------
+// PHASE 1 SLAB-LABEL PROBE — LEGACY SHADOW MODEL ONLY (2026-10-11)
+// ---------------------------------------------------------------------------
+//
+// MEASUREMENT ONLY. Nothing below is read by matching, pricing, or any
+// response field — it exists purely to answer one unmeasured question
+// before any graded-slab feature gets built on top of it: *can a vision
+// model actually read a slab label off a real live-stream frame?*
+//
+// The research that motivated this (see docs/history.md's slab-divergence
+// entry) found, across 73 consecutive real scans with all three models
+// given the byte-identical GEMINI_PROMPT:
+//   - primary Gemini:      isSlab=true on 0 of 70 found reads
+//   - legacy Gemini shadow: isSlab=true on 0 of 72 found reads
+//   - Claude Haiku:        isSlab=true on 39 of 73 (53%)
+// and `certNumber` read successfully ZERO times by any model. So the
+// current four slab fields are not yet trustworthy enough to gate a
+// feature on, and `labelText` is the field that would tell us whether
+// that's a prompt problem or a physics problem (small specular label,
+// glare band, single uncontrolled frame grab).
+//
+// WHY THE LEGACY SHADOW MODEL AND NOT THE PRIMARY: the primary prompt is
+// load-bearing for every raw scan, and this project has a documented
+// history of prompt/model changes moving raw-card accuracy. The legacy
+// shadow call is already in flight on every request (see
+// LEGACY_GEMINI_SHADOW_MODEL), so this adds NO new API call, no new cost
+// beyond a few output tokens, and no latency on the response path.
+//
+// HONEST CAVEAT, FLAGGED RATHER THAN GLOSSED: this is *not* strictly
+// zero-production-risk, because the legacy read is not purely a shadow —
+// it is also consumed for real by three production paths (the setName
+// hint at LEGACY_SETNAME_HINT_TIMEOUT_MS, the sub-floor number rescue,
+// and the downstream number rescue). Adding output fields to a model's
+// schema can in principle perturb its other fields. Two deliberate
+// mitigations: (1) both the prompt and the schema below are STRICTLY
+// ADDITIVE — GEMINI_PROMPT is embedded verbatim and every existing
+// GEMINI_SCHEMA property is spread through unchanged, so nothing the
+// rescues read has been reworded or re-ordered; (2) the existing
+// `[legacy-model-shadow-test]` line already diffs legacy against primary
+// on EVERY request, so any drift in the legacy model's cardNumber/setName
+// reads is directly observable in the logs we already collect, rather
+// than silent. If even that is unwanted, gating the two constants below
+// behind an env var is a one-line change.
+const LEGACY_LABEL_PROBE_PROMPT = `${GEMINI_PROMPT}
+
+Additionally, if this card is inside a graded slab, transcribe the label. A graded slab is a rigid sealed plastic case with a printed label bearing a grading company name and a numeric grade. A penny sleeve, a toploader, a team bag or a one-touch magnetic holder is NOT a slab — leave every label field null for those.
+
+labelText: transcribe EVERY piece of text visible on the slab label, verbatim and in reading order, exactly as printed and with no interpretation, guessing or reformatting. Include the grading company name, the card name, the set name, the card number, the grade and its wording, and the certification number. If only part of the label is legible, transcribe just that part rather than returning null. Return null only if there is no slab label visible at all.
+
+grader: the grading company printed on the label, if legible (PSA, BGS, Beckett, CGC, SGC, TAG, ACE). grade: just the numeric grade as printed (e.g. "10", "9.5"), without the adjective. certNumber: the certification/serial number printed on the label — PSA is 8 digits, CGC 10-13 digits, SGC 7 digits or 7-3 digits, TAG 8 characters. A certification number has no checksum, so a single wrong character silently identifies a completely different card: return null unless EVERY character is clearly legible, and never infer, complete or guess any part of it.`;
+
+const LEGACY_LABEL_PROBE_SCHEMA = {
+  ...GEMINI_SCHEMA,
+  properties: {
+    ...GEMINI_SCHEMA.properties,
+    labelText: { type: "string", nullable: true },
+  },
+};
+
 // `model` param added 2026-09-05 (Flash-Lite shadow test, see the
 // dedicated block below) — defaults to the module-level GEMINI_MODEL so
 // every existing call site (which never passes a third argument) is
 // completely unaffected; only the shadow-test call site passes a
 // different model id explicitly.
-async function identifyWithGemini(imageBase64, apiKey, model = GEMINI_MODEL) {
+//
+// `prompt`/`schema` overrides added 2026-10-11 (Phase 1 slab-label probe,
+// above) — same deliberately-defaulted pattern as `model`: both default to
+// the module-level GEMINI_PROMPT/GEMINI_SCHEMA, so every existing call
+// site (none of which passes a fourth argument) builds a byte-identical
+// request body to the one it built before this parameter existed.
+async function identifyWithGemini(imageBase64, apiKey, model = GEMINI_MODEL, { prompt = GEMINI_PROMPT, schema = GEMINI_SCHEMA } = {}) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const body = {
     contents: [
       {
         parts: [
-          { text: GEMINI_PROMPT },
+          { text: prompt },
           { inline_data: { mime_type: "image/jpeg", data: imageBase64 } },
         ],
       },
     ],
     generationConfig: {
       responseMimeType: "application/json",
-      responseSchema: GEMINI_SCHEMA,
+      responseSchema: schema,
       // FIX (2026-08-27, latency): Gemini 3.x models default to
       // thinkingLevel "medium" when this isn't set at all, which burns
       // 400-600+ internal "thinking" tokens per call BEFORE producing any
@@ -1048,6 +1131,72 @@ async function runLegacyModelShadowTest(timedCurrentPromise, timedLegacyPromise,
     "legacyCostUsd=",
     legacyUsage ? legacyUsage.estCostUsd : null
   );
+
+  logSlabLabelProbe(current.result, legacy.result, requestId);
+}
+
+// PHASE 1 SLAB-LABEL PROBE LOGGING (2026-10-11) — see
+// LEGACY_LABEL_PROBE_PROMPT above. Deliberately a SEPARATE, short,
+// greppable line rather than more fields on the
+// `[legacy-model-shadow-test]` line: that line already JSON.stringify's
+// the whole legacy read, so `labelText` would land inside it anyway — and
+// a long label would push that line past the ~3000-char truncation the
+// Vercel MCP log tool applies (see CLAUDE.md), silently hiding the
+// existing fields it is relied on for. One tagged line per relevant scan,
+// with labelText capped, keeps both readable.
+//
+// Fires only when there is something to measure — either model called a
+// slab, or the probe transcribed a label. The DENOMINATOR for any rate
+// computed from these lines must come from counting
+// `legacy-model-shadow-test` lines, which fire unconditionally; per
+// CLAUDE.md, never derive a rate from a filter that only matches the
+// successful case.
+function logSlabLabelProbe(current, legacy, requestId) {
+  try {
+    if (!current && !legacy) return;
+    const primarySlab = current ? current.isSlab === true : null;
+    const legacySlab = legacy ? legacy.isSlab === true : null;
+    const labelText = legacy ? legacy.labelText : null;
+    if (!primarySlab && !legacySlab && !labelText) return;
+
+    console.log(
+      `[slab-label-probe] requestId=${requestId}`,
+      // So the two switch states are never confused when reading logs: a
+      // probe=off line has no labelText by construction, not because the
+      // label was illegible.
+      "probe=",
+      SLAB_LABEL_PROBE_ENABLED ? "on" : "off",
+      "primaryIsSlab=",
+      primarySlab,
+      "legacyIsSlab=",
+      legacySlab,
+      "legacyGrader=",
+      legacy ? legacy.grader : null,
+      "legacyGrade=",
+      legacy ? legacy.grade : null,
+      "legacyCert=",
+      legacy ? legacy.certNumber : null,
+      "legacyLabelTextLen=",
+      labelText ? String(labelText).length : 0,
+      "legacyLabelText=",
+      labelText ? JSON.stringify(String(labelText).slice(0, 400)) : null,
+      // The primary read's own slab fields, for the same frame — this is
+      // the comparison the whole probe exists to produce.
+      "primaryGrader=",
+      current ? current.grader : null,
+      "primaryGrade=",
+      current ? current.grade : null,
+      "primaryCert=",
+      current ? current.certNumber : null,
+      "primaryCardName=",
+      current ? current.cardName : null,
+      "primaryCardNumber=",
+      current ? current.cardNumber : null
+    );
+  } catch (e) {
+    // Logging must never be able to break a real scan.
+    console.error(`[slab-label-probe] requestId=${requestId} probe logging threw (non-fatal):`, e && e.message);
+  }
 }
 // =============================================================================
 // END LEGACY-MODEL REGRESSION SHADOW TEST
@@ -3939,7 +4088,177 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
 // Graded slab pricing (Japanese or English) — PokemonPriceTracker w/ eBay comps
 // ---------------------------------------------------------------------------
 
+// FIX (2026-10-11, Phase 0c — the graded path could never have worked):
+// this function used to read `c.gradedSales || c.ebayComps || c.ebay`.
+// The first two field names do not exist in PPT's API and appear nowhere
+// in any research in this repo — only on that one line. The real field is
+// `card.ebay.salesByGrade`. So `rawComps` always resolved to the `c.ebay`
+// WRAPPER object, whose keys are `salesByGrade`/`priceHistory`/
+// `salesVelocity`/... and not grades at all; the Object.entries branch
+// then produced `{grader:"salesByGrade", grade:null, price:undefined}`,
+// `comp.price != null` failed, and the function returned null on every
+// call. The graded-with-price render branch has therefore almost
+// certainly never executed in production, which is also why neither bug
+// fixed here was ever visible.
+//
+// Verified against a real `includeEbay=true` response (Charizard EX XY29,
+// 21 buckets) rather than against PPT's docs, which have been wrong
+// before in this project (see the `cardNumber` param story in
+// fetchPokemonPriceTracker).
+const GRADED_BUCKET_KEY_RE = /^([a-zA-Z]+)(\d+(?:[._]\d+)?)$/;
+
+// PPT's real bucket keys use an UNDERSCORE for half grades — `cgc8_5`,
+// `cgc7_5`, `tag6_5`, `bgs9_5` — not a period. The old regex was
+// `/^([a-zA-Z]+)\s*(\d+(?:\.\d+)?)$/`, which failed to parse every half
+// grade (5 of the 21 real keys on the probe card). That mattered most for
+// BGS, whose signature grade IS 9.5. This was new information rather than
+// a correction: the existing research recorded these keys only with
+// wildcards (`cgc*`, `bgs*`) and whole-grade examples, so the half-grade
+// case had simply never been observed.
+//
+// Returns null for anything that is not a grader+grade bucket — notably
+// PPT's `ungraded` key, which is deliberately NOT a graded comp and is
+// handled separately (as an explicitly-labeled raw reference) rather than
+// being allowed to masquerade as one.
+function parseGradedBucketKey(key) {
+  const m = GRADED_BUCKET_KEY_RE.exec(String(key));
+  if (!m) return null;
+  return { grader: m[1].toUpperCase(), grade: m[2].replace("_", ".") };
+}
+
+// The vision read transcribes what is printed on the label, which is not
+// what PPT keys on: a BGS slab says "BECKETT", and a grade may be read as
+// "9.5", "PSA 10" or "Gem Mint 10". Normalize both sides to the same
+// {grader, grade} shape before comparing, so a correct read is not thrown
+// away over formatting.
+const GRADER_ALIASES = {
+  PSA: "PSA",
+  BGS: "BGS",
+  BECKETT: "BGS",
+  CGC: "CGC",
+  SGC: "SGC",
+  TAG: "TAG",
+  ACE: "ACE",
+};
+
+function normalizeGraderForCompare(grader) {
+  if (grader == null) return null;
+  const m = /[a-zA-Z]+/.exec(String(grader));
+  if (!m) return null;
+  const token = m[0].toUpperCase();
+  return GRADER_ALIASES[token] || token;
+}
+
+function normalizeGradeForCompare(grade) {
+  if (grade == null) return null;
+  const m = /(\d+(?:[._]\d+)?)/.exec(String(grade));
+  if (!m) return null;
+  // "10.0" and "10" are the same grade; PPT keys the latter.
+  return m[1].replace("_", ".").replace(/\.0$/, "");
+}
+
+// PHASE 0d — THIN-DATA GATE.
+//
+// The reason this is non-negotiable, in one real number: on the probe
+// card the `cgc10` bucket is a SINGLE sale at $7,999.95, against a
+// `psa10` median of $500.00 across 57 sales. Surfacing that $7,999.95 as
+// "graded value" on a 10-second live bid decision is precisely the
+// failure mode this whole project is built to avoid. 13 of the 21 real
+// buckets on that one card had count <= 2, so thin buckets are the normal
+// case, not the exception.
+//
+// THRESHOLD = 3 recent sales. PPT's bucket `count` is scoped to its own
+// ~90-day eBay window (verified: the 21 bucket counts sum to exactly the
+// card's `totalSales` of 203, over dateRangeStart 2026-07-11 ->
+// dateRangeEnd 2026-10-07), so this reads as "at least 3 sales at this
+// exact grade in the last ~90 days". 3 is the lowest threshold that
+// eliminates every single-sale bucket (10 of 21 on the probe card) and
+// the n=2 buckets that are equally meaningless; it keeps 9 buckets,
+// including every one a real slab is likely to be in.
+const GRADED_MIN_SALES = 3;
+
+// A bucket whose newest sale predates this is stale even if it cleared
+// the count gate. A pure safety net: PPT's own window is ~90 days, so on
+// the probe card this excluded nothing that count>=3 had already kept.
+const GRADED_MAX_LAST_SALE_AGE_DAYS = 90;
+
+// DELIBERATELY NOT WITHHOLD CONDITIONS — both of these were measured and
+// both would have broken the feature rather than protected it:
+//
+//   - `smartMarketPrice.confidence === "low"` holds for 16 of the 21 real
+//     buckets, INCLUDING cgc9 (n=10) and cgc8_5 (n=9). It tracks how far
+//     back the smart price had to reach (`daysUsed`), not how trustworthy
+//     the median is. Withholding on it would suppress buckets with ~10
+//     real sales.
+//   - `smartPriceOutlierByGrade[key] === true` is set on psa10 (n=57) and
+//     ungraded (n=20) on the probe card — the two single most useful
+//     buckets. It flags that the SMART price is outlier-affected, which is
+//     exactly why the smart price is not what we show.
+//
+// Both are carried through as advisory caveats on the displayed figure
+// instead, so the user sees the uncertainty without losing the number.
+function assessGradedBucket(bucket, outlierFlag, nowMs = Date.now()) {
+  if (!bucket || typeof bucket !== "object") return { ok: false, reason: "no-bucket" };
+
+  // medianPrice, NEVER smartMarketPrice/averagePrice/maxPrice. Measured
+  // reason, not taste: on the probe card psa10's median is $500.00 while
+  // its smartMarketPrice is $1,175.50 (2.35x, outlier-flagged, 14-day
+  // window), and `ungraded` reads $19.99 median vs $70.00 smart. The
+  // median is the robust statistic here and the smart price is the one
+  // that gets dragged by a single high sale. This also corrects the
+  // recommendation in the original research write-up, which had suggested
+  // preferring smartMarketPrice when its confidence was not "low".
+  const price = bucket.medianPrice;
+  if (price == null || !(Number(price) > 0)) return { ok: false, reason: "no-price" };
+
+  const count = Number(bucket.count) || 0;
+  if (count < GRADED_MIN_SALES) return { ok: false, reason: "too-few-sales", count, price: Number(price) };
+
+  if (bucket.lastSaleDate) {
+    const ageDays = (nowMs - new Date(bucket.lastSaleDate).getTime()) / 86400000;
+    if (Number.isFinite(ageDays) && ageDays > GRADED_MAX_LAST_SALE_AGE_DAYS) {
+      return { ok: false, reason: "stale", count, price: Number(price), ageDays: Math.round(ageDays) };
+    }
+  }
+
+  const smart = bucket.smartMarketPrice || {};
+  return {
+    ok: true,
+    price: Number(price),
+    count,
+    lastSaleDate: bucket.lastSaleDate || null,
+    // Advisory only — see the comment block above for why neither of
+    // these withholds the price.
+    lowConfidence: smart.confidence === "low",
+    outlierAffected: outlierFlag === true,
+  };
+}
+
+// PHASE 0a predicate — see the long rationale at its call site in the
+// handler. A slab is only treated as a slab when the label yielded a
+// grader or a grade; a bare `isSlab` flag with nothing read off the label
+// is ignored and the card takes the ordinary raw path.
+//
+// Note this is deliberately tolerant of the empty string and of
+// whitespace-only values: a model that "fills in" grader with "" or " "
+// has told us nothing, and must not be allowed to trip the slab branch.
+function shouldTreatAsSlab(read) {
+  if (!read || read.isSlab !== true) return false;
+  const hasGrader = typeof read.grader === "string" && read.grader.trim() !== "";
+  const hasGrade = read.grade != null && String(read.grade).trim() !== "";
+  return hasGrader || hasGrade;
+}
+
 async function lookupGradedPrice(read) {
+  // PHASE 0b: callers must already have established that BOTH grader and
+  // grade are present — this function can only ever match an exact
+  // grader+grade bucket, so without both it is a guaranteed-useless PPT
+  // call that still costs 60 credits (limit=30 x includeEbay doubling).
+  // Guarded here too rather than trusting the call site.
+  const wantGrader = normalizeGraderForCompare(read.grader);
+  const wantGrade = normalizeGradeForCompare(read.grade);
+  if (!wantGrader || !wantGrade) return null;
+
   // See normalizeNameForSearchQuery above — same hyphen-in-search fix as
   // lookupCardPPT, applied here too since graded lookups hit the same
   // PPT search endpoint with the same read.cardName.
@@ -3951,39 +4270,71 @@ async function lookupGradedPrice(read) {
   const filtered = rawList.filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
   if (filtered.length === 0) return null;
 
+  // Remembers the best THIN match seen, so a bucket that exists but is
+  // too thin produces an honest "not enough sales at that grade" instead
+  // of being indistinguishable from "that grade was never found".
+  let thinMatch = null;
+
   for (const c of filtered) {
-    const rawComps = c.gradedSales || c.ebayComps || c.ebay || [];
+    const salesByGrade = c.ebay && c.ebay.salesByGrade;
+    if (!salesByGrade || typeof salesByGrade !== "object") continue;
+    const outliers = (c.ebay && c.ebay.smartPriceOutlierByGrade) || {};
 
-    const comps = Array.isArray(rawComps)
-      ? rawComps
-      : Object.entries(rawComps).map(([key, v]) => {
-          const m = String(key).match(/^([a-zA-Z]+)\s*(\d+(?:\.\d+)?)$/);
-          return {
-            grader: m ? m[1].toUpperCase() : key,
-            grade: m ? m[2] : null,
-            price: v && (v.avgPrice ?? v.averagePrice ?? v.price ?? v.market),
-          };
-        });
+    // Parse every bucket once: used both to find the exact match and to
+    // build the nearby-grade context rows.
+    const comps = [];
+    for (const [key, bucket] of Object.entries(salesByGrade)) {
+      const parsed = parseGradedBucketKey(key);
+      if (!parsed) continue; // `ungraded` and anything unexpected
+      comps.push({ key, ...parsed, bucket, outlier: outliers[key] === true });
+    }
 
-    for (const comp of comps) {
-      if (
-        read.grader &&
-        read.grade &&
-        String(comp.grader || "").toLowerCase() === String(read.grader).toLowerCase() &&
-        String(comp.grade || "") === String(read.grade || "") &&
-        comp.price != null
-      ) {
-        return {
-          gradedPrice: comp.price,
-          nearbyGradedPrices: comps
-            .filter((x) => x !== comp && x.price != null)
-            .slice(0, 5)
-            .map((x) => ({ label: `${x.grader} ${x.grade}`, price: x.price })),
+    const exact = comps.find((x) => x.grader === wantGrader && x.grade === wantGrade);
+    if (!exact) continue;
+
+    const verdict = assessGradedBucket(exact.bucket, exact.outlier);
+    if (!verdict.ok) {
+      if (!thinMatch) {
+        thinMatch = {
+          gradedPrice: null,
+          gradedThin: true,
+          gradedThinReason: verdict.reason,
+          gradedSampleCount: verdict.count ?? 0,
+          grader: wantGrader,
+          grade: wantGrade,
         };
       }
+      continue;
     }
+
+    return {
+      gradedPrice: verdict.price,
+      gradedSampleCount: verdict.count,
+      gradedLastSaleDate: verdict.lastSaleDate,
+      gradedLowConfidence: verdict.lowConfidence,
+      gradedOutlierAffected: verdict.outlierAffected,
+      grader: wantGrader,
+      grade: wantGrade,
+      // Context rows only — explicitly NOT a pricing input. Never
+      // substitute a different grader at the same number (the probe card
+      // reads cgc9 $40.99 vs bgs9 $39.99 vs psa9 $67.80, a ~1.7x spread
+      // at nominally "grade 9") and never interpolate a half grade from
+      // its neighbours. Each row carries its own sale count so a count-1
+      // row is visibly thin rather than looking like a peer of the
+      // headline figure.
+      nearbyGradedPrices: comps
+        .filter((x) => x !== exact && x.bucket && x.bucket.medianPrice != null)
+        .sort((a, b) => Number(b.bucket.count || 0) - Number(a.bucket.count || 0))
+        .slice(0, 5)
+        .map((x) => ({
+          label: `${x.grader} ${x.grade}`,
+          price: Number(x.bucket.medianPrice),
+          count: Number(x.bucket.count) || 0,
+        })),
+    };
   }
-  return null;
+
+  return thinMatch;
 }
 
 // ---------------------------------------------------------------------------
@@ -4037,6 +4388,12 @@ async function handler(req, res) {
     res.status(200).json({
       ok: true,
       sourceHash,
+      // ADDED 2026-10-11: makes the Phase 1 probe's deployed state
+      // directly observable, the same way sourceHash makes the deployed
+      // source observable. Env vars are snapshotted at build time on
+      // Vercel, so "is the probe actually off on production?" is otherwise
+      // unanswerable without waiting for a real scan to log it.
+      slabLabelProbe: SLAB_LABEL_PROBE_ENABLED ? "on" : "off",
       // Correct value MUST be exactly "pokemon collector" (diacritic
       // stripped, lowercased, punctuation normalized to spaces, trimmed).
       // If this ever shows "pok mon collector" or literal combining-mark
@@ -4129,7 +4486,20 @@ async function handler(req, res) {
   if (LEGACY_GEMINI_SHADOW_MODEL) {
     const timedCurrentPromise = timePromise(geminiPromise, tStart);
     const tLegacyStart = Date.now();
-    const legacyPromise = identifyWithGemini(imageBase64, geminiKey, LEGACY_GEMINI_SHADOW_MODEL);
+    // PHASE 1 SLAB-LABEL PROBE (2026-10-11): the legacy shadow call — and
+    // ONLY the legacy shadow call — gets the label-reading prompt/schema.
+    // The primary Gemini prompt and the Haiku prompt are deliberately
+    // untouched. See LEGACY_LABEL_PROBE_PROMPT above for the full
+    // rationale and the honestly-flagged caveat about this read also
+    // feeding three production rescue paths.
+    // `undefined` when the probe is switched off, so identifyWithGemini's
+    // own `= {}` default kicks in and prompt/schema fall back to
+    // GEMINI_PROMPT/GEMINI_SCHEMA — a byte-identical request body to the
+    // one this call site built before the probe existed.
+    const legacyShadowOptions = SLAB_LABEL_PROBE_ENABLED
+      ? { prompt: LEGACY_LABEL_PROBE_PROMPT, schema: LEGACY_LABEL_PROBE_SCHEMA }
+      : undefined;
+    const legacyPromise = identifyWithGemini(imageBase64, geminiKey, LEGACY_GEMINI_SHADOW_MODEL, legacyShadowOptions);
     legacyReadPromise = legacyPromise;
     const timedLegacyPromise = timePromise(legacyPromise, tLegacyStart);
     const legacyShadowPromise = runLegacyModelShadowTest(timedCurrentPromise, timedLegacyPromise, requestId).catch((e) => {
@@ -4201,45 +4571,157 @@ async function handler(req, res) {
   }
 
   let result;
-  if (read.isSlab) {
-    let gradedResult = null;
-    try {
-      gradedResult = await lookupGradedPrice(read);
-    } catch (e) {
-      console.error(`[identify] requestId=${requestId} graded lookup threw:`, e && e.message);
+  // PHASE 0a (2026-10-11) — IGNORE A BARE isSlab FLAG.
+  //
+  // `isSlab` alone is not yet a trustworthy signal, and acting on it costs
+  // real raw-card scans. Measured across 73 consecutive real scans with
+  // all three models on the byte-identical prompt: both Gemini models
+  // fired isSlab on 0 of ~142 found reads, while Haiku fired it on 39 of
+  // 73 (53%) — on the same frames, during what the card names show was a
+  // modern Trainer-singles run. 31 of those 39 Haiku reasons explicitly
+  // claim a slab/case/holder, so it believes it sees one; glare is not the
+  // discriminator (mentioned in 37/39 slab-true AND 33/34 slab-false
+  // reasons alike). The pre-existing suspicion is already on record in
+  // docs/test-cases.md ("Haiku over-calling a sleeve/toploader as a
+  // slab").
+  //
+  // Haiku is an ACTIVE fallback whenever Gemini throws, so a bare isSlab
+  // flag was routing real raw-card scans onto the slab branch — where they
+  // got a scary warning, no price at all, and a wasted 60-credit PPT call.
+  // Sized honestly against the CURRENT primary's own measured failure
+  // rate (gemini-3.5-flash-lite: 3.8% in test #85, 5.6% in test #86, 1.4%
+  // in the 2026-10-07 window) times the 37-of-39 share of Haiku slab
+  // reads that carry no label at all, that is roughly 0.7-2.8% of all
+  // scans. NOT the 14-17% an earlier draft of this reasoning used — that
+  // figure is the OLD primary's baseline (gemini-3.6-flash, tests
+  // #70/#71/#76), and that model is now the legacy SHADOW, not the
+  // primary. Small, but it is pure loss: these are ordinary raw cards that
+  // already had a perfectly good price available.
+  //
+  // A slab we cannot read the label of is, for
+  // every purpose this extension has, just a card: the raw path gives a
+  // genuine price and the correct error direction (a raw price UNDER-values
+  // a slab, and underbidding costs nothing — the project's own standing
+  // reasoning).
+  //
+  // So: a slab is only treated as a slab when the label gave us something.
+  // Requiring grader OR grade (not both) keeps a partial label useful —
+  // the graded FETCH separately requires both (Phase 0b below).
+  //
+  // Extracted as shouldTreatAsSlab (exported) so this decision can be
+  // replayed directly against real logged reads in the test harness
+  // instead of being re-implemented there.
+  const slabHasLabel = shouldTreatAsSlab(read);
+  if (read.isSlab && !slabHasLabel) {
+    console.log(
+      `[identify] requestId=${requestId} SLAB FLAG IGNORED: no grader/grade — treating as raw card.`,
+      "visionProvider=",
+      visionProvider,
+      "cardName=",
+      read.cardName,
+      "certNumber=",
+      read.certNumber
+    );
+  }
+
+  if (slabHasLabel) {
+    // PHASE 0b: only fetch graded comps when BOTH grader and grade are
+    // present — lookupGradedPrice can only ever match an exact
+    // grader+grade bucket, so without both it is a guaranteed-useless
+    // call that still costs 60 PPT credits (limit=30 doubled by
+    // includeEbay). It also no longer blocks lookupCardPPT: the two are
+    // independent PPT reads and were being awaited one after the other,
+    // adding a full extra round-trip to the slowest path in the app.
+    // Uses the same normalizers lookupGradedPrice itself guards on, so a
+    // whitespace-only or non-numeric label read is recognized as "no
+    // usable label" here rather than buying a 60-credit PPT call that the
+    // function would then reject anyway.
+    const canFetchGraded = !!(normalizeGraderForCompare(read.grader) && normalizeGradeForCompare(read.grade));
+    const gradedPromise = canFetchGraded
+      ? lookupGradedPrice(read).catch((e) => {
+          console.error(`[identify] requestId=${requestId} graded lookup threw:`, e && e.message);
+          return null;
+        })
+      : Promise.resolve(null);
+
+    // The `.catch` on the base lookup closes a pre-existing asymmetry
+    // rather than changing intended behaviour: the raw branch below has
+    // always wrapped lookupCardPPT in a try/catch, but the slab branch
+    // awaited it bare, so a throw there became an unhandled rejection and
+    // a 500 on the one path that already shows the least. A throw now
+    // degrades to the same `{found:true, cardName}` fallback that a
+    // non-found baseLookup has always produced here — the slab badge and
+    // the honest "no graded price" message still render.
+    const [gradedResult, baseLookup] = await Promise.all([
+      gradedPromise,
+      lookupCardPPT(read, requestId, legacyReadPromise).catch((e) => {
+        console.error(`[identify] requestId=${requestId} slab-path base lookup threw:`, e && e.message);
+        return null;
+      }),
+    ]);
+
+    if (!canFetchGraded) {
+      console.log(
+        `[identify] requestId=${requestId} GRADED FETCH SKIPPED: partial label (grader=${read.grader} grade=${read.grade}) — saved one includeEbay PPT call.`
+      );
     }
 
-    const baseLookup = await lookupCardPPT(read, requestId, legacyReadPromise);
+    // PHASE 0e: spread `baseLookup` FIRST on both paths, exactly as the
+    // fallback path already did. The old graded-with-price path rebuilt
+    // this object field-by-field and so silently dropped `ambiguousNote`,
+    // `attackMismatch`, `matchBasis`, `pricingLookup`, `listingCount` and
+    // `printingUndetermined` — meaning a graded slab could show a
+    // confident dollar figure with every uncertainty disclosure
+    // suppressed, including the attack-mismatch cap (which reaches the
+    // user only by being appended to ambiguousNote). That inverted this
+    // project's core design principle on the one path where a wrong
+    // number is most expensive. It also stops defaulting matchConfidence
+    // to "Medium", which was quietly upgrading an unmatched slab.
+    const slabBase = {
+      ...(baseLookup && baseLookup.found ? baseLookup : { found: true, cardName: read.cardName }),
+      cardLanguage: read.language,
+      confidence: read.confidence,
+      isSlab: true,
+      grader: read.grader,
+      grade: read.grade,
+      certNumber: read.certNumber,
+    };
 
     if (gradedResult && gradedResult.gradedPrice != null) {
       result = {
-        found: true,
-        cardName: read.cardName,
-        cardLanguage: read.language,
-        setName: baseLookup?.setName || read.setName,
-        cardImageUrl: baseLookup?.cardImageUrl || null,
-        confidence: read.confidence,
-        matchConfidence: baseLookup?.matchConfidence || "Medium",
-        isSlab: true,
-        grader: read.grader,
-        grade: read.grade,
-        certNumber: read.certNumber,
+        ...slabBase,
         gradedPrice: gradedResult.gradedPrice,
+        gradedSampleCount: gradedResult.gradedSampleCount,
+        gradedLastSaleDate: gradedResult.gradedLastSaleDate,
+        gradedLowConfidence: gradedResult.gradedLowConfidence,
+        gradedOutlierAffected: gradedResult.gradedOutlierAffected,
         nearbyGradedPrices: gradedResult.nearbyGradedPrices,
-        tcgplayerUrl: baseLookup?.tcgplayerUrl || null,
       };
+    } else if (gradedResult && gradedResult.gradedThin) {
+      // PHASE 0d: the exact grader+grade bucket EXISTS but is too thin to
+      // price from. Distinct from "never found" so the panel can say which
+      // — and so the single-sale $7,999.95 class of number is named as
+      // insufficient data rather than shown as a price.
+      result = {
+        ...slabBase,
+        gradedPriceUnavailable: true,
+        gradedThin: true,
+        gradedThinReason: gradedResult.gradedThinReason,
+        gradedSampleCount: gradedResult.gradedSampleCount,
+      };
+      console.log(
+        `[identify] requestId=${requestId} GRADED PRICE WITHHELD (thin data): grader=${gradedResult.grader} grade=${gradedResult.grade} reason=${gradedResult.gradedThinReason} count=${gradedResult.gradedSampleCount}`
+      );
     } else {
       result = {
-        ...(baseLookup && baseLookup.found ? baseLookup : { found: true, cardName: read.cardName }),
-        cardLanguage: read.language,
-        confidence: read.confidence,
-        isSlab: true,
-        grader: read.grader,
-        grade: read.grade,
-        certNumber: read.certNumber,
+        ...slabBase,
         gradedPriceUnavailable: true,
       };
     }
+    // PHASE 0f: no graded Suggested Bid — that is Phase 3. Nothing above
+    // sets conditionsSuggestedBid or any bid field on a slab result, and
+    // the raw reference price the panel shows for a slab is rendered
+    // without bids (see renderSlabReferencePrice in extension/content.js).
   } else {
     try {
       result = await lookupCardPPT(read, requestId, legacyReadPromise);
@@ -4369,3 +4851,23 @@ module.exports = handler;
 // properties to that same function value doesn't change that.
 module.exports.buildLiveVariantsForCandidate = buildLiveVariantsForCandidate;
 module.exports.pickDefaultVariantKey = pickDefaultVariantKey;
+
+// GRADED-SLAB HELPERS (2026-10-11, Phase 0) — exported for unit testing
+// only. Nothing requires these except the test harness; api/price.js does
+// not touch them. Same mechanism and same zero-risk rationale as the two
+// exports above: attaching named properties to the handler function value
+// does not change how Vercel treats this file's default export.
+module.exports.shouldTreatAsSlab = shouldTreatAsSlab;
+module.exports.identifyWithGemini = identifyWithGemini;
+module.exports.SLAB_LABEL_PROBE_ENABLED = SLAB_LABEL_PROBE_ENABLED;
+module.exports.LEGACY_LABEL_PROBE_PROMPT = LEGACY_LABEL_PROBE_PROMPT;
+module.exports.LEGACY_LABEL_PROBE_SCHEMA = LEGACY_LABEL_PROBE_SCHEMA;
+module.exports.GEMINI_PROMPT = GEMINI_PROMPT;
+module.exports.GEMINI_SCHEMA = GEMINI_SCHEMA;
+module.exports.parseGradedBucketKey = parseGradedBucketKey;
+module.exports.normalizeGraderForCompare = normalizeGraderForCompare;
+module.exports.normalizeGradeForCompare = normalizeGradeForCompare;
+module.exports.assessGradedBucket = assessGradedBucket;
+module.exports.lookupGradedPrice = lookupGradedPrice;
+module.exports.GRADED_MIN_SALES = GRADED_MIN_SALES;
+module.exports.GRADED_MAX_LAST_SALE_AGE_DAYS = GRADED_MAX_LAST_SALE_AGE_DAYS;
