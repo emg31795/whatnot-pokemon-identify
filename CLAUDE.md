@@ -133,8 +133,10 @@ docs/archive/    ROADMAP.md, build-status.md.
 test/            Local suite, `node test/alakazam.test.js` (47 tests, no
                  network — mocks global.fetch over real captured PPT rows).
                  Excluded from deploys via .vercelignore. Two tests replay
-                 against committed HEAD and assert the old bug reproduces,
-                 so the suite cannot pass vacuously.
+                 against the pinned pre-fix commit `PRE_FIX_REF` (`1960cd5`)
+                 and assert the old bug reproduces there, so the suite cannot
+                 pass vacuously. Pinned to a SHA, not HEAD — they silently
+                 inverted the moment the fix was committed.
 ```
 
 **Request flow:** `content.js` captures a frame → `POST /api/identify` returns
@@ -187,24 +189,40 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj`** (2026-10-14, the #99
-  graded-lookup fix), aliased to `whatnot-pokemon-identify.vercel.app`.
-- **`sourceHash 34774dc67eb7e9cc851cb05b0eca934ef165b76d`** == `shasum
-  api/identify.js` on disk, byte-exact (CLI deploy from disk). Built from
-  commit `531aac4`. `GET /api/identify` reports **`slabLabelProbe: "on"`**.
-- E2E verified 2026-10-14: **Pikachu XY95** High / `score-only` / tcgPlayerId
-  114004 / `attackMismatch: false`, 2257ms (requestId `7b8f5068`), via the
-  TCGplayer CDN image for 114004. Unchanged; zero errors on this deployment.
+- Deployment **`dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR`** (2026-10-15, the #101
+  Alakazam fixes), aliased to `whatnot-pokemon-identify.vercel.app`. Preview
+  of the same build: `dpl_EJ6MHs29CGxGThnSFWhgQeEZ18n4`.
+- **`sourceHash 9738bb38bddd790239d6c4e5a383eeb77abff4ba`** == `shasum
+  api/identify.js` on disk, byte-exact on both deployments (CLI deploy from
+  disk). Built from commit `ba5f009`. `GET /api/identify` reports
+  **`slabLabelProbe: "on"`**.
+- E2E verified 2026-10-15: **Pikachu XY95** High / `score-only` / tcgPlayerId
+  114004 / `attackMismatch: false`, 2175ms (requestId `f4c9f028`) — unchanged.
+  **No runtime errors in a 3h window**, and the uncapped-await error that
+  fired twice in the prior 24h has not recurred.
+- **OPEN REGRESSION on this build — see test #102.** An Alakazam 33 e2e scan
+  (`159a5822`) returned the WRONG card **83497** at **High** confidence via
+  `score-only`. The primary model read `cardNumber "1/165"`, which matches
+  83497's `001/165` exactly, so scoring picked it (bestScore 26, tieCount 1)
+  and **no rescue ran** — the #101 guards only sit inside the rescue path.
+  Card selection there is unchanged from pre-#101, but the new ATTACK MISMATCH
+  suppression removed what had been an **accidental** safety net: measured
+  against `HEAD~1`, pre-fix gave `Low / attackMismatch true` on that same read
+  and the deployed build gives `High`. Both siblings share the attack
+  `[2P] Syncroblast (80)`, so the attack signal carries no card-identity
+  information in this group. **Proposed fix (not built): extend the
+  sibling-disagreement check to the scoring path** — see test #102 for the
+  three options.
 - **No real slab has been scanned end-to-end through Phase 2-lite or Phase 3.**
-  Needs a live slab scan. Organic traffic since deploy shows Haiku still
-  over-calling `isSlab` on raw cards (a Ponyta, grader/grade null, Gemini
-  false) — which is exactly what Phase 0a exists to absorb, though the
-  `SLAB FLAG IGNORED` line only fires when the ACTIVE read claims a slab.
-- Earlier production: `dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm` (2026-10-11, Phase 3,
-  `092de9b5…`, `7940425`); `dpl_5H1C6MrxSNqCVod4BH7pZ42kz1uz` (Phase 2-lite,
-  `1d714d47…`, `044fd2f`); `dpl_5S5eubh9PbQqKpcejRNACCzVxfL7` (Phase 0/1,
-  `f5d2733f…`, `c37f575`); `dpl_GCZccTiVtGSdbMHptCFGyHW3EZEm` (2026-10-09,
-  `c5d664f9…`, `9933e86`).
+  Needs a live slab scan. Organic traffic shows Haiku still over-calling
+  `isSlab` on raw cards (a Ponyta, grader/grade null, Gemini false) — which is
+  exactly what Phase 0a exists to absorb, though the `SLAB FLAG IGNORED` line
+  only fires when the ACTIVE read claims a slab.
+- Earlier production: `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj` (2026-10-14,
+  `34774dc6…`, `531aac4`); `dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm` (2026-10-11,
+  Phase 3, `092de9b5…`, `7940425`); `dpl_5H1C6MrxSNqCVod4BH7pZ42kz1uz`
+  (Phase 2-lite, `1d714d47…`, `044fd2f`);
+  `dpl_5S5eubh9PbQqKpcejRNACCzVxfL7` (Phase 0/1, `f5d2733f…`, `c37f575`).
 - Project `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team `leasedraftai`
   (`team_DZEpR5n7heCyZsNFjxZmxUP1`). **Not git-linked** — no build-on-push.
   GitHub: `https://github.com/emg31795/whatnot-pokemon-identify`.
@@ -399,20 +417,28 @@ sane bid for that card.
 
 ## Open items
 
-**BUILT AND PREVIEW-DEPLOYED 2026-10-15, NOT IN PRODUCTION — the Alakazam
-33/165 fixes** (test #101, 47 local tests). Preview
-`dpl_EJ6MHs29CGxGThnSFWhgQeEZ18n4`,
-`sourceHash 9738bb38bddd790239d6c4e5a383eeb77abff4ba`. Awaiting a production
-go-ahead. Four changes: the rescue denominator guard, the sibling-ambiguity
-guard, two ATTACK MISMATCH suppressions, and the 500ms cap on the downstream
-legacy await. `api/identify.js` only — **no `extension/` change, so no
-extension reload is needed.** E2E on preview: Alakazam 33 → 83500 / High /
-Normal / no false mismatch (1771ms, 1509ms); XY95 → 114004 / High unchanged
-(1320ms); zero errors. **Live-confirmed:** `ATTACK MISMATCH SUPPRESSED` fired
-on real traffic twice. **Not yet observed:** `LEGACY-MODEL NUMBER RESCUE
-DECLINED (DENOMINATOR CONTRADICTION)` and `SIBLING AMBIGUITY — RESCUE
-REFUSED` — both need a number misread that lands on a real sibling, which
-can't be forced.
+**DEPLOYED TO PRODUCTION 2026-10-15 — the Alakazam 33/165 fixes** (test
+#101, 47 local tests), `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR`,
+`sourceHash 9738bb38…`, commit `ba5f009`. `api/identify.js` only — **no
+`extension/` change, so no extension reload is needed.** **Live-confirmed:**
+`ATTACK MISMATCH SUPPRESSED` has now fired four times on real traffic
+(reads "Psymimic", "Prymimic", "Prypower"). **Not yet observed:**
+`LEGACY-MODEL NUMBER RESCUE DECLINED (DENOMINATOR CONTRADICTION)` and
+`SIBLING AMBIGUITY — RESCUE REFUSED` — both need a misread that lands on a
+real sibling *and* misses the pool, which can't be forced.
+
+**TOP OPEN ITEM — the Alakazam problem is NOT fully fixed (test #102).** A
+production scan (`159a5822`) returned 83497 at **High** via `score-only`: the
+primary model read `"1/165"`, which exactly matches a real sibling, so no
+rescue ran and the #101 guards never applied. Worse, the new attack
+suppression removed an accidental Low cap — `HEAD~1` gave
+`Low / attackMismatch true` on the same read, the deployed build gives
+`High`. **Proposed fix, not built: a sibling-disagreement confidence cap on
+the SCORING path** — when the winner has a `sameSiblingGroup` sibling in the
+pool and each model's number points at a different member of that group, cap
+to Low and withhold the price, reusing `sameSiblingGroup`/`totalsContradict`
+unchanged. Additive; cannot change which candidate wins. Test #102 lists the
+three options (recommended: keep the deploy, add the cap).
 
 **Noted, not built (test #101): Expedition Reverse Holofoil price curves can
 be inverted.** 83500's Reverse Holofoil reads NM **$16.00** (sold 0) against

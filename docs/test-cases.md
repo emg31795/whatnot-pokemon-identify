@@ -11596,6 +11596,128 @@ condition curve cheaply — flagging the variant rather than guessing a
 replacement price. Not built: it needs its own measurement pass against real
 traffic before it can be trusted to fire only on genuinely broken data.
 
+## #102 — 2026-10-15 — Deploy record for the #101 Alakazam fixes, and a SECOND wrong-card path they do not cover
+
+Commit `ba5f009` pushed and deployed to production.
+
+### Verifiable facts
+
+- Pushed `1960cd5..ba5f009` to `origin/main`.
+- Production deployment **`dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR`**, target
+  `production`, Ready, created 2026-10-15 07:30 EDT
+  (`whatnot-pokemon-identify-p0fr77jhp-leasedraftai.vercel.app`), aliased to
+  `whatnot-pokemon-identify.vercel.app`. CLI deploy from disk.
+- **`sourceHash 9738bb38bddd790239d6c4e5a383eeb77abff4ba`** from live
+  `GET /api/identify` == `shasum api/identify.js` on disk, byte-exact, and
+  identical to preview `dpl_EJ6MHs29CGxGThnSFWhgQeEZ18n4`.
+  `slabLabelProbe: "on"`.
+- Prior production: `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj` (`34774dc6…`, `531aac4`).
+- `get_runtime_errors` over a 3h window: **no runtime errors at all.** The
+  uncapped-await error that fired twice in the previous 24h
+  (`63f242c1`, `2b7787d4`) has not recurred — that await is now capped.
+
+### E2E on production
+
+**Pikachu XY95** (`f4c9f028`) — `found: true`, XY Promos, **High**,
+`score-only`, tcgPlayerId **114004**, `primaryPrinting "Holofoil"`,
+`listingCount 64`, `attackMismatch: false`, `timingMs {gemini 1938, lookup
+237, total 2175}`. Unchanged from baseline.
+
+**Alakazam 33** (`159a5822`) — **returned the WRONG card, 83497, at High
+confidence.** This is a different failure path from #101 and the fixes do not
+cover it.
+
+### The second path: a single-model misread that lands exactly on a sibling
+
+```
+[identify] Gemini read: cardNumber "1/165", attackName "Prypower", setName "Expedition Base Set", hp "100"
+[legacy-model-shadow-test] legacy: cardNumber "33/165", attackName "Syncroblast"   <- CORRECT
+[lookup:page1+2] best= { name: 'Alakazam (1)', number: '001/165', hp: '100', setName: 'Expedition' }
+                 bestScore= 26 tieCount= 1 tiedIds= 83497
+```
+
+The primary model read **"1/165"**, which matches 83497's `001/165`
+**exactly** — so `numbersMatch` scores a full 20, hp adds 6, `tieCount` is 1,
+and 83497 wins on **`score-only`** at **High**. The roles are reversed from
+f033dcfe: this time the LEGACY model read the number correctly and the primary
+got it wrong.
+
+**The #101 guards cannot see this.** Both live inside the downstream
+legacy-number rescue, which only runs when `!anyNumberMatch` — and here the
+wrong number matched a real card exactly, so no rescue was ever attempted.
+Card selection on this path is **unchanged by #101**; it is a pre-existing
+scoring outcome.
+
+### What #101 DID change here, and it is in the dangerous direction
+
+Measured against `HEAD~1` through the mocked harness, on this exact read
+(`cardNumber "1/165"`, `attackName "Prypower"`, legacy `"33/165"` /
+`"Syncroblast"`, both siblings in the merged pool):
+
+```
+CURRENT (deployed): id=83497 conf=High basis=score-only attackMismatch=false
+HEAD~1 (pre-fix)  : id=83497 conf=Low  basis=score-only attackMismatch=true
+```
+
+Both pick the wrong card. **Pre-fix capped it to Low with a warning; the
+deployed build shows High.** The new cross-model ATTACK MISMATCH suppression
+is working exactly as designed — the legacy model read "Syncroblast", which
+genuinely IS on 83497's attack list — but the old rule had been
+**accidentally** catching this wrong-card case, because the primary model
+misreads the attack and the number together. Both siblings share the attack
+`[2P] Syncroblast (80)`, so the attack signal carries no card-identity
+information in this group at all; the catch was a correlation, not a
+diagnosis.
+
+Confirmed live twice more that the suppression itself behaves as specified:
+`ATTACK MISMATCH SUPPRESSED (legacy model read "Syncroblast", which is on
+this card's attack list): read="Prypower"` — and on the preview scans,
+`read="Psymimic"` / `read="Prymimic"`. The primary model has now produced
+four different Poké-POWER-shaped misreads of this card's attack field
+(Psymimic, Prymimic, Prypower) across six scans.
+
+### Net state of the Alakazam problem — NOT fully fixed
+
+| path | before #101 | after #101 |
+|---|---|---|
+| rescue swaps in the sibling (f033dcfe, read "1/18") | **83497**, bid $92.62 | **fixed** — 83500 or withheld |
+| read misses the pool entirely (read "33/147") | withheld | withheld (unchanged) |
+| read lands exactly on the sibling (read "1/165") | **83497 at Low + warning** | **83497 at High** |
+
+Three of six scans of the same clean image produced three different outcomes,
+because the primary model's number read on this card is unstable
+(033/165 correct, 1/18, 33/147, 1/165). The card is genuinely hard: the
+e-Card number sits in a low-contrast strip, and Haiku's own stated reason on
+f033dcfe was *"Card number area obscured by glare and image angle."*
+
+### Proposed fix, NOT built — a sibling-disagreement confidence cap
+
+The sibling-ambiguity principle is right but is wired into the wrong place.
+It should ALSO apply on the scoring path: when the winning candidate has a
+same-base-name, same-set sibling in the pool (`sameSiblingGroup`) and the two
+models disagree on the card number such that each model's number points at a
+DIFFERENT member of that sibling group, the winner must not be presented as
+High. Cap to Low, disclose both printings with their prices, and — given the
+measured 5.9x median sibling gap — withhold the price the same way the rescue
+guard does.
+
+That is additive, cannot change which candidate wins, and reuses
+`sameSiblingGroup` and `totalsContradict` as they already exist. It also
+restores the safety this scan lost, on a correct basis rather than by
+accident.
+
+Three options for the current deploy, Eric's call:
+1. **Keep the deploy and add the sibling-disagreement cap** (recommended) —
+   keeps the proven rescue fix and the capped await, and closes this path
+   properly.
+2. **Narrow the attack suppression** so it does not apply when the candidate
+   has a same-name/same-set sibling and the models disagree on the number.
+   Smaller, but leaves the wrong card winning at Low rather than withheld.
+3. **Roll back to `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj`** — restores the
+   accidental Low on this image, but reinstates the f033dcfe rescue bug (a
+   real $92.62-vs-$11.20 bid error on Eric's own card) and the uncapped await.
+   Not recommended.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

@@ -19,6 +19,22 @@ const fs = require("fs");
 const os = require("os");
 
 const IDENTIFY = path.join(__dirname, "..", "api", "identify.js");
+
+// The two "test validity" cases below replay against the last commit BEFORE
+// the fix and assert the old bug reproduces there, so this suite cannot pass
+// vacuously. Pinned to an immutable SHA on purpose: it was `HEAD` until the
+// fix itself was committed, at which point both tests started failing because
+// HEAD had become the fixed version.
+const PRE_FIX_REF = "1960cd5";
+
+function loadPreFixModule(tmpName) {
+  const tmp = path.join(os.tmpdir(), `${tmpName}-${process.pid}.js`);
+  const src = execFileSync("git", ["show", `${PRE_FIX_REF}:api/identify.js`], {
+    cwd: path.join(__dirname, ".."), maxBuffer: 64 * 1024 * 1024, encoding: "utf8",
+  });
+  fs.writeFileSync(tmp, src + "\nmodule.exports.lookupCardPPT = lookupCardPPT;\n");
+  return { mod: require(tmp), cleanup: () => fs.unlinkSync(tmp) };
+}
 const F = require("./fixtures.js");
 
 let pass = 0;
@@ -246,14 +262,9 @@ async function main() {
 
   // The same replay against committed HEAD must reproduce the bug, or this
   // test is not actually proving anything.
-  await test("REPLAY f033dcfe against HEAD reproduces the 83497 bug (test validity)", async () => {
-    const tmp = path.join(os.tmpdir(), `identify-head-${process.pid}.js`);
-    const headSrc = execFileSync("git", ["show", "HEAD:api/identify.js"], {
-      cwd: path.join(__dirname, ".."), maxBuffer: 64 * 1024 * 1024, encoding: "utf8",
-    });
-    fs.writeFileSync(tmp, headSrc + "\nmodule.exports.lookupCardPPT = lookupCardPPT;\n");
+  await test(`REPLAY f033dcfe against ${PRE_FIX_REF} reproduces the 83497 bug (test validity)`, async () => {
+    const { mod: HEADM, cleanup } = loadPreFixModule("identify-prefix");
     try {
-      const HEADM = require(tmp);
       installPptMock(expeditionRoutes());
       const headResult = await HEADM.lookupCardPPT(realRead, "replay-head", Promise.resolve(realLegacy));
       assert.strictEqual(
@@ -263,7 +274,7 @@ async function main() {
       );
       assert.strictEqual(headResult.matchBasis, "legacy-number-rescue");
     } finally {
-      fs.unlinkSync(tmp);
+      cleanup();
     }
   });
 
@@ -324,14 +335,9 @@ async function main() {
     assert.strictEqual(r.matchConfidence, "High");
     assert.ok(!r.ambiguousNote || !r.ambiguousNote.includes("Psymimic"));
   });
-  await test("CLEAN SCAN Alakazam 33 at HEAD: the false Low is reproduced (test validity)", async () => {
-    const tmp = path.join(os.tmpdir(), `identify-head2-${process.pid}.js`);
-    const headSrc = execFileSync("git", ["show", "HEAD:api/identify.js"], {
-      cwd: path.join(__dirname, ".."), maxBuffer: 64 * 1024 * 1024, encoding: "utf8",
-    });
-    fs.writeFileSync(tmp, headSrc + "\nmodule.exports.lookupCardPPT = lookupCardPPT;\n");
+  await test(`CLEAN SCAN Alakazam 33 at ${PRE_FIX_REF}: the false Low is reproduced (test validity)`, async () => {
+    const { mod: HEADM, cleanup } = loadPreFixModule("identify-prefix2");
     try {
-      const HEADM = require(tmp);
       installPptMock({ "Alakazam": F.padTo([F.ALAKAZAM_33, F.ALAKAZAM_1, ...F.LOGGED_FILLER.map(F.fillerRow)], 30, "Alakazam") });
       const r = await HEADM.lookupCardPPT(
         { ...BASE_READ, cardNumber: "033/165", attackName: "Psymimic", setName: "Expedition Base Set" },
@@ -340,7 +346,7 @@ async function main() {
       assert.strictEqual(r.attackMismatch, true);
       assert.strictEqual(r.matchConfidence, "Low");
     } finally {
-      fs.unlinkSync(tmp);
+      cleanup();
     }
   });
   await test("ATTACK MISMATCH still fires when NEITHER model sees the attack (30th Celebration class)", async () => {
@@ -560,16 +566,11 @@ async function main() {
     // card number. "1/19" and "1/21" are structurally identical to the real
     // "1/18": a total that contradicts /165 and a numerator that matches no
     // pool candidate, so both produce the same sequence of searches.
-    const headTmp = path.join(os.tmpdir(), `identify-head3-${process.pid}.js`);
-    const headSrc = execFileSync("git", ["show", "HEAD:api/identify.js"], {
-      cwd: path.join(__dirname, ".."), maxBuffer: 64 * 1024 * 1024, encoding: "utf8",
-    });
-    fs.writeFileSync(headTmp, headSrc + "\nmodule.exports.lookupCardPPT = lookupCardPPT;\n");
+    const { mod: HEADM, cleanup } = loadPreFixModule("identify-prefix3");
     try {
       const newCalls = installPptMock(expeditionRoutes());
       await M.lookupCardPPT({ ...realRead, cardNumber: "1/19" }, "call-count-new", Promise.resolve(realLegacy));
 
-      const HEADM = require(headTmp);
       const headCalls = installPptMock(expeditionRoutes());
       await HEADM.lookupCardPPT({ ...realRead, cardNumber: "1/21" }, "call-count-head", Promise.resolve(realLegacy));
 
@@ -579,7 +580,7 @@ async function main() {
         `PPT call count changed: ${newCalls.length} (${newCalls.join(", ")}) vs HEAD ${headCalls.length} (${headCalls.join(", ")})`
       );
     } finally {
-      fs.unlinkSync(headTmp);
+      cleanup();
     }
   });
 
