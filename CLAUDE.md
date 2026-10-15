@@ -182,22 +182,21 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm`** (2026-10-11, Phase 3),
-  aliased to `whatnot-pokemon-identify.vercel.app`. Preview of the same build:
-  `dpl_GhDABpZN9ivtb1ndaeau5xvVTuBf`.
-- **`sourceHash 092de9b5cdc24bad6043a05a571539e69017ba2a`** == `shasum
-  api/identify.js` on disk, byte-exact on both deployments (CLI deploy from
-  disk). Built from commit `7940425` (code is `46c021e`). `GET /api/identify`
-  reports **`slabLabelProbe: "on"`**.
-- E2E verified 2026-10-11: **Pikachu XY95** High / `score-only` / tcgPlayerId
-  114004, 1528ms; **Snorlax 89392** High / `attackMismatch: false`, 1921ms.
-  Both unchanged, no slab/graded fields, zero errors in the window.
+- Deployment **`dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj`** (2026-10-14, the #99
+  graded-lookup fix), aliased to `whatnot-pokemon-identify.vercel.app`.
+- **`sourceHash 34774dc67eb7e9cc851cb05b0eca934ef165b76d`** == `shasum
+  api/identify.js` on disk, byte-exact (CLI deploy from disk). Built from
+  commit `531aac4`. `GET /api/identify` reports **`slabLabelProbe: "on"`**.
+- E2E verified 2026-10-14: **Pikachu XY95** High / `score-only` / tcgPlayerId
+  114004 / `attackMismatch: false`, 2257ms (requestId `7b8f5068`), via the
+  TCGplayer CDN image for 114004. Unchanged; zero errors on this deployment.
 - **No real slab has been scanned end-to-end through Phase 2-lite or Phase 3.**
   Needs a live slab scan. Organic traffic since deploy shows Haiku still
   over-calling `isSlab` on raw cards (a Ponyta, grader/grade null, Gemini
   false) — which is exactly what Phase 0a exists to absorb, though the
   `SLAB FLAG IGNORED` line only fires when the ACTIVE read claims a slab.
-- Earlier production: `dpl_5H1C6MrxSNqCVod4BH7pZ42kz1uz` (Phase 2-lite,
+- Earlier production: `dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm` (2026-10-11, Phase 3,
+  `092de9b5…`, `7940425`); `dpl_5H1C6MrxSNqCVod4BH7pZ42kz1uz` (Phase 2-lite,
   `1d714d47…`, `044fd2f`); `dpl_5S5eubh9PbQqKpcejRNACCzVxfL7` (Phase 0/1,
   `f5d2733f…`, `c37f575`); `dpl_GCZccTiVtGSdbMHptCFGyHW3EZEm` (2026-10-09,
   `c5d664f9…`, `9933e86`).

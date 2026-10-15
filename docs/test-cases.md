@@ -11367,6 +11367,50 @@ unknown-id all yielding no price; zero PPT calls when there is nothing to
 price; and source assertions that the name-search path is gone and the
 tripwire contains no `return`.
 
+## #100 — 2026-10-14 — Deploy record: the #99 graded-lookup fix reaches production
+
+Commit `531aac4` ("Price graded slabs from the matched card, never a name
+search") was pushed and deployed. It had been built and committed locally in
+test #99 but never deployed.
+
+### Verifiable facts
+
+- Pushed `60ff649..531aac4` to `origin/main`.
+- Production deployment **`dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj`**, target
+  `production`, status Ready, created 2026-10-14 20:39 EDT
+  (`whatnot-pokemon-identify-eaigfj4t0-leasedraftai.vercel.app`), aliased to
+  `whatnot-pokemon-identify.vercel.app`. CLI deploy from disk.
+- **`sourceHash 34774dc67eb7e9cc851cb05b0eca934ef165b76d`** from live
+  `GET /api/identify` == `shasum api/identify.js` on disk, byte-exact.
+  `slabLabelProbe: "on"`.
+- Prior production was `dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm`
+  (`092de9b5…`, Phase 3).
+
+### Raw-card regression scan (production, real image)
+
+Pikachu XY95 via the TCGplayer CDN image for product 114004, posted as raw
+base64 to `POST /api/identify`, requestId `7b8f5068-a30b-4cfe-87b2-0618e5052533`:
+
+`found: true`, `XY Promos`, **High**, `matchBasis: "score-only"`,
+`attackMismatch: false`, tcgPlayerId **114004**, `primaryPrinting
+"Holofoil"`, `listingCount 64`, `visionProvider: "gemini"`,
+`timingMs {gemini 2062, lookup 195, total 2257}`. Unchanged from the
+documented baseline — the graded-only change did not touch the raw path.
+
+### Errors
+
+`get_runtime_errors` over the 2h window returns **one** group, and it is on
+the **previous** deployment (`dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm`, 00:24:39Z,
+count=1): `[lookup] legacy-model rescue check failed (treating as
+unavailable): This operation was aborted`. That is the uncapped
+`await legacyReadPromise` named in CLAUDE.md's open items, taking the handled
+"treat as unavailable" branch — pre-deploy, not caused by this release.
+**Zero errors on `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj`.**
+
+**Still unproven:** no real slab has been scanned end-to-end through Phase
+2-lite or Phase 3, so the #99 fix is deployed but not live-confirmed on a
+genuine graded card.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
