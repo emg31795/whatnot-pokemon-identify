@@ -322,6 +322,24 @@ Each exists because retrieval or the read failed, not because scoring did.
    recover that case — the cross-model check is what does, and it is
    live-confirmed (`ATTACK MISMATCH SUPPRESSED`).
 
+10. **Sibling-disagreement cap** (`sibling-ambiguous`, 2026-10-15, test #103)
+    — runs AFTER every path above has chosen a winner, including plain
+    `score-only`. If the fetched pool holds an above-floor `sameSiblingGroup`
+    sibling of the winner, the card number must be corroborated:
+    `numberPointsAtCandidate(legacyRead.cardNumber, best)` (a **non-weak**
+    `numbersMatch` AND no `totalsContradict`) and that number must not point
+    at a sibling instead. Otherwise → **Low**, `pricingLookup: null`, and a
+    `siblingAmbiguity` payload listing every candidate with its number,
+    rarity and **its own ready-made `pricingLookup`**, so the panel prices
+    both. Ordered by card number, never price-ranked. **Fail safe:** a
+    missing/timed-out/numberless legacy read is ambiguous, not "trust the
+    primary" — and since the legacy `cardNumber` non-null baseline is 56.9%,
+    expect ~4 in 10 sibling-pair scans to cap on that alone. Cannot change
+    which candidate won; adds no PPT calls. **Pool-dependent**: it only sees
+    a sibling that was actually fetched, so a wrong number matching a sibling
+    already on page 1 (no page-2 fetch) is still invisible to it.
+    `[sibling-cap]` logs the full decision on every firing.
+
 PPT fetch aborts retry **once** at `CARDDB_RETRY_TIMEOUT_MS` (1200ms), scoped
 to the abort branch only — by construction it can never retry a 429.
 
@@ -427,18 +445,22 @@ sane bid for that card.
 `SIBLING AMBIGUITY — RESCUE REFUSED` — both need a misread that lands on a
 real sibling *and* misses the pool, which can't be forced.
 
-**TOP OPEN ITEM — the Alakazam problem is NOT fully fixed (test #102).** A
-production scan (`159a5822`) returned 83497 at **High** via `score-only`: the
-primary model read `"1/165"`, which exactly matches a real sibling, so no
-rescue ran and the #101 guards never applied. Worse, the new attack
-suppression removed an accidental Low cap — `HEAD~1` gave
-`Low / attackMismatch true` on the same read, the deployed build gives
-`High`. **Proposed fix, not built: a sibling-disagreement confidence cap on
-the SCORING path** — when the winner has a `sameSiblingGroup` sibling in the
-pool and each model's number points at a different member of that group, cap
-to Low and withhold the price, reusing `sameSiblingGroup`/`totalsContradict`
-unchanged. Additive; cannot change which candidate wins. Test #102 lists the
-three options (recommended: keep the deploy, add the cap).
+**BUILT, PREVIEW ONLY — the sibling-disagreement cap** (test #103, 69 local
+tests). Preview `dpl_EF2JaPbQFhaBYZngV69Ti8CKZTqk`,
+`sourceHash a6052d3ac22da0a5bb1093b961a23c7005059a5f`. Awaiting a production
+go-ahead. Closes the #102 hole: a single-model number misread that lands
+exactly on a sibling and wins on plain scoring at High. **Confirmed against
+REAL PPT data** with the exact 159a5822 read — `[sibling-cap] ... siblings=1
+legacyReady=yes corroborated=false` → Low / `sibling-ambiguous` / no price,
+both printings disclosed; production returns High 83497 on that same read.
+**`extension/content.js` and `content.css` changed, so the extension needs a
+manual reload in `chrome://extensions`** before the two-printing panel
+appears. Preview e2e: 6/6 Alakazam scans → **83500 High** (none a High
+83497), XY95 unchanged — but all six read the number correctly, so page 2 was
+never fetched and **the cap itself never fired on a live scan**. Two known
+limits, both documented in #103: it is **pool-dependent** (a wrong number
+matching a sibling already on page 1 is invisible to it), and the 30s PPT
+cache can return a pre-cap result inside its window.
 
 **Noted, not built (test #101): Expedition Reverse Holofoil price curves can
 be inverted.** 83500's Reverse Holofoil reads NM **$16.00** (sold 0) against

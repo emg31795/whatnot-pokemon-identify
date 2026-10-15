@@ -496,3 +496,32 @@
 .wnpk-more-grades > summary:hover {
   opacity: 1;
 }
+
+/* ADDED 2026-10-15 (sibling-disagreement cap, test #102): the two-printing
+   comparison shown when the scan cannot tell a holo sibling from its
+   non-holo twin. Styled to match .wnpk-cond-row's existing row rhythm. */
+.wnpk-sib-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.wnpk-sib-name {
+  font-weight: 600;
+}
+.wnpk-sib-meta {
+  font-weight: 400;
+  opacity: 0.7;
+  font-size: 11px;
+}
+.wnpk-sib-price {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.wnpk-sib-prompt {
+  margin-top: 7px;
+  font-size: 12px;
+  font-weight: 600;
+}

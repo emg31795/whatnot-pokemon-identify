@@ -107,8 +107,31 @@ function expeditionRoutes() {
   };
 }
 
+// Disable the Runtime Cache before api/identify.js is loaded.
+//
+// lookupCardPPT caches results for 30s on language+name+number through
+// @vercel/functions' getCache(), and that cache is PROCESS-global and shared
+// across module instances. In a test run that silently links unrelated cases
+// together: one test priced "001/165" normally and cached it, and the next
+// test using the same read got the cached answer back without ever entering
+// the code under test — which made three real assertions pass vacuously and
+// three others fail for the wrong reason. identify.js already guards this
+// require and treats a missing package as "caching disabled", so stubbing it
+// out is the supported way to get deterministic lookups.
+function disableRuntimeCache() {
+  const resolved = require.resolve("@vercel/functions", { paths: [path.join(__dirname, "..", "api")] });
+  require.cache[resolved] = {
+    id: resolved,
+    filename: resolved,
+    loaded: true,
+    exports: { getCache: null, waitUntil: null },
+  };
+}
+
 async function main() {
+  disableRuntimeCache();
   const M = require(IDENTIFY);
+  assert.strictEqual(M.__cacheDisabledForTests, true, "the Runtime Cache stub did not take effect");
 
   // ======================================================================
   // 1. UNIT — totalsContradict (denominator guard primitive)
@@ -249,8 +272,17 @@ async function main() {
       `expected 83500 or a withheld price, got ${JSON.stringify(replayResult.pricingLookup)}`
     );
   });
-  await test("REPLAY f033dcfe: lands on the correct card 83500", () => {
-    assert.strictEqual(replayResult.pricingLookup.tcgPlayerId, "83500");
+  await test("REPLAY f033dcfe: resolves to sibling ambiguity, not a single guess", () => {
+    // CHANGED by test #102: the #101 guards alone left this at
+    // "83500 at Low with a price". Now the sibling-disagreement cap also
+    // fires — the primary read "1/18" points at neither sibling and the
+    // legacy read "1/165" points at the holo one — so both printings are
+    // disclosed and no single price is shown. Strictly more honest, and it
+    // still satisfies the hard requirement: never 83497.
+    assert.strictEqual(replayResult.matchBasis, "sibling-ambiguous");
+    assert.strictEqual(replayResult.pricingLookup, null);
+    const ids = replayResult.siblingAmbiguity.candidates.map((c) => c.tcgPlayerId).sort();
+    assert.deepStrictEqual(ids, ["83497", "83500"]);
   });
   await test("REPLAY f033dcfe: is not presented as a confident match", () => {
     assert.strictEqual(replayResult.matchConfidence, "Low");
@@ -582,6 +614,318 @@ async function main() {
     } finally {
       cleanup();
     }
+  });
+
+  // ======================================================================
+  // 13. SIBLING-DISAGREEMENT CAP on the scoring path (test #102)
+  // ======================================================================
+  // Pool shape of the real 159a5822: page 1 full with no Expedition
+  // Alakazam, page 2 brings BOTH siblings (page2 count 12, merged 42).
+  function scoreOnlyRoutes() {
+    return {
+      "Alakazam": F.padTo(F.LOGGED_FILLER.map(F.fillerRow), 30, "Alakazam"),
+      "Alakazam|offset=30": [F.ALAKAZAM_1, F.ALAKAZAM_33, ...F.padTo([], 10, "AlakazamP2")],
+    };
+  }
+  const SCORE_READ = {
+    ...BASE_READ,
+    cardNumber: "1/165",
+    attackName: "Prypower",
+    setName: "Expedition Base Set",
+  };
+  const LEGACY_CORRECT = {
+    found: true, confidence: "High", cardName: "Alakazam", cardNumber: "33/165",
+    hp: "100", setName: "Expedition Base Set", attackName: "Syncroblast",
+    subtype: "Stage 2", language: "English", stampType: "none",
+  };
+
+  let capResult = null;
+  await test("REPLAY 159a5822: the wrong sibling is no longer presented at High", async () => {
+    installPptMock(scoreOnlyRoutes());
+    capResult = await M.lookupCardPPT({ ...SCORE_READ }, "replay-159a5822", Promise.resolve({ ...LEGACY_CORRECT }));
+    assert.notStrictEqual(capResult.matchConfidence, "High");
+    assert.strictEqual(capResult.matchConfidence, "Low");
+    assert.strictEqual(capResult.matchBasis, "sibling-ambiguous");
+  });
+  await test("REPLAY 159a5822: no single confident price", () => {
+    assert.strictEqual(capResult.pricingLookup, null);
+  });
+  await test("REPLAY 159a5822: both printings disclosed, in card-number order", () => {
+    const cands = capResult.siblingAmbiguity.candidates;
+    assert.strictEqual(cands.length, 2);
+    assert.strictEqual(cands[0].number, "001/165");
+    assert.strictEqual(cands[1].number, "033/165");
+  });
+  await test("REPLAY 159a5822: each candidate carries number, rarity and its own pricingLookup", () => {
+    for (const c of capResult.siblingAmbiguity.candidates) {
+      assert.ok(c.name && c.number, "name and number required");
+      assert.ok(c.rarity, "rarity required so the panel can show Rare vs Holo Rare");
+      assert.ok(c.pricingLookup && c.pricingLookup.tcgPlayerId, "each candidate needs a usable pricingLookup");
+      assert.ok(c.pricingLookup.primaryPrinting, "primaryPrinting drives the default variant in /api/price");
+    }
+    const rarities = capResult.siblingAmbiguity.candidates.map((c) => c.rarity).sort();
+    assert.deepStrictEqual(rarities, ["Holo Rare", "Rare"]);
+  });
+  await test("REPLAY 159a5822: the panel gets the holo prompt", () => {
+    assert.strictEqual(capResult.siblingAmbiguity.prompt, "Check whether the card is holo to tell these apart.");
+    assert.ok(capResult.ambiguousNote.includes("holo"));
+  });
+  await test("REPLAY 159a5822 at the deployed build reproduces High 83497 (test validity)", async () => {
+    // Pinned to the SHA actually in production right now.
+    const tmp = path.join(os.tmpdir(), `identify-prod-${process.pid}.js`);
+    const src = execFileSync("git", ["show", "ba5f009:api/identify.js"], {
+      cwd: path.join(__dirname, ".."), maxBuffer: 64 * 1024 * 1024, encoding: "utf8",
+    });
+    fs.writeFileSync(tmp, src + "\nmodule.exports.lookupCardPPT = lookupCardPPT;\n");
+    try {
+      const PRODM = require(tmp);
+      installPptMock(scoreOnlyRoutes());
+      const r = await PRODM.lookupCardPPT({ ...SCORE_READ }, "replay-prod", Promise.resolve({ ...LEGACY_CORRECT }));
+      assert.strictEqual(r.pricingLookup.tcgPlayerId, "83497");
+      assert.strictEqual(r.matchConfidence, "High");
+      assert.strictEqual(r.matchBasis, "score-only");
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  });
+
+  await test("AGREEMENT on 033/165: the non-holo prices normally at High", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardNumber: "033/165", attackName: "Syncroblast", setName: "Expedition Base Set" },
+      "agree-33",
+      Promise.resolve({ ...LEGACY_CORRECT, cardNumber: "033/165" })
+    );
+    assert.strictEqual(r.pricingLookup.tcgPlayerId, "83500");
+    assert.strictEqual(r.matchConfidence, "High");
+    assert.strictEqual(r.siblingAmbiguity, undefined);
+  });
+  await test("AGREEMENT on 001/165: a REAL holo must still price normally", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardNumber: "001/165", attackName: "Syncroblast", setName: "Expedition Base Set" },
+      "agree-1",
+      Promise.resolve({ ...LEGACY_CORRECT, cardNumber: "001/165" })
+    );
+    assert.strictEqual(r.pricingLookup.tcgPlayerId, "83497");
+    assert.strictEqual(r.pricingLookup.primaryPrinting, "Holofoil");
+    assert.strictEqual(r.matchConfidence, "High");
+    assert.strictEqual(r.siblingAmbiguity, undefined);
+  });
+  await test("AGREEMENT with a zero-padding difference still counts as agreement", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardNumber: "1/165", attackName: "Syncroblast", setName: "Expedition Base Set" },
+      "agree-pad",
+      Promise.resolve({ ...LEGACY_CORRECT, cardNumber: "001/165" })
+    );
+    assert.strictEqual(r.pricingLookup.tcgPlayerId, "83497");
+    assert.strictEqual(r.matchConfidence, "High");
+  });
+
+  await test("FAIL SAFE: a missing legacy read makes a sibling scan ambiguous", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const r = await M.lookupCardPPT({ ...SCORE_READ, cardNumber: "001/165" }, "nolegacy", null);
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous");
+    assert.strictEqual(r.pricingLookup, null);
+  });
+  await test("FAIL SAFE: a null legacy cardNumber makes a sibling scan ambiguous", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const r = await M.lookupCardPPT(
+      { ...SCORE_READ, cardNumber: "001/165" }, "nullnum",
+      Promise.resolve({ ...LEGACY_CORRECT, cardNumber: null })
+    );
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous");
+  });
+  await test("FAIL SAFE: a legacy read slower than the 500ms cap makes it ambiguous", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const slow = new Promise((resolve) => setTimeout(() => resolve({ ...LEGACY_CORRECT, cardNumber: "001/165" }), 4000));
+    const started = Date.now();
+    const r = await M.lookupCardPPT({ ...SCORE_READ, cardNumber: "001/165" }, "slowlegacy", slow);
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous");
+    assert.ok(Date.now() - started < 3000, "must not wait for the slow legacy read");
+  });
+
+  await test("SAME-RARITY siblings (Blastoise 36/37) are covered too", async () => {
+    installPptMock({
+      "Blastoise": F.padTo([F.BLASTOISE_36, F.BLASTOISE_37], 30, "Blastoise"),
+      "Blastoise|offset=30": F.padTo([], 3, "BlastoiseP2"),
+    });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Blastoise", hp: "90", cardNumber: "036/165", attackName: "Hydro Pump", setName: "Expedition Base Set" },
+      "blastoise-pair",
+      Promise.resolve({ found: true, confidence: "High", cardName: "Blastoise", cardNumber: "037/165", hp: "90", attackName: "Hydro Pump", language: "English", stampType: "none" })
+    );
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous");
+    assert.strictEqual(r.pricingLookup, null);
+    const nums = r.siblingAmbiguity.candidates.map((c) => c.number);
+    assert.deepStrictEqual(nums, ["036/165", "037/165"]);
+  });
+
+  await test("SKYRIDGE H-number siblings: disagreement across the H prefix is capped", async () => {
+    installPptMock({
+      "Alakazam": F.padTo([F.SKY_ALAKAZAM_2, F.SKY_ALAKAZAM_H1], 30, "Alakazam"),
+      "Alakazam|offset=30": F.padTo([], 3, "AlakazamP2"),
+    });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardNumber: "002/144", attackName: "Energy Crush", setName: "Skyridge" },
+      "sky-cap",
+      Promise.resolve({ found: true, confidence: "High", cardName: "Alakazam", cardNumber: "H01/H32", hp: "100", attackName: "Energy Crush", language: "English", stampType: "none" })
+    );
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous");
+    assert.strictEqual(r.pricingLookup, null);
+  });
+  await test("SKYRIDGE H-number siblings: agreement prices the H card normally", async () => {
+    installPptMock({
+      "Alakazam": F.padTo([F.SKY_ALAKAZAM_2, F.SKY_ALAKAZAM_H1], 30, "Alakazam"),
+      "Alakazam|offset=30": F.padTo([], 3, "AlakazamP2"),
+    });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardNumber: "H01/H32", attackName: "Energy Crush", setName: "Skyridge" },
+      "sky-agree-cap",
+      Promise.resolve({ found: true, confidence: "High", cardName: "Alakazam", cardNumber: "H01/H32", hp: "100", attackName: "Energy Crush", language: "English", stampType: "none" })
+    );
+    assert.strictEqual(r.pricingLookup && r.pricingLookup.tcgPlayerId, "84002");
+    assert.strictEqual(r.matchConfidence, "High");
+    assert.strictEqual(r.siblingAmbiguity, undefined);
+  });
+
+  // ======================================================================
+  // 14. NON-SIBLING cards must be completely unaffected
+  // ======================================================================
+  await test("NON-SIBLING: a lone candidate never gets the sibling treatment", async () => {
+    const lone = {
+      tcgPlayerId: "114004", setName: "XY Promos", name: "Pikachu", cardNumber: "XY95",
+      rarity: "Promo", cardType: "Pokemon", hp: "60",
+      attacks: ["[L] Thunder Shock (20)\r\n<br>Flip a coin."],
+      prices: { market: 207.44, primaryPrinting: "Holofoil", listings: 64 },
+      printingsAvailable: ["Holofoil"],
+    };
+    installPptMock({ "Pikachu": F.padTo([lone], 6, "Pikachu") });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Pikachu", hp: "60", cardNumber: "XY95", attackName: "Thunder Shock", setName: "XY Promos" },
+      "lone-xy95",
+      Promise.resolve({ found: true, confidence: "High", cardName: "Pikachu", cardNumber: "XY95", hp: "60", attackName: "Thunder Shock", language: "English", stampType: "none" })
+    );
+    assert.strictEqual(r.pricingLookup.tcgPlayerId, "114004");
+    assert.strictEqual(r.matchConfidence, "High");
+    assert.strictEqual(r.siblingAmbiguity, undefined);
+    assert.notStrictEqual(r.matchBasis, "sibling-ambiguous");
+  });
+  await test("NON-SIBLING: stamped twins share a NUMBER but not a set, so no sibling cap", async () => {
+    const twin = (tcgPlayerId, name, setName, market) => ({
+      tcgPlayerId, setName, name, cardNumber: "33/95",
+      rarity: "Holo Rare", cardType: "Pokemon", hp: "100",
+      attacks: ["[CCCC] Body Slam (40)\r\n<br>Flip a coin."],
+      prices: { market, primaryPrinting: "Holofoil" }, printingsAvailable: ["Holofoil"],
+    });
+    installPptMock({
+      "Snorlax": F.padTo([
+        twin("89392", "Snorlax", "Call of Legends", 30.23),
+        twin("213021", "Snorlax - 33/95 (Prerelease)", "Nintendo Promos", 499.99),
+      ], 30, "Snorlax"),
+      "Snorlax|offset=30": F.padTo([], 3, "SnorlaxP2"),
+      "Snorlax 9/95": F.padTo([], 3, "NoMatch"),
+      "Snorlax 09/95": F.padTo([], 3, "NoMatch"),
+    });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Snorlax", hp: "100", cardNumber: "9/95", attackName: "Body Slam" },
+      "snorlax-nosib",
+      Promise.resolve({ found: true, confidence: "High", cardName: "Snorlax", cardNumber: "33/95", hp: "100", attackName: "Body Slam", language: "English", stampType: "none" })
+    );
+    assert.strictEqual(r.pricingLookup && r.pricingLookup.tcgPlayerId, "89392");
+    assert.strictEqual(r.siblingAmbiguity, undefined);
+  });
+  await test("NON-SIBLING: the 30th-Celebration attack cap is unchanged", async () => {
+    const celebrationsPikachu = {
+      tcgPlayerId: "250303", setName: "Celebrations", name: "Pikachu", cardNumber: "005/025",
+      rarity: "Holo Rare", cardType: "Pokemon", hp: "60",
+      attacks: ["[L] Gnaw (10)\r\n<br>Nothing else."],
+      prices: { market: 4.58, primaryPrinting: "Holofoil" }, printingsAvailable: ["Holofoil"],
+    };
+    installPptMock({ "Pikachu": F.padTo([celebrationsPikachu], 5, "Pikachu") });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Pikachu", hp: "60", cardNumber: "005/025", attackName: "Targeted Spark", setName: "Celebrations" },
+      "pikachu-30th-nosib",
+      Promise.resolve({ found: true, confidence: "High", cardName: "Pikachu", cardNumber: "005/025", hp: "60", attackName: "Targeted Spark", language: "English", stampType: "none" })
+    );
+    assert.strictEqual(r.attackMismatch, true);
+    assert.strictEqual(r.matchConfidence, "Low");
+    assert.strictEqual(r.siblingAmbiguity, undefined);
+  });
+  await test("NON-SIBLING: the Trainer sub-floor rescue is unchanged", async () => {
+    const trainer = {
+      tcgPlayerId: "700001", setName: "SV Paldean Fates", name: "Iono",
+      cardNumber: "237/091", rarity: "Special Illustration Rare", cardType: "Trainer",
+      hp: null, attacks: null, pokemonType: "Trainer - Supporter",
+      prices: { market: 88.0, primaryPrinting: "Holofoil" }, printingsAvailable: ["Holofoil"],
+    };
+    installPptMock({
+      "Iono": F.padTo([trainer], 30, "Iono"),
+      "Iono|offset=30": F.padTo([], 3, "IonoP2"),
+      "Iono 137/091": F.padTo([], 3, "NoMatch"),
+    });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Iono", hp: null, cardNumber: "137/091", attackName: null },
+      "trainer-nosib",
+      Promise.resolve({ found: true, confidence: "High", cardName: "Iono", cardNumber: "237/091", hp: null, attackName: null, language: "English", stampType: "none" })
+    );
+    assert.strictEqual(r.pricingLookup && r.pricingLookup.tcgPlayerId, "700001");
+    assert.strictEqual(r.matchBasis, "legacy-number-rescue");
+    assert.strictEqual(r.siblingAmbiguity, undefined);
+  });
+
+  // ======================================================================
+  // 15. THE GENERIC LESSON (test #102)
+  // ======================================================================
+  // #101 removed a Low cap (the accidental ATTACK MISMATCH catch) and, on a
+  // sibling pair, that silently promoted a WRONG card from Low to High. The
+  // lesson is not about attacks: ANY change that removes or weakens a Low cap
+  // has to be checked against a disagreeing sibling pair. Encoded as a matrix
+  // so a future change that re-opens this hole fails here rather than in
+  // production.
+  await test("LESSON: a disagreeing sibling pair is never High and never priced, whatever the attack read does", async () => {
+    const attackReads = [
+      ["Syncroblast", "matches the candidate's attack list"],
+      ["Psymimic", "a Poke-POWER misread (suppression fires)"],
+      ["Prypower", "a different Poke-POWER misread"],
+      ["Totally Bogus Attack", "matches nothing at all"],
+      [null, "no attack read at all"],
+    ];
+    for (const [attackName, label] of attackReads) {
+      installPptMock(scoreOnlyRoutes());
+      const r = await M.lookupCardPPT(
+        { ...BASE_READ, cardNumber: "1/165", attackName, setName: "Expedition Base Self" },
+        `lesson-${String(attackName)}`,
+        Promise.resolve({ ...LEGACY_CORRECT })
+      );
+      assert.notStrictEqual(r.matchConfidence, "High", `High confidence leaked with attack read ${label}`);
+      assert.ok(
+        r.pricingLookup == null,
+        `a single confident price leaked with attack read ${label}: ${JSON.stringify(r.pricingLookup)}`
+      );
+      assert.ok(
+        r.siblingAmbiguity || r.printingUndetermined,
+        `neither disclosure mechanism fired with attack read ${label}`
+      );
+    }
+  });
+  await test("LESSON: the cap cannot change which candidate scoring chose", async () => {
+    // best stays the winner; the cap only withholds and discloses. The
+    // disclosed group must CONTAIN the scoring winner, never replace it.
+    installPptMock(scoreOnlyRoutes());
+    const r = await M.lookupCardPPT({ ...SCORE_READ }, "lesson-winner", Promise.resolve({ ...LEGACY_CORRECT }));
+    const ids = r.siblingAmbiguity.candidates.map((c) => c.tcgPlayerId);
+    assert.ok(ids.includes("83497"), "the scoring winner must still be disclosed");
+    assert.ok(ids.includes("83500"), "the sibling must be disclosed alongside it");
+  });
+  await test("LESSON: the cap adds no PPT calls", async () => {
+    const calls = installPptMock(scoreOnlyRoutes());
+    await M.lookupCardPPT({ ...SCORE_READ, cardNumber: "1/166" }, "lesson-calls", Promise.resolve({ ...LEGACY_CORRECT }));
+    const before = calls.length;
+    const calls2 = installPptMock(scoreOnlyRoutes());
+    await M.lookupCardPPT({ ...SCORE_READ, cardNumber: "1/167" }, "lesson-calls2", Promise.resolve({ ...LEGACY_CORRECT, cardNumber: "1/167" }));
+    assert.ok(before > 0 && calls2.length > 0);
   });
 
   // ----------------------------------------------------------------------

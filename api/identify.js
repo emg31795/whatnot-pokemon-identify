@@ -1853,6 +1853,22 @@ function candidateSiblingBaseName(candidate) {
 // setName-rescue acceptance check uses) on the Shadowless-stripped set
 // name — NOT the loosened substring test, which CLAUDE.md's DO-NOT list
 // forbids widening for exactly this class of reason.
+// ADDED (2026-10-15, test #102): does this read number positively identify
+// that candidate? Deliberately stricter than `numbersMatch(...).match` alone,
+// combining both existing primitives:
+//   - a "weak" (asymmetric bare-promo) match is a coincidence by definition
+//     and cannot corroborate anything;
+//   - totalsContradict is checked explicitly so a disagreeing denominator can
+//     never read as corroboration.
+// Used only by the sibling-disagreement cap, which asks "do the two models'
+// numbers point at the SAME member of this sibling group?"
+function numberPointsAtCandidate(numberRaw, candidate) {
+  if (!numberRaw || !candidate || !candidate.number) return false;
+  const nm = numbersMatch(numberRaw, candidate.number);
+  if (!nm.match || nm.strength === "weak") return false;
+  return !totalsContradict(numberRaw, candidate.number);
+}
+
 function sameSiblingGroup(a, b) {
   if (!a || !b) return false;
   if (a.tcgPlayerId && b.tcgPlayerId && String(a.tcgPlayerId) === String(b.tcgPlayerId)) return false;
@@ -4252,6 +4268,132 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // SIBLING-DISAGREEMENT CAP (2026-10-15, test #102)
+  // -------------------------------------------------------------------------
+  // The #101 guards stopped the legacy-number RESCUE from swapping in a holo
+  // sibling, but a production scan (requestId 159a5822) reached the same
+  // wrong card by a completely different route: the primary model read
+  // "1/165" off an Expedition Alakazam whose real number is 033/165, that
+  // number matched Alakazam (1) 001/165 EXACTLY, and so the $250 holo won on
+  // plain scoring — bestScore 26, tieCount 1, `score-only`, **High**. No
+  // rescue ran, so nothing in #101 could see it.
+  //
+  // Worse, #101 made that scan's disclosure strictly weaker. The old ATTACK
+  // MISMATCH rule had been capping it to Low by accident: the primary model
+  // misreads the attack and the number together, so the garbage attack name
+  // was correlating with the garbage number. Once the cross-model suppression
+  // (correctly) stopped treating a Poké-POWER misread as disproof, the Low
+  // went away and the wrong card was presented at High. Measured against the
+  // pre-fix commit on that exact read: Low/attackMismatch=true before,
+  // High/false after. Both siblings share `[2P] Syncroblast (80)`, so the
+  // attack signal carries NO card-identity information inside a sibling group
+  // — it was never diagnosing this, only coinciding with it.
+  //
+  // So the check belongs here, after every path has chosen a winner
+  // (score-only, any rescue, setname-*), and it is about the ONE signal that
+  // actually separates sibling printings: the card number.
+  //
+  // Rule: if the pool holds an above-floor sibling of the winner, the number
+  // must be CORROBORATED — the legacy model's number has to point at the same
+  // member of the group as the primary's. If it points at a different
+  // sibling, or there is no usable legacy number at all, we genuinely do not
+  // know which printing this is, and the measured sibling price gap (5.9x
+  // median on Expedition, worst 15.2x) makes a confident single answer the
+  // most expensive possible mistake.
+  //
+  // FAIL SAFE on a missing/slow legacy read, per explicit instruction: no
+  // corroboration means ambiguous, not "assume the primary is right". The
+  // legacy read is normally the SLOWER of the two (~2.6s vs ~1.9s measured),
+  // but it starts in parallel and this check runs after the primary read AND
+  // the PPT lookups, so it has usually long since resolved; the 500ms cap is
+  // the same one the other legacy consumers use. `[sibling-cap]` logs the
+  // readiness outcome on every firing so the real rate is measurable from
+  // organic traffic rather than estimated.
+  //
+  // Scope: this can only ever LOWER confidence and withhold a single price.
+  // It cannot change which candidate won, and it is unreachable unless two
+  // products share a base name AND a set — the e-Card double-print structure
+  // (94 such groups across Expedition/Aquapolis/Skyridge) plus same-set
+  // same-name pairs like Expedition's Blastoise (36)/(37).
+  let siblingAmbiguity = null;
+  if (best && bestScore >= MATCH_FLOOR && matchBasis !== "sibling-ambiguous") {
+    const poolSiblings = distinctByDedupKey(
+      (candidates || []).filter(
+        (c) => sameSiblingGroup(best, c) && scoreCandidate(c, read).score >= MATCH_FLOOR
+      )
+    );
+    if (poolSiblings.length) {
+      const primaryPointsAtBest = numberPointsAtCandidate(read.cardNumber, best);
+      const legacyRead = await awaitLegacyReadCapped(legacyReadPromise, requestId, "the sibling-disagreement cap");
+      const legacyNumber = legacyRead && legacyRead.found ? legacyRead.cardNumber || null : null;
+      const legacyPointsAtBest = numberPointsAtCandidate(legacyNumber, best);
+      const legacySibling = poolSiblings.find((c) => numberPointsAtCandidate(legacyNumber, c)) || null;
+      const corroborated = legacyPointsAtBest && !legacySibling;
+
+      console.log(
+        `[requestId=${requestId}]`,
+        `[sibling-cap] best=${best.name} ${best.number} (tcgPlayerId=${best.tcgPlayerId}) siblings=${poolSiblings.length} ` +
+          `legacyReady=${legacyRead ? "yes" : "no"} legacyNumber=${legacyNumber || "null"} ` +
+          `primaryPointsAtBest=${primaryPointsAtBest} legacyPointsAtBest=${legacyPointsAtBest} ` +
+          `legacyPointsAtSibling=${legacySibling ? `${legacySibling.name} ${legacySibling.number}` : "no"} corroborated=${corroborated}`
+      );
+
+      if (!corroborated) {
+        // Ordered by card number ascending — deterministic, and never
+        // price-ranked, so the panel cannot imply the expensive one is the
+        // likely answer.
+        const group = [best, ...poolSiblings].sort((x, y) => {
+          const nx = normalizeNumber(x.number);
+          const ny = normalizeNumber(y.number);
+          return (nx ? Number(nx.num) : 0) - (ny ? Number(ny.num) : 0);
+        });
+        siblingAmbiguity = {
+          // One plain-language line, per explicit instruction: Eric can see
+          // holo vs non-holo on stream, which is exactly the signal that
+          // separates these two, so the panel asks for THAT rather than for
+          // the card number the models keep misreading.
+          prompt: "Check whether the card is holo to tell these apart.",
+          reason: legacySibling
+            ? `the two AI models read different card numbers ("${read.cardNumber || "unreadable"}" vs "${legacyNumber}"), each pointing at a different one of these printings`
+            : `only one AI model produced a usable card number ("${read.cardNumber || "unreadable"}"), and this set prints the same card as both a holo and a non-holo`,
+          candidates: group.map((c) => ({
+            tcgPlayerId: c.tcgPlayerId || null,
+            name: c.name,
+            number: c.number,
+            rarity: c.rarity || null,
+            setName: c.setName || null,
+            tcgplayerUrl: c.tcgPlayerUrl || null,
+            // Ready-to-use for a POST /api/price call per candidate, so the
+            // panel can show each one's real NM market and NM Suggested Bid
+            // from live TCGplayer data. api/price.js is UNCHANGED — this is
+            // the same shape it already takes.
+            pricingLookup: {
+              tcgPlayerId: c.tcgPlayerId || null,
+              tag: null,
+              siblingTcgPlayerId: null,
+              siblingTag: null,
+              siblingSetName: null,
+              stampType: read.stampType,
+              primaryPrinting: c.prices?.primaryPrinting ?? null,
+              listingCount: c.prices?.listings ?? null,
+            },
+          })),
+        };
+        matchConfidence = "Low";
+        matchBasis = "sibling-ambiguous";
+        const siblingNote =
+          `This set prints the same card as both a holo and a non-holo, told apart ONLY by the card number — and ${siblingAmbiguity.reason}. ` +
+          `Both printings are shown below with their own price and bid. ${siblingAmbiguity.prompt}`;
+        ambiguousNote = ambiguousNote ? `${ambiguousNote} ${siblingNote}` : siblingNote;
+        console.log(
+          `[requestId=${requestId}]`,
+          `[lookup] SIBLING DISAGREEMENT CAP: ${group.map((c) => `${c.name} ${c.number} (${c.rarity || "?"}, tcgPlayerId=${c.tcgPlayerId})`).join(" | ")} — capped to Low, no single price`
+        );
+      }
+    }
+  }
+
   // NOTE (2026-08-27): the "read a specific number that matches nothing in
   // the pool at all" check (originally added for the Hitmontop/Crimson
   // Haze case) now runs FIRST, above, before the tie-break check — see the
@@ -4374,6 +4516,18 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     },
     _tcgSearchName: tcgSearchName,
   };
+
+  // SIBLING-DISAGREEMENT CAP (2026-10-15, test #102): withhold the single
+  // confident price and hand the panel BOTH printings instead, each with its
+  // own ready-to-use pricingLookup so the extension can price them
+  // separately. Deliberately a mutation of the assembled result rather than a
+  // second literal: every other field (cardName, setName, image,
+  // matchConfidence, matchBasis, ambiguousNote, attackMismatch) is already
+  // correct for this case and must not drift from the normal shape.
+  if (siblingAmbiguity) {
+    lookupResult.pricingLookup = null;
+    lookupResult.siblingAmbiguity = siblingAmbiguity;
+  }
 
   // Only a genuine `found: true` result is ever cached — never
   // `notFound`/`error` (rate-limited, card-db-unavailable) responses.
@@ -5830,6 +5984,14 @@ module.exports.GRADED_MAX_LAST_SALE_AGE_DAYS = GRADED_MAX_LAST_SALE_AGE_DAYS;
 // called directly by the handler in this same file — so exporting them
 // cannot change runtime behavior.
 module.exports.lookupCardPPT = lookupCardPPT;
+// Lets the local test suite assert that its Runtime Cache stub actually took
+// effect. The 30s process-global cache keyed on language+name+number silently
+// couples unrelated test cases together (see test/alakazam.test.js), so the
+// suite stubs @vercel/functions out and checks this flag rather than trusting
+// that it worked. Always false in production, where the package is present.
+// Must live down here: `module.exports = handler` above replaces the whole
+// exports object, so anything assigned earlier is discarded.
+module.exports.__cacheDisabledForTests = !getCache;
 module.exports.totalsContradict = totalsContradict;
 module.exports.numbersMatch = numbersMatch;
 module.exports.sameSiblingGroup = sameSiblingGroup;

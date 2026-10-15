@@ -124,7 +124,38 @@ function padTo(rows, n, seedName) {
   return out;
 }
 
+// Real Expedition pair where BOTH siblings are non-holo Rares (036/165 and
+// 037/165, productIds 83889/83890 from TCGplayer's own catalog). Proves the
+// sibling cap is not a holo-vs-non-holo special case.
+const BLASTOISE_36 = {
+  tcgPlayerId: "83889",
+  setName: "Expedition",
+  name: "Blastoise (36)",
+  cardNumber: "036/165",
+  rarity: "Rare",
+  cardType: "Pokemon",
+  hp: "90",
+  attacks: ["[2W] Hydro Pump (40+)\r\n<br>Does 40 damage plus 10 more for each Water Energy."],
+  prices: { market: 24.0, primaryPrinting: "Normal" },
+  printingsAvailable: ["Reverse Holofoil", "Normal"],
+};
+
+const BLASTOISE_37 = {
+  tcgPlayerId: "83890",
+  setName: "Expedition",
+  name: "Blastoise (37)",
+  cardNumber: "037/165",
+  rarity: "Rare",
+  cardType: "Pokemon",
+  hp: "90",
+  attacks: ["[2W] Hydro Pump (40+)\r\n<br>Does 40 damage plus 10 more for each Water Energy."],
+  prices: { market: 31.5, primaryPrinting: "Normal" },
+  printingsAvailable: ["Reverse Holofoil", "Normal"],
+};
+
 module.exports = {
+  BLASTOISE_36,
+  BLASTOISE_37,
   ALAKAZAM_33,
   ALAKAZAM_1,
   SKY_ALAKAZAM_2,

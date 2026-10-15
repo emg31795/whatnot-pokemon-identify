@@ -651,6 +651,14 @@
     if (response.data.found && response.data.pricingLookup) {
       fetchAndRenderPricing(response.data);
     }
+    // ADDED 2026-10-15 (sibling-disagreement cap, test #102): the backend
+    // could not tell two sibling printings apart, so there is no single
+    // `pricingLookup` — it hands over one per candidate instead and the panel
+    // prices BOTH. Eric can see holo vs non-holo on stream, so two real bids
+    // are more useful than withholding everything.
+    if (response.data.found && response.data.siblingAmbiguity) {
+      fetchAndRenderSiblingPrices(response.data);
+    }
   }
 
   // ADDED (2026-09-12, client-side auto-retry): shows a live "Retrying in
@@ -714,6 +722,52 @@
           priceVariantUsed: null,
         });
       });
+  }
+
+  // ADDED 2026-10-15 (sibling-disagreement cap, test #102): fires one
+  // /api/price call per ambiguous sibling and fills that candidate's row with
+  // its own NM market price and NM Suggested Bid. api/price.js is unchanged —
+  // each candidate arrives with a ready-made `pricingLookup` of exactly the
+  // shape it already accepts. Rows are rendered (and ordered) by the backend;
+  // this only fills in the two numbers per row.
+  function fetchAndRenderSiblingPrices(identifyData) {
+    const list = (identifyData.siblingAmbiguity && identifyData.siblingAmbiguity.candidates) || [];
+    list.forEach((cand) => {
+      if (!cand.pricingLookup || !cand.pricingLookup.tcgPlayerId) return;
+      getPriceUrl()
+        .then((url) =>
+          fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ requestId: identifyData.requestId, pricingLookup: cand.pricingLookup }),
+          })
+        )
+        .then((resp) => resp.json())
+        .then((priceData) => {
+          // Same staleness guard as fetchAndRenderPricing: never let a slow
+          // response paint over a newer scan's panel.
+          if (!lastResultData || lastResultData.requestId !== identifyData.requestId) return;
+          const nmPrice = priceData.conditionPrices ? priceData.conditionPrices.NM : null;
+          const nmBid = priceData.conditionsSuggestedBid ? priceData.conditionsSuggestedBid.NM : null;
+          fillSiblingRow(cand.tcgPlayerId, nmPrice, nmBid, priceData.pricingError);
+        })
+        .catch((e) => {
+          console.warn("[wnpk] sibling price fetch failed:", e);
+          if (!lastResultData || lastResultData.requestId !== identifyData.requestId) return;
+          fillSiblingRow(cand.tcgPlayerId, null, null, "price unavailable");
+        });
+    });
+  }
+
+  function fillSiblingRow(tcgPlayerId, nmPrice, nmBid, errorText) {
+    const cell = $(`#wnpk-sib-price-${tcgPlayerId}`);
+    if (!cell) return;
+    if (errorText || nmPrice == null) {
+      cell.textContent = errorText || "no price";
+      return;
+    }
+    const bidText = nmBid == null ? "Bid: —" : nmBid <= 0 ? "Bid: Skip" : `Bid: $${nmBid.toFixed(2)}`;
+    cell.textContent = `NM $${nmPrice.toFixed(2)} · ${bidText}`;
   }
 
   // HOISTED 2026-09-10 (identify/pricing decoupling) from inner functions
@@ -1506,7 +1560,14 @@
     // so fetchAndRenderPricing (identifyCard) never fires a `/api/price`
     // call for it. Without this branch, the section below would show
     // "Loading price…" forever, since nothing ever resolves it.
-    const priceSectionHtml = data.pricingLookup
+    // ADDED 2026-10-15 (test #102): the sibling-ambiguous case has no single
+    // price but DOES have two fully-identified candidates, so it gets its own
+    // branch rather than the blanket "price withheld" line. Each row shows
+    // number and rarity (the holo/non-holo tell Eric can actually check on
+    // stream) and is filled in by fetchAndRenderSiblingPrices.
+    const priceSectionHtml = data.siblingAmbiguity
+      ? `<div id="wnpk-sibling-section">${siblingRowsHtml(data.siblingAmbiguity)}</div>`
+      : data.pricingLookup
       ? `<div id="wnpk-price-section"><div class="wnpk-cond-label">Loading price…</div></div>`
       : `<div class="wnpk-cond-label">Printing undetermined — price withheld, see warning above.</div>`;
     $("#wnpk-body").innerHTML = `
@@ -1515,6 +1576,27 @@
       ${priceSectionHtml}
       ${footer}
     `;
+  }
+
+  // ADDED 2026-10-15 (test #102). Deliberately NOT price-ranked: rows arrive
+  // in the backend's card-number order so the panel never implies the
+  // expensive printing is the likely answer.
+  function siblingRowsHtml(siblingAmbiguity) {
+    const rows = (siblingAmbiguity.candidates || [])
+      .map(
+        (c) => `
+        <div class="wnpk-sib-row">
+          <div class="wnpk-sib-name">${escapeHtml(c.name)} <span class="wnpk-sib-meta">${escapeHtml(
+          c.number || "?"
+        )}${c.rarity ? ` · ${escapeHtml(c.rarity)}` : ""}</span></div>
+          <div class="wnpk-sib-price" id="wnpk-sib-price-${escapeHtml(c.tcgPlayerId)}">Loading price…</div>
+        </div>`
+      )
+      .join("");
+    return `
+      <div class="wnpk-cond-label">Two printings of this card — can't tell which from the scan</div>
+      ${rows}
+      <div class="wnpk-sib-prompt">${escapeHtml(siblingAmbiguity.prompt)}</div>`;
   }
 
   function escapeHtml(str) {

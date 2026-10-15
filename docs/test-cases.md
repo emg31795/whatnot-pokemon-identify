@@ -11718,6 +11718,185 @@ Three options for the current deploy, Eric's call:
    real $92.62-vs-$11.20 bid error on Eric's own card) and the uncapped await.
    Not recommended.
 
+## #103 — 2026-10-15 — The sibling-disagreement cap on the scoring path (built, preview only)
+
+Closes the hole #102 found: a single-model number misread that lands exactly
+on a sibling printing, winning on plain scoring at High with no rescue
+involved. `api/identify.js` + `extension/content.js` + `extension/content.css`.
+
+### The rule
+
+After every path has chosen a winner (`score-only`, any rescue, `setname-*`),
+if the fetched pool holds an above-floor sibling of the winner
+(`sameSiblingGroup` — same base name, same set, `scoreCandidate >=
+MATCH_FLOOR`), the card number must be **corroborated**: the legacy model's
+number has to point at the SAME member of the group as the primary's, via
+`numberPointsAtCandidate` (a non-weak `numbersMatch` AND no
+`totalsContradict`). Otherwise → **Low**, `matchBasis "sibling-ambiguous"`,
+`pricingLookup: null`, and a `siblingAmbiguity` payload.
+
+`numberPointsAtCandidate` is new and deliberately stricter than
+`numbersMatch(...).match`: a "weak" asymmetric bare-promo match is a
+coincidence by definition and cannot corroborate anything, and
+`totalsContradict` is checked explicitly so a disagreeing denominator can
+never read as agreement.
+
+**Fail safe, per instruction:** a missing, timed-out or numberless legacy read
+means ambiguous, never "assume the primary is right."
+
+The cap can only LOWER confidence and withhold a single price. It cannot
+change which candidate won — a test asserts the disclosed group always
+*contains* the scoring winner rather than replacing it — and it adds no PPT
+calls.
+
+### Panel (extension changed — reload needed)
+
+`siblingAmbiguity` carries, per candidate, `name`, `number`, `rarity`,
+`setName`, `tcgplayerUrl` and a ready-made `pricingLookup` of exactly the
+shape `/api/price` already accepts, so **api/price.js is unchanged**.
+`content.js` fires one price call per candidate and fills its row.
+Candidates are ordered by card number ascending — never price-ranked, so the
+panel cannot imply the expensive printing is the likely answer.
+
+Verified against the live `/api/price` with the exact objects the backend now
+emits:
+
+```
+Two printings of this card — can't tell which from the scan
+Alakazam (1)  001/165 · Holo Rare      NM $240.27 · Bid: $92.62
+Alakazam (33) 033/165 · Rare           NM $20.76  · Bid: $11.20
+Check whether the card is holo to tell these apart.
+```
+
+Extension diff is small: a dispatch branch, `fetchAndRenderSiblingPrices`,
+`fillSiblingRow`, `siblingRowsHtml`, one `priceSectionHtml` branch, and four
+CSS rules. **`extension/content.js` and `content.css` changed, so the
+extension needs a manual reload in `chrome://extensions`.**
+
+### Confirmed against REAL PPT data
+
+Not just fixtures — `lookupCardPPT` run locally against live PPT with the
+exact read pair from production `159a5822` (primary `1/165` / "Prypower",
+legacy `33/165` / "Syncroblast"). Real pool, real pagination, real scoring:
+
+```
+[lookup] page 2 raw candidate count= 12 ... re-scoring with page 1 + page 2 merged, total candidates= 42
+best= { name: 'Alakazam (1)', number: '001/165', setName: 'Expedition' }
+[sibling-cap] best=Alakazam (1) 001/165 (tcgPlayerId=83497) siblings=1 legacyReady=yes
+  legacyNumber=33/165 primaryPointsAtBest=true legacyPointsAtBest=false
+  legacyPointsAtSibling=Alakazam (33) 033/165 corroborated=false
+[lookup] SIBLING DISAGREEMENT CAP: Alakazam (1) 001/165 (Holo Rare, tcgPlayerId=83497)
+  | Alakazam (33) 033/165 (Rare, tcgPlayerId=83500) — capped to Low, no single price
+```
+
+→ `matchConfidence Low`, `matchBasis sibling-ambiguous`, `pricingLookup null`,
+both candidates disclosed. Production (`ba5f009`) returns **High 83497** on
+that same read; a pinned test asserts exactly that, so the suite cannot pass
+vacuously.
+
+### Tests — 69 pass, 0 fail (`node test/alakazam.test.js`)
+
+Up from 47. New: the 159a5822 replay (never High, never priced, both
+disclosed with rarity and a usable pricingLookup, card-number order, holo
+prompt); agreement on `033/165` → 83500 High; agreement on `001/165` →
+**83497 prices normally** (a real holo must still work); zero-padding
+agreement (`1/165` vs `001/165`) still counts as agreement; three fail-safe
+cases (no legacy promise, null legacy number, legacy slower than the 500ms
+cap — asserting it does not wait); same-rarity siblings (real Expedition
+Blastoise 036/037); Skyridge H-number siblings capped on disagreement and
+priced normally on agreement; and four NON-SIBLING regressions asserting
+`siblingAmbiguity === undefined` — a lone XY95-shaped candidate, the Snorlax
+stamped twins (same number, different SET, so not siblings), the
+30th-Celebration attack cap, and the Trainer sub-floor rescue.
+
+**The generic lesson, as a test.** #101 removed a Low cap and that silently
+promoted a wrong card from Low to High on a sibling pair. The lesson is not
+about attacks, so it is encoded as a matrix: for a disagreeing sibling pair,
+across five attack reads (matching, two different Poké-POWER misreads, a
+nonsense name, and no attack at all), the result must never be High and must
+never carry a single confident price. Any future change that reopens this
+hole fails here instead of in production.
+
+### Test-harness bug worth recording
+
+Three assertions were passing **vacuously**. `lookupCardPPT` caches for 30s on
+language+name+number via `@vercel/functions`' `getCache()`, and that cache is
+process-global and shared across module instances — so one test priced
+`001/165` normally, cached it, and the next test using the same read got the
+cached answer without ever entering the code under test. The suite now stubs
+`@vercel/functions` out before loading the module (identify.js already treats
+a missing package as "caching disabled") and asserts
+`__cacheDisabledForTests` to prove the stub took effect.
+
+**The same cache can bypass the cap in production**, within a 30s window: a
+cached normal result is returned before `lookupCardPPT` runs at all. It is
+deterministic for an identical read, so the only exposure is two scans sharing
+a primary read but differing in their legacy read inside 30s. Not fixed —
+noted.
+
+### Preview e2e — `dpl_EF2JaPbQFhaBYZngV69Ti8CKZTqk`, `sourceHash a6052d3ac22da0a5bb1093b961a23c7005059a5f`
+
+Six consecutive scans of the clean Alakazam 33 image, each spaced past the 30s
+cache, plus XY95:
+
+| run | requestId | read number | result | latency |
+|---|---|---|---|---|
+| 1 | `f37a335a` | 33/165 | **83500** High `score-only` | 2087ms |
+| 2 | `2234ec8b` | 33/165 | **83500** High `score-only` | 1897ms |
+| 3 | `5b41205d` | 33/165 | **83500** High `score-only` | 1343ms |
+| 4 | `a5db16f5` | 33/165 | **83500** High `score-only` | 1657ms |
+| 5 | `df834ceb` | 33/165 | **83500** High `score-only` | 2012ms |
+| 6 | `fa406e8d` | 33/165 | **83500** High `score-only` | 1910ms |
+| XY95 | `491b4125` | XY95 | 114004 High `score-only`, no `siblingAmbiguity` | 1570ms |
+
+**None was a High 83497.** All six read the number CORRECTLY this time
+(bestScore 26-33, tieCount 1) — so the number matched on page 1, **page 2 was
+never fetched, the holo sibling was never in the pool, and the cap never
+ran.** Attack reads across the six: "Prymimic" x3, "Psymimic", "Syncroblast"
+x2 — the suppression fired on the four Poké-POWER misreads.
+
+### KNOWN LIMITATION — the cap is pool-dependent
+
+It can only see a sibling that was actually fetched. The dangerous case is
+covered by construction: a wrong number that matches nothing on page 1
+triggers the page-2 fetch, which is what pulls the sibling in (exactly what
+happened on 159a5822 and in the real-PPT run above). But if a wrong number
+matches a sibling that happens to sit ON page 1 while the true card does not,
+no page-2 fetch occurs and the cap cannot see the pair. Not addressed here.
+Closing it would mean fetching page 2 whenever the winner's name has a
+numeric-parenthetical shape, i.e. an extra 30-credit PPT call on a class of
+ordinary scans — measure before building.
+
+### Item 3 answer: how often will the fail safe fire?
+
+**Timing is not the bottleneck.** The legacy read is the slower of the two
+(2026-10-14 window, n=9: primary median 1811ms, legacy median 1937ms, legacy
+slower in 7/9) but it starts in parallel and the cap runs after the primary
+read AND the PPT lookups (lookup median 392ms, n=5). At that median, 9/9 would
+have resolved inside the 500ms cap; at a zero-cost lookup, 8/9. The one direct
+observation so far — the real-PPT run — logged `legacyReady=yes`.
+
+**The real driver is the legacy read producing no number at all.** Its
+`cardNumber` non-null baseline is **56.9%** (41/72), so roughly **4 in 10
+sibling-pair scans will fail safe into "ambiguous" on a missing legacy number
+alone**, even when the primary read is correct. That is the accepted cost of
+the fail-safe direction, and it only applies to scans where a sibling is
+actually in the pool — rare outside the e-Card sets. `[sibling-cap]` logs
+`legacyReady`, `legacyNumber`, `primaryPointsAtBest`, `legacyPointsAtBest`,
+`legacyPointsAtSibling` and `corroborated` on every firing, so the real rate
+is measurable from organic traffic rather than estimated.
+
+### Also changed
+
+`f033dcfe` (the original Alakazam scan) now resolves to **sibling-ambiguous**
+rather than #101's "83500 at Low with a price" — the primary read "1/18"
+points at neither sibling while the legacy "1/165" points at the holo, so both
+are disclosed and neither is priced. Strictly more honest, and it still
+satisfies the hard requirement: never 83497.
+
+**NOT DEPLOYED TO PRODUCTION.** Production remains
+`dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (`9738bb38…`).
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
