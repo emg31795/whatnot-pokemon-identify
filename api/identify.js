@@ -131,6 +131,17 @@ const GEMINI_TIMEOUT_MS = 5000;
 // and the scan falls through to existing behavior.
 const LEGACY_SETNAME_HINT_TIMEOUT_MS = 500;
 
+// Cap on awaiting the legacy shadow read inside the ATTACK MISMATCH check
+// and the downstream LEGACY-MODEL NUMBER RESCUE, same Promise.race pattern
+// and same reasoning as LEGACY_SETNAME_HINT_TIMEOUT_MS above. Both were
+// bare `await legacyReadPromise` calls bounded only by GEMINI_TIMEOUT_MS,
+// and the downstream rescue's uncapped await is the one that produced the
+// single real runtime error in the 2026-10-14 deploy window
+// ("legacy-model rescue check failed ... This operation was aborted").
+// A legacy read that is not ready in time is treated as absent, which
+// leaves each caller on its pre-existing no-legacy-read path.
+const LEGACY_NUMBER_RESCUE_TIMEOUT_MS = 500;
+
 // PHASE 2-LITE (2026-10-11): hard cap on label-driven PPT searches per
 // scan. Each is a full limit=30 request (30 credits, ~3 rate-limit units),
 // and this path only runs on a slab that the ordinary lookup already
@@ -443,6 +454,42 @@ function distinctByDedupKey(candidates) {
     out.push(c);
   }
   return out;
+}
+
+// ADDED (2026-10-15): await the legacy shadow read with a hard cap, the
+// same Promise.race-plus-cleared-timer shape the setName-hint path has
+// used since 2026-10-02. Returns the legacy read object, or null if it
+// timed out, rejected, or came back unusable — so every caller's
+// "no legacy read available" branch covers the slow case for free.
+//
+// Replaces the bare `await legacyReadPromise` on the downstream number
+// rescue, which was bounded only by GEMINI_TIMEOUT_MS and is where the
+// one real runtime error of the 2026-10-14 window came from. The
+// `.catch(() => null)` is what keeps a rejected legacy read from becoming
+// an unhandled rejection; the timer is cleared on every path so a resolved
+// race never holds the function open.
+async function awaitLegacyReadCapped(legacyReadPromise, requestId, label, timeoutMs = LEGACY_NUMBER_RESCUE_TIMEOUT_MS) {
+  if (!legacyReadPromise) return null;
+  let timer = null;
+  try {
+    const timeoutPromise = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ __legacyTimedOut: true }), timeoutMs);
+    });
+    const legacyRead = await Promise.race([legacyReadPromise.catch(() => null), timeoutPromise]);
+    if (legacyRead && legacyRead.__legacyTimedOut) {
+      console.log(
+        `[requestId=${requestId}]`,
+        `[lookup] legacy shadow read not ready within ${timeoutMs}ms for ${label} — continuing without it`
+      );
+      return null;
+    }
+    return legacyRead || null;
+  } catch (e) {
+    console.error(`[requestId=${requestId}]`, `[lookup] legacy shadow read unavailable for ${label} (treating as absent):`, e && e.message);
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function withCors(res) {
@@ -1347,6 +1394,38 @@ function numbersMatch(readRaw, candRaw) {
   return { match: true, points: SCORE.number * 0.35, strength: "weak" };
 }
 
+// ADDED (2026-10-15, Alakazam 33/165 — requestId f033dcfe): does the
+// DENOMINATOR of two numbers positively disagree? This is deliberately
+// numbersMatch's own `bothHaveTotal` disqualification rule and nothing
+// more — same fields, same comparison, same "a different total is a
+// different set/printing entirely" reasoning written out above — lifted
+// into a predicate that can be asked about a number pair whose NUMERATORS
+// were never expected to match.
+//
+// numbersMatch itself is useless for that question: it short-circuits on
+// `a.num !== b.num` and reports `strength: "none"` without ever looking at
+// the totals, so a read of "1/18" against a candidate "001/165" is
+// indistinguishable from "1/18" against "77/102".
+//
+// The real case: the primary model read "1/18" off an Expedition Alakazam
+// whose true number is 033/165. The legacy shadow model read "1/165",
+// which matched Alakazam (1) 001/165 exactly, and the downstream rescue
+// installed that card — an 11.7x more expensive holo sibling. The primary
+// read's own denominator ("/18") contradicted the rescue target's ("/165")
+// the whole time; nothing was looking.
+//
+// Returns false whenever either side lacks a total, matching numbersMatch's
+// treatment of the asymmetric bare-promo-number case as weak-but-not-
+// disqualifying rather than as a contradiction. Absence of a denominator is
+// not disagreement about one.
+function totalsContradict(aRaw, bRaw) {
+  const a = normalizeNumber(aRaw);
+  const b = normalizeNumber(bRaw);
+  if (!a || !b) return false;
+  if (!a.total || !b.total) return false;
+  return a.total !== b.total || a.totalPrefix !== b.totalPrefix;
+}
+
 // FIX (2026-09-27, live test — Mewtwo 10/130 and Nidoking 11/130, both
 // Base Set 2): the combined name+number search fallback below (added for
 // test #49) builds its query from `read.cardNumber` verbatim ("Mewtwo
@@ -1511,6 +1590,37 @@ function normalizeAttackNameForMatch(name) {
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
     .replace(/\s+/g, " ");
+}
+
+// ADDED (2026-10-15, Alakazam 33/165 Psymimic false positive): does a read
+// attack name occur VERBATIM inside the candidate's own card text?
+//
+// The real case: the primary model read attackName "Psymimic" off an
+// Expedition Alakazam. "Psymimic" is the card's Poké-POWER, not its attack
+// — the attack is "Syncroblast" — so the ATTACK MISMATCH rule fired on the
+// CORRECT card (83500), capped it to Low, and with it suppressed the
+// alternate-printing banner that would have offered the Reverse Holofoil.
+//
+// IMPORTANT DATA LIMIT, verified against real PPT rows: PPT's schema has
+// NO Poké-Power / Poké-Body / Ability field at all. The full field list for
+// 83500 is name/cardNumber/rarity/cardType/hp/stage/attacks/weakness/
+// resistance/retreatCost/artist/pokemonType/energyType/flavorText/prices/
+// images — and the string "Psymimic" appears in NONE of them (checked a
+// modern Alakazam V row too: same schema, no ability field). So this check
+// CANNOT recover the Alakazam case on its own; the cross-model check below
+// is what does that. This exists for the rows where PPT does carry power or
+// ability text inside an attack entry's description, where a read of that
+// name is a correct read of the card and must not be treated as disproof.
+//
+// Whole-token match on the normalized text, never a substring: "Psychic"
+// must not match "Psychic Energy" inside a damage clause by accident, and
+// a one-word power name must not match any longer word containing it.
+function attackNameAppearsInCardText(readAttackName, cardText) {
+  const needle = normalizeAttackNameForMatch(readAttackName);
+  if (!needle) return false;
+  const haystack = normalizeAttackNameForMatch(cardText);
+  if (!haystack) return false;
+  return new RegExp(`(?:^| )${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`).test(haystack);
 }
 
 function levenshteinDistance(a, b) {
@@ -1703,6 +1813,55 @@ function candidateDedupKey(candidate) {
   const baseSetName = stripShadowlessSuffix(candidate.setName);
   const shadowless = isShadowlessSetName(candidate.setName) ? "shadowless" : "not-shadowless";
   return `${baseName}|${candidate.number}|${baseSetName}|${shadowless}`;
+}
+
+// ADDED (2026-10-15, Alakazam 33/165): the e-Card era (Expedition,
+// Aquapolis, Skyridge) prints 32 cards of each set TWICE — once as a
+// non-holo Rare and once as a Holo Rare — and TCGplayer/PPT disambiguate
+// the two products purely by a numeric parenthetical on the name:
+// "Alakazam (1)" (001/165, Holo Rare, $250.00) vs "Alakazam (33)"
+// (033/165, Rare, $21.37). Measured across the three sets: 94 such
+// holo/non-holo sibling groups (Expedition 32, Aquapolis 32, Skyridge 30),
+// with an Expedition median price ratio of 5.9x, 23 of 38 priced pairs at
+// 5x or worse, and a worst case of 15.2x (Vileplume).
+//
+// Within one group the two products are the SAME card design, so every
+// scoring signal except the number is identical by construction — same
+// HP, same attack list, same set, same name. Confirmed on the real pair:
+// both carry hp "100" and the single attack "[2P] Syncroblast (80)". The
+// card number is therefore the ONLY thing that can tell them apart, which
+// makes a misread number maximally destructive here and makes "two models
+// disagree about the number" exactly the case where we must not guess.
+//
+// Strips ONLY a purely numeric or H-numeric trailing parenthetical —
+// "(33)", "(1)", "(H1)" — on top of candidateDedupKey's own
+// " - 123/456" suffix strip. Deliberately NOT a general parenthetical
+// strip: "(Full Art)", "(Secret)", "(Shadowless)" and "(Glossy Finish)"
+// name genuinely different products, not print treatments of one card,
+// and collapsing those would make this guard fire on unrelated pairs.
+function candidateSiblingBaseName(candidate) {
+  return String(candidate && candidate.name || "")
+    .replace(/\s*-\s*\S+\/\S+\s*$/, "")
+    .replace(/\s*\(\s*H?\d+\s*\)\s*$/i, "")
+    .trim()
+    .toLowerCase();
+}
+
+// Two candidates are siblings when they share a base name and a set but
+// are different products. Set comparison goes through
+// normalizeSetNameForMatch (the same exact-equality normalizer the
+// setName-rescue acceptance check uses) on the Shadowless-stripped set
+// name — NOT the loosened substring test, which CLAUDE.md's DO-NOT list
+// forbids widening for exactly this class of reason.
+function sameSiblingGroup(a, b) {
+  if (!a || !b) return false;
+  if (a.tcgPlayerId && b.tcgPlayerId && String(a.tcgPlayerId) === String(b.tcgPlayerId)) return false;
+  const nameA = candidateSiblingBaseName(a);
+  if (!nameA || nameA !== candidateSiblingBaseName(b)) return false;
+  const setA = normalizeSetNameForMatch(stripShadowlessSuffix(a.setName));
+  const setB = normalizeSetNameForMatch(stripShadowlessSuffix(b.setName));
+  if (!setA || !setB) return false;
+  return setA === setB;
 }
 
 function pickBestCandidate(candidates, read, logPrefix) {
@@ -3595,7 +3754,14 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         let legacyRescued = false;
         if (legacyReadPromise) {
           try {
-            const legacyRead = await legacyReadPromise;
+            // CHANGED (2026-10-15): was a bare `await legacyReadPromise`,
+            // bounded only by GEMINI_TIMEOUT_MS. See
+            // LEGACY_NUMBER_RESCUE_TIMEOUT_MS and awaitLegacyReadCapped —
+            // this await is the one that logged the only runtime error in
+            // the 2026-10-14 deploy window. A null result here lands on the
+            // same corroboration floor as "no legacy read at all", which is
+            // exactly what an aborted read already did.
+            const legacyRead = await awaitLegacyReadCapped(legacyReadPromise, requestId, "the downstream number rescue");
             if (legacyRead && legacyRead.found && legacyRead.cardNumber) {
               // FIX (2026-10-09, live Snorlax 33/95): this was a bare
               // candidates.find(...) — the FIRST number match in PPT's own
@@ -3622,13 +3788,95 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
               const legacyDistinct = distinctByDedupKey(
                 filterCandidatesByStampAgreement(legacyNumberMatches, read)
               );
-              const legacyMatch = legacyDistinct.length === 1 ? legacyDistinct[0] : null;
+              // `let`, not `const` (2026-10-15): the two guards below can
+              // veto a candidate that passed every filter above.
+              let legacyMatch = legacyDistinct.length === 1 ? legacyDistinct[0] : null;
               if (!legacyMatch && legacyDistinct.length > 1) {
                 console.log(
                   `[requestId=${requestId}]`,
                   `[lookup] LEGACY-MODEL NUMBER RESCUE DECLINED: legacy read number=${legacyRead.cardNumber} matched ${legacyDistinct.length} distinct printings after stamp filtering (read stampType=${read.stampType}) — cannot tell them apart, falling through`
                 );
               }
+
+              // GUARD 1 (2026-10-15, Alakazam 33/165 — DENOMINATOR) — see
+              // totalsContradict above for the full case. The primary read
+              // is not worthless just because its numerator matched nothing:
+              // its DENOMINATOR is an independent piece of the same read,
+              // and when it positively disagrees with the rescue target's,
+              // the two models are not corroborating each other at all.
+              // Real case: primary "1/18" vs target "001/165" — the "/18"
+              // was evidence against 001/165 the whole time.
+              //
+              // Applied as a veto on the already-selected single match
+              // rather than as a filter before the uniqueness test, which
+              // is deliberately the NARROWING direction: filtering first
+              // could let a pool that currently declines (2+ distinct
+              // matches) collapse to one and start rescuing where it never
+              // did before. This can only ever stop a rescue, never start
+              // one.
+              if (legacyMatch && totalsContradict(read.cardNumber, legacyMatch.number)) {
+                console.log(
+                  `[requestId=${requestId}]`,
+                  `[lookup] LEGACY-MODEL NUMBER RESCUE DECLINED (DENOMINATOR CONTRADICTION): primary read number=${read.cardNumber} and rescue target ${legacyMatch.name} ${legacyMatch.number} disagree on the set total — legacy read number=${legacyRead.cardNumber}, falling through`
+                );
+                legacyMatch = null;
+              }
+
+              // GUARD 2 (2026-10-15, Alakazam 33/165 — SIBLING AMBIGUITY) —
+              // see sameSiblingGroup above. The rescue is about to replace a
+              // candidate that ALREADY won scoring outright with a sibling
+              // printing of the same card, on the strength of a number read
+              // that the primary model contradicts. In the real scan the
+              // pre-rescue `best` was the CORRECT card (Alakazam (33),
+              // bestScore 10, tieCount 1 at the first pass) and the rescue
+              // installed the 11.7x holo sibling, taking the Suggested Bid
+              // from $11.20 to $92.62.
+              //
+              // Within a sibling group the number is the only discriminator
+              // (identical HP and attack list by construction), so when the
+              // two models disagree about the number there is no
+              // cross-check left — only two guesses. The honest answer is
+              // that we cannot tell, so neither price is shown and both
+              // cards are named. This is the same conclusion the existing
+              // `tieCount >= 2` rule reaches, applied to a rescue that
+              // bypasses scoring entirely.
+              //
+              // Deliberately does NOT pick one: not the pre-rescue best, not
+              // the rescue target, and above all not the more expensive one.
+              if (
+                legacyMatch &&
+                bestScore >= MATCH_FLOOR &&
+                sameSiblingGroup(best, legacyMatch) &&
+                !numbersMatch(read.cardNumber, legacyRead.cardNumber).match
+              ) {
+                const ambiguousPair = [best, legacyMatch].sort((x, y) => {
+                  const nx = normalizeNumber(x.number);
+                  const ny = normalizeNumber(y.number);
+                  return (nx ? Number(nx.num) : 0) - (ny ? Number(ny.num) : 0);
+                });
+                const describe = (c) => {
+                  const mkt = c.prices && typeof c.prices.market === "number" ? c.prices.market : null;
+                  return `${c.name} ${c.number}${mkt != null ? ` (market ~$${mkt.toFixed(2)})` : " (no market price available)"}`;
+                };
+                console.log(
+                  `[requestId=${requestId}]`,
+                  `[lookup] SIBLING AMBIGUITY — RESCUE REFUSED: primary read number=${read.cardNumber}, legacy read number=${legacyRead.cardNumber}; pre-rescue best=${best.name} ${best.number} (tcgPlayerId=${best.tcgPlayerId}) and rescue target=${legacyMatch.name} ${legacyMatch.number} (tcgPlayerId=${legacyMatch.tcgPlayerId}) are the same card in the same set — withholding price for both`
+                );
+                return {
+                  found: true,
+                  cardName: read.cardName,
+                  setName: best.setName || null,
+                  cardImageUrl: null,
+                  matchConfidence: "Low",
+                  matchBasis: "sibling-ambiguous",
+                  ambiguousNote:
+                    `This set prints the same card twice — once holo, once not — and the two printings are told apart ONLY by their card number. The two AI models disagreed about that number ("${read.cardNumber}" vs "${legacyRead.cardNumber}"), so this is either ${describe(ambiguousPair[0])} or ${describe(ambiguousPair[1])}. They share the same HP and the same attack, so nothing else can break the tie. No price or bid is shown, because guessing wrong here is wrong by a wide margin — read the card number off the physical card.`,
+                  tcgplayerUrl: null,
+                  pricingLookup: null,
+                  printingUndetermined: true,
+                };
+              }
+
               if (legacyMatch) {
                 best = legacyMatch;
                 matchConfidence = "Medium";
@@ -3936,9 +4184,18 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   //     elsewhere in this file.
   // matchBasis is left untouched: the basis on which this candidate was
   // chosen hasn't changed, and this flag is a separate axis.
+  // FIX (2026-10-15, Alakazam 33/165 — "Psymimic" false positive): two
+  // suppressions added below. Every guard above is UNCHANGED — still
+  // English-only, still High-confidence reads only, still requires a
+  // non-empty parsed attack list, still compares against every attack. The
+  // trigger condition is now computed into a boolean first only so the two
+  // suppression checks (one of which must await the legacy read) can run
+  // before the cap is applied. A suppressed mismatch leaves
+  // matchConfidence, ambiguousNote and attackMismatch exactly as they were,
+  // so it cannot change which card wins or what price is computed.
   const readLanguageIsEnglish = String(read.language || "English").trim().toLowerCase() === "english";
   const readAttackNamesToTry = [read.attackName, read.attackNameEnglish].filter(Boolean);
-  if (
+  const attackMismatchTriggered =
     read.attackName &&
     readLanguageIsEnglish &&
     read.confidence === "High" &&
@@ -3946,16 +4203,53 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     best.attackNames.length &&
     !readAttackNamesToTry.some((readAttack) =>
       best.attackNames.some((candAttack) => attackNamesFuzzyMatch(readAttack, candAttack))
-    )
-  ) {
-    matchConfidence = "Low";
-    attackMismatch = true;
-    const attackMismatchNote = `The attack we read, "${read.attackName}", isn't on this printing's attack list.`;
-    ambiguousNote = ambiguousNote ? `${ambiguousNote} ${attackMismatchNote}` : attackMismatchNote;
-    console.log(
-      `[requestId=${requestId}]`,
-      `[lookup] ATTACK MISMATCH: read="${readAttackNamesToTry.join('" / "')}" candidate attacks=[${best.attackNames.join(", ")}] best=${best.name} ${best.number} (tcgPlayerId=${best.tcgPlayerId})`
     );
+
+  if (attackMismatchTriggered) {
+    // SUPPRESSION 1 — the read name is somewhere in this card's own text.
+    // A Poké-POWER/Poké-BODY/Ability name read instead of the attack name
+    // is a CORRECT read of the card, so it is not evidence against the
+    // match. See attackNameAppearsInCardText for the verified limit: PPT
+    // carries no power/ability field, so this only fires where the name
+    // sits inside an attack entry's description text.
+    const candidateCardText = Array.isArray(best.attacks) ? best.attacks.join(" \n ") : "";
+    const textSuppressedName = readAttackNamesToTry.find((n) => attackNameAppearsInCardText(n, candidateCardText)) || null;
+
+    // SUPPRESSION 2 — the OTHER model read an attack that IS on this
+    // card's list. The mismatch rule's whole claim is "no model can see
+    // this attack on this card"; once the second independent read lands on
+    // a real attack of the matched candidate, the primary read's attack
+    // name is a single-model misread (here: the Poké-POWER instead of the
+    // attack), not disproof of the card. On the real clean-image scan the
+    // legacy model read "Syncroblast", which is exactly 83500's attack.
+    // Capped await — a legacy read that is not ready in time is treated as
+    // absent and the cap applies as before.
+    let crossModelAttack = null;
+    if (!textSuppressedName && legacyReadPromise) {
+      const legacyRead = await awaitLegacyReadCapped(legacyReadPromise, requestId, "the attack-mismatch check");
+      if (legacyRead && legacyRead.found) {
+        crossModelAttack =
+          [legacyRead.attackName, legacyRead.attackNameEnglish]
+            .filter(Boolean)
+            .find((legacyAttack) => best.attackNames.some((candAttack) => attackNamesFuzzyMatch(legacyAttack, candAttack))) || null;
+      }
+    }
+
+    if (textSuppressedName || crossModelAttack) {
+      console.log(
+        `[requestId=${requestId}]`,
+        `[lookup] ATTACK MISMATCH SUPPRESSED (${textSuppressedName ? `read name "${textSuppressedName}" appears in the card's own text` : `legacy model read "${crossModelAttack}", which is on this card's attack list`}): read="${readAttackNamesToTry.join('" / "')}" candidate attacks=[${best.attackNames.join(", ")}] best=${best.name} ${best.number} (tcgPlayerId=${best.tcgPlayerId})`
+      );
+    } else {
+      matchConfidence = "Low";
+      attackMismatch = true;
+      const attackMismatchNote = `The attack we read, "${read.attackName}", isn't on this printing's attack list.`;
+      ambiguousNote = ambiguousNote ? `${ambiguousNote} ${attackMismatchNote}` : attackMismatchNote;
+      console.log(
+        `[requestId=${requestId}]`,
+        `[lookup] ATTACK MISMATCH: read="${readAttackNamesToTry.join('" / "')}" candidate attacks=[${best.attackNames.join(", ")}] best=${best.name} ${best.number} (tcgPlayerId=${best.tcgPlayerId})`
+      );
+    }
   }
 
   // NOTE (2026-08-27): the "read a specific number that matches nothing in
@@ -5530,3 +5824,21 @@ module.exports.fetchPptCardByTcgPlayerId = fetchPptCardByTcgPlayerId;
 module.exports.GRADED_SANITY_LOW_GRADE_RATIO = GRADED_SANITY_LOW_GRADE_RATIO;
 module.exports.GRADED_MIN_SALES = GRADED_MIN_SALES;
 module.exports.GRADED_MAX_LAST_SALE_AGE_DAYS = GRADED_MAX_LAST_SALE_AGE_DAYS;
+
+// ADDED (2026-10-15): exported for the local test suite in test/. Nothing
+// in the request path reads these off module.exports — lookupCardPPT is
+// called directly by the handler in this same file — so exporting them
+// cannot change runtime behavior.
+module.exports.lookupCardPPT = lookupCardPPT;
+module.exports.totalsContradict = totalsContradict;
+module.exports.numbersMatch = numbersMatch;
+module.exports.sameSiblingGroup = sameSiblingGroup;
+module.exports.candidateSiblingBaseName = candidateSiblingBaseName;
+module.exports.attackNameAppearsInCardText = attackNameAppearsInCardText;
+module.exports.awaitLegacyReadCapped = awaitLegacyReadCapped;
+module.exports.LEGACY_NUMBER_RESCUE_TIMEOUT_MS = LEGACY_NUMBER_RESCUE_TIMEOUT_MS;
+module.exports.extractAttackNames = extractAttackNames;
+module.exports.normalizePptCard = normalizePptCard;
+module.exports.computeBreakEvenMaxBid = computeBreakEvenMaxBid;
+module.exports.computeSuggestedBid = computeSuggestedBid;
+module.exports.computeSellThrough = computeSellThrough;

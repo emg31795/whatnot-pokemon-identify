@@ -130,6 +130,11 @@ api/flag.js      "Flag this scan" -> one greppable log line.
 docs/history.md  Full project history (was CLAUDE.md).
 docs/test-cases.md  Live test log.
 docs/archive/    ROADMAP.md, build-status.md.
+test/            Local suite, `node test/alakazam.test.js` (47 tests, no
+                 network — mocks global.fetch over real captured PPT rows).
+                 Excluded from deploys via .vercelignore. Two tests replay
+                 against committed HEAD and assert the old bug reproduces,
+                 so the suite cannot pass vacuously.
 ```
 
 **Request flow:** `content.js` captures a frame → `POST /api/identify` returns
@@ -223,7 +228,7 @@ card; coincidental, worth 0.35x). A *disagreeing* total is **not** a match.
 
 `matchBasis` (machine-readable reason code on the response): `score-only`,
 `tie`, `weak-number`, `legacy-number-rescue`, `setname-search`,
-`setname-narrowed`, `name-rescued-by-number`.
+`setname-narrowed`, `name-rescued-by-number`, `sibling-ambiguous`.
 
 ### Rescue paths, in order, with their guards
 
@@ -259,6 +264,26 @@ Each exists because retrieval or the read failed, not because scoring did.
    above the floor.
 7. **Downstream legacy-model number rescue** (`legacy-number-rescue`, when
    `best` exists but nothing matches the read number). Capped Medium.
+   Legacy read awaited through `awaitLegacyReadCapped` at **500ms**
+   (`LEGACY_NUMBER_RESCUE_TIMEOUT_MS`); a timed-out read is treated as absent.
+   Two guards added 2026-10-15 (Alakazam 33/165, test #101), both of which can
+   only ever STOP a rescue:
+   - **DENOMINATOR** (`totalsContradict`): if the primary read's total
+     positively disagrees with the rescue target's, the rescue does not fire.
+     The primary read's denominator is independent evidence even when its
+     numerator matched nothing — real case, primary "1/18" vs target
+     "001/165". Same rule as `numbersMatch`'s `bothHaveTotal` disqualification,
+     which `numbersMatch` itself cannot answer (it short-circuits on
+     `a.num !== b.num`). A veto on the chosen match, never a pre-filter.
+   - **SIBLING AMBIGUITY** (`sameSiblingGroup`): if the rescue would replace an
+     above-floor `best` with a same-base-name, same-set sibling and the two
+     models disagree on the number, it returns Low /
+     `matchBasis "sibling-ambiguous"` / `pricingLookup: null` /
+     `printingUndetermined: true`, naming BOTH cards with number and market
+     price. It picks neither, and **never the more expensive one**. Base-name
+     matching strips only numeric/H-numeric parentheticals ("(33)", "(H1)") —
+     never "(Full Art)"/"(Secret)"/"(Glossy Finish)" — and the set test is
+     exact normalized equality, not the forbidden substring test.
 8. **Weak-signal floors** — if no number match (or a null cardNumber) and the
    winner corroborates on fewer than **2** of
    `hp/subtype/set/attackName/stampMatch`, **withhold the price entirely**
@@ -269,7 +294,15 @@ Each exists because retrieval or the read failed, not because scoring did.
    non-empty parsed attack list; if the read attack is on none of them, cap to
    Low and **append** to `ambiguousNote`. English-only on purpose: a Japanese
    attack must survive OCR *and* translation, and a false Low also suppresses
-   the alternate-printing banner.
+   the alternate-printing banner. **Two suppressions (2026-10-15, test #101),
+   every other guard untouched:** the read name appears as a whole token in the
+   candidate's own card text, or **the other model read an attack that IS on
+   the card's list**. Built for the Expedition Alakazam, where the primary
+   model read the **Poké-POWER** "Psymimic" as the attack and capped the
+   CORRECT card. **PPT has no Poké-Power/Poké-Body/Ability field at all**
+   (verified on an e-Card row and a modern V row), so the text check cannot
+   recover that case — the cross-model check is what does, and it is
+   live-confirmed (`ATTACK MISMATCH SUPPRESSED`).
 
 PPT fetch aborts retry **once** at `CARDDB_RETRY_TIMEOUT_MS` (1200ms), scoped
 to the abort branch only — by construction it can never retry a 429.
@@ -366,6 +399,30 @@ sane bid for that card.
 
 ## Open items
 
+**BUILT AND PREVIEW-DEPLOYED 2026-10-15, NOT IN PRODUCTION — the Alakazam
+33/165 fixes** (test #101, 47 local tests). Preview
+`dpl_EJ6MHs29CGxGThnSFWhgQeEZ18n4`,
+`sourceHash 9738bb38bddd790239d6c4e5a383eeb77abff4ba`. Awaiting a production
+go-ahead. Four changes: the rescue denominator guard, the sibling-ambiguity
+guard, two ATTACK MISMATCH suppressions, and the 500ms cap on the downstream
+legacy await. `api/identify.js` only — **no `extension/` change, so no
+extension reload is needed.** E2E on preview: Alakazam 33 → 83500 / High /
+Normal / no false mismatch (1771ms, 1509ms); XY95 → 114004 / High unchanged
+(1320ms); zero errors. **Live-confirmed:** `ATTACK MISMATCH SUPPRESSED` fired
+on real traffic twice. **Not yet observed:** `LEGACY-MODEL NUMBER RESCUE
+DECLINED (DENOMINATOR CONTRADICTION)` and `SIBLING AMBIGUITY — RESCUE
+REFUSED` — both need a number misread that lands on a real sibling, which
+can't be forced.
+
+**Noted, not built (test #101): Expedition Reverse Holofoil price curves can
+be inverted.** 83500's Reverse Holofoil reads NM **$16.00** (sold 0) against
+LP $73.30 / MP $59.78 / HP $43.66 / Damaged $26.84 — NM below every worse
+condition. `basePriceTier` prefers NM, so the panel shows $16.00 for a
+printing worth $70+, and break-even/bid follow. Error direction is
+**underbidding**, so it costs nothing today. A **"NM below LP" sanity check**
+would catch a broken condition curve cheaply — flag the variant, never guess a
+replacement price. Needs its own measurement pass first.
+
 **Deployed 2026-10-11 — graded-slab Phase 0 + shadow-only Phase 1** (test
 #96; 199 local tests). Watch two things on organic traffic: (1) the legacy
 `cardNumber` non-null rate against its **56.9%** baseline — if it drops, set
@@ -386,11 +443,15 @@ manual reload in `chrome://extensions`** before the badge fix is visible.
 `LEGACY-MODEL NUMBER RESCUE DECLINED` line and the stamp filter narrowing a
 real pool.
 
-**Open: the legacy-read `await` on both legacy-rescue paths has no time cap.**
-It is a bare `await legacyReadPromise`, bounded only by `GEMINI_TIMEOUT_MS`,
-unlike the 500ms `LEGACY_SETNAME_HINT_TIMEOUT_MS` race the setName-hint path
-uses. Capping both with the same `Promise.race` pattern is the obvious
-follow-up.
+**Half-closed 2026-10-15 (test #101): the DOWNSTREAM legacy-rescue await is
+now capped** at 500ms via `awaitLegacyReadCapped` /
+`LEGACY_NUMBER_RESCUE_TIMEOUT_MS`, the same `Promise.race` pattern as
+`LEGACY_SETNAME_HINT_TIMEOUT_MS`. That was the await behind the only runtime
+error in the 2026-10-14 window, and it fired again on 2026-10-15
+(requestId `63f242c1`). **The SUB-FLOOR rescue's await is still a bare
+`await legacyReadPromise`** — left alone deliberately to avoid touching the
+full-art Trainer path in the same change. Capping it the same way is the
+remaining follow-up.
 
 **Queued corrections to fold into the next real `api/identify.js` change**
 (deliberately not done as comment-only edits, to preserve deploy-hash parity):

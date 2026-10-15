@@ -9,6 +9,7 @@
 # --- Requested exclusions: everything that isn't the backend ---
 extension/
 docs/
+test/
 CLAUDE.md
 README.md
 .claude/

@@ -11411,6 +11411,191 @@ unavailable): This operation was aborted`. That is the uncapped
 2-lite or Phase 3, so the #99 fix is deployed but not live-confirmed on a
 genuine graded card.
 
+## #101 — 2026-10-15 — Alakazam 33/165 priced as its 11.7x holo sibling: the denominator guard, the sibling-ambiguity guard, the Psymimic attack false positive, and a capped legacy await
+
+Eric bought Expedition Alakazam **033/165** (the non-holo Rare) and the panel
+offered only Holofoil and Reverse Holofoil — no Normal. The investigation
+found the scan itself: **requestId `f033dcfe-dfba-487f-b5b0-504d2cc8a71c`,
+2026-10-15T00:31:26Z**, on `dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm`.
+
+### Root cause — the wrong card, not a printing bug
+
+```
+[lookup] LEGACY-MODEL NUMBER RESCUE: primary read number=1/18 matched nothing,
+but legacy shadow read number=1/165 matched best=Alakazam (1) 001/165
+```
+
+The final match was **tcgPlayerId 83497 = Alakazam (1), 001/165, Holo Rare**,
+whose printings are Holofoil + Reverse Holofoil — exactly the dropdown Eric
+saw, and impossible to produce from 83500.
+
+Ruled out with real data, so neither PPT nor our printing code was at fault:
+
+| | 83500 — Alakazam (33), the card he bought | 83497 — Alakazam (1) |
+|---|---|---|
+| PPT `printingsAvailable` | `['Reverse Holofoil', 'Normal']` | `['Reverse Holofoil', 'Holofoil']` |
+| PPT `primaryPrinting` | `Normal` | `Holofoil` |
+| TCGplayer SKU variants | Normal, Reverse Holofoil | Holofoil, Reverse Holofoil |
+| PPT market | $21.37 | $250.00 |
+
+8/8 sampled Expedition non-holo rares (Alakazam 33 → Charizard 40) carry
+`Normal, Reverse Holofoil`. **No mislabeling anywhere.** Dropdown labels come
+straight from TCGplayer's `sku.variant`; nothing in our code renames or drops
+a printing.
+
+**The money:** live `/api/price` for both products — Suggested Bid NM **$92.62
+(83497) vs $11.20 (83500)**, an 8.3x overbid. Market NM $240.27 vs $20.76.
+
+### Why scoring could never break the tie
+
+Both siblings carry **hp 100** and the **identical attack
+`[2P] Syncroblast (80)`**, same name, same set. In the e-Card era the holo and
+non-holo are the SAME card design printed twice, so the card number is the
+only discriminating signal — and all three models got it wrong (primary
+"1/18", legacy "1/165", Haiku null with the reason *"Card number area
+obscured by glare and image angle"*). At the FIRST scoring pass the correct
+card had already won uniquely (`bestScore 10, tieCount 1, tiedIds 83500`);
+the rescue then replaced it.
+
+### Breadth — structural for the e-Card era
+
+Pulled all three sets from TCGplayer: **94 holo/non-holo same-name sibling
+groups** (Expedition 32, Aquapolis 32, Skyridge 30). Expedition is the
+dangerous one — its holo sibling uses a plain number in the same space
+(`001/165` vs `033/165`), so a misread numerator lands on a real sibling.
+Aquapolis/Skyridge prefix the holo with `H` (`H01/H32`), which cannot
+exact-match a plain `1/147`-shaped misread. Expedition sibling price ratios,
+38 priced pairs: **median 5.9x**, **23/38 at 5x or worse**, worst 15.2x
+(Vileplume); biggest absolute gap Dragonite $118.57 vs $949.79.
+
+### What was built
+
+**1. Denominator guard** (`totalsContradict`) — the primary read's
+DENOMINATOR is independent evidence even when its numerator matched nothing.
+"1/18" vs "001/165" positively disagree, so the rescue does not fire. This is
+numbersMatch's own `bothHaveTotal` disqualification rule and nothing more,
+lifted into a predicate numbersMatch cannot answer (it short-circuits on
+`a.num !== b.num` without ever looking at the totals). Applied as a veto on
+the already-selected single match, never as a filter before the
+exactly-one-distinct test — deliberately the narrowing direction, so it can
+only ever stop a rescue, never start one.
+
+**2. Sibling-ambiguity guard** (`sameSiblingGroup`) — when the rescue would
+replace an above-floor `best` with a sibling printing of the same card in the
+same set, and the two models disagree about the number, there is no
+cross-check left, only two guesses. The scan returns **Low**,
+`matchBasis: "sibling-ambiguous"`, `pricingLookup: null`,
+`printingUndetermined: true`, and an `ambiguousNote` naming BOTH cards with
+number and market price, ordered by card number ascending. It picks neither —
+not the pre-rescue best, not the rescue target, and never the more expensive
+one. Base-name matching strips only numeric/H-numeric parentheticals
+("(33)", "(H1)"), never "(Full Art)"/"(Secret)"/"(Glossy Finish)"; set
+comparison is exact normalized equality, **not** the substring test
+CLAUDE.md forbids widening.
+
+**3. ATTACK MISMATCH false positive** — the primary model read **"Psymimic"**,
+which is the card's **Poké-POWER**, not its attack ("Syncroblast"), so the
+rule fired on the CORRECT card, capped it to Low, and with it suppressed the
+alternate-printing banner. Two suppressions added; every existing guard is
+untouched (English-only, High-confidence reads only, non-empty parsed attack
+list, compares against every attack):
+  - the read name appears verbatim as a whole token in the candidate's own
+    card text;
+  - **the other model read an attack that IS on the card's list.**
+
+**Verified data limit: PPT's schema has NO Poké-Power / Poké-Body / Ability
+field at all.** The string "Psymimic" appears in none of 83500's fields
+(checked a modern Alakazam V row too — same schema). So the text check CANNOT
+recover this case on its own; the cross-model check is what does. The text
+check still earns its place for rows where PPT carries power text inside an
+attack entry's description.
+
+**4. Capped legacy await** (`awaitLegacyReadCapped`,
+`LEGACY_NUMBER_RESCUE_TIMEOUT_MS = 500`) — the downstream rescue's
+`await legacyReadPromise` was bare, bounded only by `GEMINI_TIMEOUT_MS`. Same
+Promise.race-plus-cleared-timer shape as the setName-hint path. This is the
+await that produced the only runtime error in the 2026-10-14 deploy window,
+and it **fired again during this session** (requestId `63f242c1`,
+00:52:39Z, production). A timed-out read is treated as absent, which is
+exactly what an aborted read already did. **The sub-floor rescue's await is
+deliberately still uncapped** — out of scope here, to avoid touching the
+full-art Trainer path; it remains an open item.
+
+### Tests — 47 pass, 0 fail (`node test/alakazam.test.js`)
+
+First tests committed to the repo (`test/`, excluded from deploys via
+`.vercelignore`). No network: `global.fetch` is replaced with a router over
+real captured PPT rows.
+
+Two of them are **validity tests** that run the same replay against committed
+HEAD and assert the bug reproduces there — so the suite cannot pass vacuously:
+HEAD returns 83497 with `matchBasis: "legacy-number-rescue"`, and HEAD caps
+the clean Alakazam scan to Low with `attackMismatch: true`.
+
+Covering: `totalsContradict` (real case, agreeing totals, asymmetric
+no-total, H-prefix, and agreement with numbersMatch); sibling base-name
+stripping including the parentheticals that must NOT be stripped; the replay
+of f033dcfe (not 83497, lands on 83500, Low, not a legacy rescue); the
+sibling-ambiguity case with both cards and both prices disclosed and the
+cheaper one listed first; the clean Alakazam scan (83500, High, no false
+mismatch); the 30th-Celebration cap still firing when neither model sees the
+attack, when the legacy read is unavailable, and never on a Japanese read;
+Skyridge H-numbered siblings refused while a no-sibling H-card still
+rescues; Snorlax 33/95 still narrowing to the $30.23 card (89392) and never
+the $499.99/$1975 stamped twins, in either PPT array order; the sub-floor
+Trainer rescue still firing at Medium; raw break-even $5/$10/$30/$100 →
+$3.81/$7.93/$19.97/$79.08; graded SM210 median $155.20 → list $156.20 → BE
+$125.68 → bid $90.67; `GRADED_SHIPPING_PER_CARD` still 5.80; graded
+sell-through still window-aware; a source assertion that `lookupGradedPrice`
+still has no name search; and a HEAD-vs-new **PPT call-count comparison**
+proving the guards add no API calls.
+
+### Preview deploy + real e2e
+
+Preview **`dpl_EJ6MHs29CGxGThnSFWhgQeEZ18n4`**,
+`sourceHash 9738bb38bddd790239d6c4e5a383eeb77abff4ba` == `shasum
+api/identify.js` on disk. **Not deployed to production.**
+
+| scan | result | latency |
+|---|---|---|
+| Alakazam 33 (attempt 1, `594b33e1`) | read number "33/147" — no pool match, 1 weak signal → price withheld | 2177ms |
+| Alakazam 33 (attempt 2, `0bc800af`) | **83500**, High, `score-only`, printing **Normal**, `attackMismatch: false` | 1771ms |
+| Alakazam 33 (attempt 3, `3b53fd47`) | **83500**, High, `score-only`, printing **Normal**, `attackMismatch: false` | 1509ms |
+| Pikachu XY95 (`4c8d5089`) | 114004, XY Promos, High, `score-only`, `attackMismatch: false` | 1320ms |
+
+**The attack suppression is live-confirmed on real traffic.** Both successful
+Alakazam scans genuinely read the Poké-POWER as the attack and were saved by
+the cross-model check:
+
+```
+[lookup] ATTACK MISMATCH SUPPRESSED (legacy model read "Syncroblast", which is
+on this card's attack list): read="Psymimic" candidate attacks=[Syncroblast]
+best=Alakazam (33) 033/165 (tcgPlayerId=83500)
+```
+
+(attempt 2 read it as "Prymimic" — same suppression.) Zero runtime errors on
+the preview deployment.
+
+**Not yet observed on real traffic:** `LEGACY-MODEL NUMBER RESCUE DECLINED
+(DENOMINATOR CONTRADICTION)` and `SIBLING AMBIGUITY — RESCUE REFUSED`. Both
+need a scan whose number misreads onto a real sibling, which cannot be forced
+— attempt 1's "33/147" missed the pool entirely and took the existing
+weak-signal floor instead. Covered by tests, including the HEAD-reproduces-it
+validity check, but unproven in the wild.
+
+### Noted, deliberately NOT built
+
+**Expedition Reverse Holofoil price curves can be inverted.** 83500's Reverse
+Holofoil reads NM **$16.00** (sold 0) against LP $73.30, MP $59.78, HP $43.66
+and Damaged $26.84 — NM below every worse condition.
+`buildLivePriceVariantsFromTCGPlayer` prefers NM as `basePriceTier`, so the
+panel shows $16.00 market for a printing clearly worth $70+, and break-even
+and bid follow from it. The error direction is **underbidding**, so it costs
+nothing today. A future **"NM below LP" sanity check** would catch a broken
+condition curve cheaply — flagging the variant rather than guessing a
+replacement price. Not built: it needs its own measurement pass against real
+traffic before it can be trusted to fire only on genuinely broken data.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
