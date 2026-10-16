@@ -142,6 +142,13 @@ const LEGACY_SETNAME_HINT_TIMEOUT_MS = 500;
 // leaves each caller on its pre-existing no-legacy-read path.
 const LEGACY_NUMBER_RESCUE_TIMEOUT_MS = 500;
 
+// One line shown to the user when two printings of the same card in the same
+// set cannot be told apart. Deliberately NOT holo-specific (2026-10-15, test
+// #104): the e-Card double prints that motivated this really are holo vs
+// non-holo, but the same code now covers modern ex/SIR and V/alt-art twins,
+// where the tell is the artwork and the finish rather than holo-vs-not.
+const SIBLING_DISAMBIGUATION_HINT = "Check the finish and artwork to tell these apart.";
+
 // PHASE 2-LITE (2026-10-11): hard cap on label-driven PPT searches per
 // scan. Each is a full limit=30 request (30 credits, ~3 rate-limit units),
 // and this path only runs on a slab that the ordinary lookup already
@@ -4329,17 +4336,84 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
       const legacyNumber = legacyRead && legacyRead.found ? legacyRead.cardNumber || null : null;
       const legacyPointsAtBest = numberPointsAtCandidate(legacyNumber, best);
       const legacySibling = poolSiblings.find((c) => numberPointsAtCandidate(legacyNumber, c)) || null;
+
+      // SCOPE CORRECTION (2026-10-15, test #104). The first cut capped on ANY
+      // uncorroborated sibling scan, which was far too broad: because
+      // candidateSiblingBaseName strips the " - 125/197" suffix,
+      // "Charizard ex - 125/197" and "Charizard ex - 223/197" (Obsidian
+      // Flames regular vs Special Illustration Rare) are a sibling pair — as
+      // are every V/alt-art, ex/SIR and regular/full-art-Trainer twin in the
+      // modern era. With the legacy read's cardNumber null ~43% of the time
+      // (56.9% non-null baseline), that would have turned a large share of
+      // ordinary modern chase-card scans into two-card ambiguous results.
+      //
+      // So the two cases are now treated differently, split on which
+      // direction the error runs:
+      //
+      //   DISAGREEMENT (each model's number points at a DIFFERENT member of
+      //   the group) — always ambiguous. Two independent reads actively
+      //   contradicting each other about the one discriminating signal is
+      //   real evidence that we cannot tell them apart, and it is rare.
+      //
+      //   NO CORROBORATION (legacy number missing, timed out, or pointing at
+      //   nothing in this group) — cap ONLY if the winner is the MORE
+      //   EXPENSIVE sibling. If the winner is the cheapest in its group,
+      //   let it stand at its normal confidence with a note naming the
+      //   pricier twin, because the residual error then runs toward
+      //   UNDERbidding, which costs nothing. This is the same
+      //   err-cheap principle as the Snorlax stamped-twin rule: never let a
+      //   coincidence put the expensive printing's price on screen, but do
+      //   not punish the cheap printing for having an expensive relative.
+      //
+      // Market figures come from PPT's own `prices.market` on the already-
+      // fetched rows — no extra call. If any market in the group is missing
+      // we cannot prove the winner is the cheap one, so that falls to the
+      // capping side rather than being assumed safe.
+      const bestMarket = typeof best.prices?.market === "number" ? best.prices.market : null;
+      const siblingMarkets = poolSiblings.map((c) => (typeof c.prices?.market === "number" ? c.prices.market : null));
+      const allMarketsKnown = bestMarket != null && siblingMarkets.every((m) => m != null);
+      const winnerIsCheapest = allMarketsKnown && siblingMarkets.every((m) => bestMarket <= m);
+      const pricierSiblings = poolSiblings.filter(
+        (c, i) => siblingMarkets[i] == null || bestMarket == null || siblingMarkets[i] > bestMarket
+      );
+
       const corroborated = legacyPointsAtBest && !legacySibling;
+      const modelsDisagree = !!legacySibling;
+      const decision = corroborated
+        ? "corroborated"
+        : modelsDisagree
+        ? "ambiguous-disagreement"
+        : winnerIsCheapest
+        ? "stands-cheaper"
+        : "ambiguous-uncorroborated";
 
       console.log(
         `[requestId=${requestId}]`,
         `[sibling-cap] best=${best.name} ${best.number} (tcgPlayerId=${best.tcgPlayerId}) siblings=${poolSiblings.length} ` +
           `legacyReady=${legacyRead ? "yes" : "no"} legacyNumber=${legacyNumber || "null"} ` +
           `primaryPointsAtBest=${primaryPointsAtBest} legacyPointsAtBest=${legacyPointsAtBest} ` +
-          `legacyPointsAtSibling=${legacySibling ? `${legacySibling.name} ${legacySibling.number}` : "no"} corroborated=${corroborated}`
+          `legacyPointsAtSibling=${legacySibling ? `${legacySibling.name} ${legacySibling.number}` : "no"} ` +
+          `bestMarket=${bestMarket == null ? "null" : bestMarket} siblingMarkets=${JSON.stringify(siblingMarkets)} ` +
+          `winnerIsCheapest=${winnerIsCheapest} decision=${decision}`
       );
 
-      if (!corroborated) {
+      if (decision === "stands-cheaper") {
+        // Normal confidence, normal price, one honest line. The winner is the
+        // cheapest printing in its group, so the worst case is understating
+        // what the card is worth — the direction this project has always
+        // chosen to err in.
+        const pricier = pricierSiblings
+          .slice()
+          .sort((x, y) => (y.prices?.market || 0) - (x.prices?.market || 0))[0];
+        if (pricier) {
+          const pm = typeof pricier.prices?.market === "number" ? ` market ~$${pricier.prices.market.toFixed(2)}` : "";
+          const standsNote =
+            `This set also prints ${pricier.name} ${pricier.number}${pricier.rarity ? ` (${pricier.rarity})` : ""},${pm} — ` +
+            `a more valuable version of the same card, and the second AI model didn't read a card number to rule it out. ` +
+            `The price shown is for the cheaper printing. ${SIBLING_DISAMBIGUATION_HINT}`;
+          ambiguousNote = ambiguousNote ? `${ambiguousNote} ${standsNote}` : standsNote;
+        }
+      } else if (decision !== "corroborated") {
         // Ordered by card number ascending — deterministic, and never
         // price-ranked, so the panel cannot imply the expensive one is the
         // likely answer.
@@ -4349,14 +4423,15 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
           return (nx ? Number(nx.num) : 0) - (ny ? Number(ny.num) : 0);
         });
         siblingAmbiguity = {
-          // One plain-language line, per explicit instruction: Eric can see
-          // holo vs non-holo on stream, which is exactly the signal that
-          // separates these two, so the panel asks for THAT rather than for
-          // the card number the models keep misreading.
-          prompt: "Check whether the card is holo to tell these apart.",
+          // One plain-language line. Kept generic (2026-10-15, test #104):
+          // the first version said "check whether the card is holo", which is
+          // right for the e-Card double prints that motivated this but wrong
+          // for modern ex/SIR and V/alt-art twins, where the tell is the
+          // artwork and finish rather than holo-vs-not.
+          prompt: SIBLING_DISAMBIGUATION_HINT,
           reason: legacySibling
             ? `the two AI models read different card numbers ("${read.cardNumber || "unreadable"}" vs "${legacyNumber}"), each pointing at a different one of these printings`
-            : `only one AI model produced a usable card number ("${read.cardNumber || "unreadable"}"), and this set prints the same card as both a holo and a non-holo`,
+            : `only one AI model produced a usable card number ("${read.cardNumber || "unreadable"}"), and the printing it picked is the more valuable one here`,
           candidates: group.map((c) => ({
             tcgPlayerId: c.tcgPlayerId || null,
             name: c.name,
@@ -4383,12 +4458,12 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         matchConfidence = "Low";
         matchBasis = "sibling-ambiguous";
         const siblingNote =
-          `This set prints the same card as both a holo and a non-holo, told apart ONLY by the card number — and ${siblingAmbiguity.reason}. ` +
+          `This set prints this card in more than one version, told apart ONLY by the card number — and ${siblingAmbiguity.reason}. ` +
           `Both printings are shown below with their own price and bid. ${siblingAmbiguity.prompt}`;
         ambiguousNote = ambiguousNote ? `${ambiguousNote} ${siblingNote}` : siblingNote;
         console.log(
           `[requestId=${requestId}]`,
-          `[lookup] SIBLING DISAGREEMENT CAP: ${group.map((c) => `${c.name} ${c.number} (${c.rarity || "?"}, tcgPlayerId=${c.tcgPlayerId})`).join(" | ")} — capped to Low, no single price`
+          `[lookup] SIBLING DISAGREEMENT CAP (${decision}): ${group.map((c) => `${c.name} ${c.number} (${c.rarity || "?"}, tcgPlayerId=${c.tcgPlayerId})`).join(" | ")} — capped to Low, no single price`
         );
       }
     }

@@ -11897,6 +11897,153 @@ satisfies the hard requirement: never 83497.
 **NOT DEPLOYED TO PRODUCTION.** Production remains
 `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (`9738bb38…`).
 
+## #104 — 2026-10-15 — Scope correction to the sibling cap: modern same-set twins, and an err-cheap split
+
+The #103 cap was far too broad and would not have survived contact with
+modern cards. Caught before deploy, measured against live PPT, corrected.
+
+### The scope problem, measured
+
+`candidateSiblingBaseName` strips the `" - 125/197"` suffix, so every modern
+same-set twin is a sibling group: ex vs Special Illustration Rare, V vs alt
+art, regular vs full-art Trainer. **19 popular modern card names yielded 92
+sibling pairs** in real PPT pools. Charizard ex in SV03 Obsidian Flames alone
+has FOUR same-set versions, all mutual siblings:
+
+| printing | number | rarity | market |
+|---|---|---|---|
+| Charizard ex | 125/197 | Double Rare | $5.27 |
+| Charizard ex | 215/197 | Ultra Rare | $20.74 |
+| Charizard ex | 228/197 | Hyper Rare | $35.11 |
+| Charizard ex | 223/197 | Special Illustration Rare | $94.62 |
+
+Real triples exist outside the modern era too — Arceus Lv.X 94/95/96 ($96.07
+/ $186.25 / $38.99). Boss's Orders, Arven, Judge, Nemona, Professor's
+Research, Iono and every `ex` checked all have them.
+
+With the legacy read's `cardNumber` null ~43% of the time (56.9% non-null
+baseline), #103's "no corroboration → ambiguous" rule would have made
+two-card ambiguity the NORMAL outcome for modern chase-card scans.
+
+### The correction — split on which way the error runs
+
+| legacy read | winner is cheapest in group | outcome |
+|---|---|---|
+| points at the winner | — | **corroborated**, normal confidence, no note |
+| points at a DIFFERENT sibling | — | **ambiguous** (unchanged from #103) |
+| missing / timed out / points at nothing in the group | yes | **stands** at normal confidence + a one-line note naming the pricier twin and its price |
+| missing / timed out / points at nothing in the group | no | **ambiguous** |
+
+Two independent reads actively contradicting each other about the one
+discriminating signal is real evidence. A merely *absent* second read is not —
+and if the winner is the cheapest printing in its group, the residual error
+runs toward **underbidding**, which costs nothing. Same err-cheap principle as
+the Snorlax stamped-twin rule: never let a coincidence put the expensive
+printing's price on screen, but don't punish the cheap printing for having an
+expensive relative.
+
+Market figures come from PPT's own `prices.market` on rows already fetched —
+no extra call. **If any market in the group is unknown we cannot prove the
+winner is the cheap one, so that falls to the capping side.** Real case that
+forced this: `Judge - 167/182` came back `siblingMarkets=[null,null,19.88]`.
+
+Hint text is now **"Check the finish and artwork to tell these apart."** — the
+old "check whether the card is holo" is right for the e-Card double prints
+that motivated this but wrong for ex/SIR and V/alt-art twins.
+
+### Firing rate, measured on 33 real same-set groups (198 runs)
+
+Pools fetched live from PPT (19 searches, one 429 on the 20th — stopped there
+per the standing rule), then replayed against both the committed `c30f4f5`
+and the corrected build. Each group tested with the scanned card being the
+cheapest and the priciest member, under three legacy-read scenarios.
+
+| scenario | BEFORE | AFTER |
+|---|---|---|
+| scanned=cheapest, legacy correct | 0/33 (0%) | 0/33 (0%) |
+| **scanned=cheapest, legacy null** | **29/33 (88%)** | **1/33 (3%)** |
+| scanned=cheapest, legacy wrong-twin | 29/33 (88%) | 29/33 (88%) |
+| scanned=priciest, legacy correct | 0/33 (0%) | 0/33 (0%) |
+| scanned=priciest, legacy null | 28/33 (85%) | 28/33 (85%) |
+| scanned=priciest, legacy wrong-twin | 28/33 (85%) | 28/33 (85%) |
+| **total** | **114/198 (58%)** | **86/198 (43%)** |
+
+The one remaining cheapest-case cap is the unknown-market fallback (Judge
+167/182), i.e. working as designed. 32 of 33 groups now let the cheap printing
+stand — Charizard ex 125/197, Boss's Orders 172/193, Arven 166/198, Arceus
+Lv.X 96/99 and so on.
+
+**The residual cost is real and worth stating:** a scan of the PRICIEST twin
+in a group still goes ambiguous whenever the legacy read gives no number,
+which is ~43% of scans. That is the deliberate trade — it is exactly the case
+where guessing wrong means bidding on a $94.62 card's price for a $5.27 card.
+The panel shows both printings with their own bid, so the scan is still
+actionable.
+
+### Real-traffic replay
+
+Replayed every `[legacy-model-shadow-test]` pair from the saved 2026-10-14
+window (9 pairs; 8 with a pool fetched, the 9th a garbled "Peandipiti ex"
+name) against both builds, using each card's real PPT pool and the real
+logged reads:
+
+```
+  Hoopa            primary=null     legacy=null     before=withheld            after=withheld
+  Polteageist      primary=null     legacy=021/030  before=withheld            after=withheld
+  Polteageist      primary=046/091  legacy=048/087  before=withheld            after=withheld
+  Fezandipiti ex   primary=084/064  legacy=084/064  before=High/score-only     after=High/score-only
+  Mega Sharpedo EX primary=033/094  legacy=033/094  before=AMBIGUOUS           after=AMBIGUOUS
+  Lapras           primary=036/128  legacy=020/025  before=Low/withheld        after=Low/withheld
+  Lapras           primary=023/025  legacy=SWSH051  before=Low/legacy-rescue   after=Low/legacy-rescue
+  Lapras           primary=003/025  legacy=003/025  before=Low/withheld        after=Low/withheld
+```
+
+**Firing rate on real traffic: 1/8, identical before and after.** The scope
+correction costs nothing on this sample and changes no other outcome.
+
+The one firing case is a genuine catch, not a false positive. Both models read
+`033/094` — a number that exists NOWHERE in the Mega Sharpedo ex pool (the
+real numbers are 061/094, 113/094, 127/094) — so scoring fell through
+`NO NUMBER MATCH IN POOL` and picked the **priciest** of three same-set
+siblings on other signals alone:
+
+```
+[sibling-cap] best=Mega Sharpedo ex - 127/094 (tcgPlayerId=662193) siblings=2
+  legacyNumber=033/094 primaryPointsAtBest=false legacyPointsAtBest=false
+  bestMarket=16.1 siblingMarkets=[2.2,0.78] winnerIsCheapest=false
+  decision=ambiguous-uncorroborated
+```
+
+$16.10 would have been shown for what is most likely the $0.78 printing. This
+also validates a design choice: the rule requires the legacy number to point
+**at the winner**, not merely to agree with the primary — two models agreeing
+on a number that matches nothing is not corroboration of anything.
+
+### Tests — 78 pass, 0 fail (`node test/alakazam.test.js`)
+
+Up from 69. Every Alakazam case is preserved: 159a5822 and f033dcfe still
+never return 83497, the expensive-winner fail-safes still cap, and a real holo
+`001/165` read by both models still prices normally.
+
+New modern-twin cases, all on real captured Charizard ex rows: cheaper winner
++ missing legacy stands at High and still prices the scanned card; that note
+names the pricier twin's number, rarity and price and carries the hint;
+pricier winner + missing legacy is still capped; disagreement is capped in
+both directions; agreement prices normally with **no note at all**; an unknown
+sibling market falls to the capping side (the Judge shape); a legacy number
+pointing at neither twin is not corroboration (the Mega Sharpedo shape); and
+in a three-way group the middle-priced winner must NOT stand while the
+cheapest still does.
+
+### Not deployed
+
+Production remains `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (`9738bb38…`). No
+preview deploy for this revision either — the previous preview
+(`dpl_EF2JaPbQFhaBYZngV69Ti8CKZTqk`, `a6052d3a…`) is the uncorrected #103
+build and should NOT be promoted. `extension/content.js` and `content.css`
+still carry the #103 panel changes, so an extension reload is still needed
+whenever this does ship.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

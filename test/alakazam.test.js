@@ -666,9 +666,14 @@ async function main() {
     const rarities = capResult.siblingAmbiguity.candidates.map((c) => c.rarity).sort();
     assert.deepStrictEqual(rarities, ["Holo Rare", "Rare"]);
   });
-  await test("REPLAY 159a5822: the panel gets the holo prompt", () => {
-    assert.strictEqual(capResult.siblingAmbiguity.prompt, "Check whether the card is holo to tell these apart.");
-    assert.ok(capResult.ambiguousNote.includes("holo"));
+  await test("REPLAY 159a5822: the panel gets a generic (not holo-specific) prompt", () => {
+    // CHANGED by #104: the first version said "check whether the card is
+    // holo", which is right for the e-Card double prints but wrong for the
+    // modern ex/SIR and V/alt-art twins this same code now covers, where the
+    // tell is the artwork and finish rather than holo-vs-not.
+    assert.strictEqual(capResult.siblingAmbiguity.prompt, "Check the finish and artwork to tell these apart.");
+    assert.ok(!/\bholo\b/i.test(capResult.siblingAmbiguity.prompt), "the prompt must not be holo-specific");
+    assert.ok(capResult.ambiguousNote.includes("finish and artwork"));
   });
   await test("REPLAY 159a5822 at the deployed build reproduces High 83497 (test validity)", async () => {
     // Pinned to the SHA actually in production right now.
@@ -926,6 +931,131 @@ async function main() {
     const calls2 = installPptMock(scoreOnlyRoutes());
     await M.lookupCardPPT({ ...SCORE_READ, cardNumber: "1/167" }, "lesson-calls2", Promise.resolve({ ...LEGACY_CORRECT, cardNumber: "1/167" }));
     assert.ok(before > 0 && calls2.length > 0);
+  });
+
+  // ======================================================================
+  // 16. MODERN SAME-SET TWINS — the #104 scope correction
+  // ======================================================================
+  // Because candidateSiblingBaseName strips " - 125/197", every modern
+  // ex/SIR, V/alt-art and regular/full-art-Trainer pair is a sibling group.
+  // Measured on real PPT pools: 19 popular names -> 92 sibling pairs, and
+  // Charizard ex alone has four same-set versions. With the legacy
+  // cardNumber null ~43% of the time, capping on every uncorroborated
+  // sibling scan would have made ambiguity the normal outcome for modern
+  // chase cards (measured: 88% of cheapest-winner/legacy-null cases before
+  // this change, 3% after).
+  function modernRoutes(rows) {
+    return {
+      "Charizard ex": F.padTo(rows, 30, "Charizard"),
+      "Charizard ex|offset=30": F.padTo([], 3, "CharizardP2"),
+    };
+  }
+  const MODERN_READ = {
+    ...BASE_READ,
+    cardName: "Charizard ex",
+    hp: "330",
+    setName: "SV03: Obsidian Flames",
+    attackName: "Burning Darkness",
+  };
+  const modernLegacy = (cardNumber) => ({
+    found: true, confidence: "High", cardName: "Charizard ex", cardNumber,
+    hp: "330", setName: "SV03: Obsidian Flames", attackName: "Burning Darkness",
+    language: "English", stampType: "none",
+  });
+
+  let standsResult = null;
+  await test("MODERN TWIN: cheaper winner + MISSING legacy number is allowed to stand", async () => {
+    installPptMock(modernRoutes([F.CHARIZARD_EX_125, F.CHARIZARD_EX_223]));
+    standsResult = await M.lookupCardPPT(
+      { ...MODERN_READ, cardNumber: "125/197" }, "modern-stands", Promise.resolve(modernLegacy(null))
+    );
+    assert.strictEqual(standsResult.pricingLookup.tcgPlayerId, "517940", "must still price the scanned card");
+    assert.strictEqual(standsResult.matchConfidence, "High", "a cheap winner must keep its normal confidence");
+    assert.strictEqual(standsResult.siblingAmbiguity, undefined);
+    assert.notStrictEqual(standsResult.matchBasis, "sibling-ambiguous");
+  });
+  await test("MODERN TWIN: the stands case still names the pricier twin and its price", () => {
+    const note = standsResult.ambiguousNote;
+    assert.ok(note, "a note is required so the user knows a pricier twin exists");
+    assert.ok(note.includes("223/197"), "note must name the pricier twin's number");
+    assert.ok(note.includes("94.62"), "note must give the pricier twin's market price");
+    assert.ok(note.includes("Special Illustration Rare"), "note must name its rarity");
+    assert.ok(note.includes("finish and artwork"), "note must carry the disambiguation hint");
+  });
+  await test("MODERN TWIN: pricier winner + MISSING legacy number is still capped", async () => {
+    installPptMock(modernRoutes([F.CHARIZARD_EX_125, F.CHARIZARD_EX_223]));
+    const r = await M.lookupCardPPT(
+      { ...MODERN_READ, cardNumber: "223/197" }, "modern-pricey-null", Promise.resolve(modernLegacy(null))
+    );
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous", "the expensive printing must never stand uncorroborated");
+    assert.strictEqual(r.pricingLookup, null);
+    assert.strictEqual(r.matchConfidence, "Low");
+  });
+  await test("MODERN TWIN: disagreement is capped regardless of which twin is cheaper", async () => {
+    for (const [primary, legacy] of [["125/197", "223/197"], ["223/197", "125/197"]]) {
+      installPptMock(modernRoutes([F.CHARIZARD_EX_125, F.CHARIZARD_EX_223]));
+      const r = await M.lookupCardPPT(
+        { ...MODERN_READ, cardNumber: primary }, `modern-disagree-${primary}`, Promise.resolve(modernLegacy(legacy))
+      );
+      assert.strictEqual(r.matchBasis, "sibling-ambiguous", `primary ${primary} vs legacy ${legacy} must be ambiguous`);
+      assert.strictEqual(r.pricingLookup, null);
+    }
+  });
+  await test("MODERN TWIN: agreement prices normally with NO note at all", async () => {
+    for (const num of ["125/197", "223/197"]) {
+      installPptMock(modernRoutes([F.CHARIZARD_EX_125, F.CHARIZARD_EX_223]));
+      const r = await M.lookupCardPPT(
+        { ...MODERN_READ, cardNumber: num }, `modern-agree-${num}`, Promise.resolve(modernLegacy(num))
+      );
+      assert.ok(r.pricingLookup, `agreement on ${num} must still price`);
+      assert.strictEqual(r.matchConfidence, "High");
+      assert.strictEqual(r.siblingAmbiguity, undefined);
+      assert.ok(!r.ambiguousNote, `agreement must add no note (got: ${r.ambiguousNote})`);
+    }
+  });
+  await test("MODERN TWIN: an unknown sibling market falls to the capping side", async () => {
+    // Real shape: Judge 167/182 came back with siblingMarkets=[null,null,19.88].
+    // A missing market means we cannot prove we are erring cheap, so cap.
+    installPptMock(modernRoutes([F.CHARIZARD_EX_125, F.CHARIZARD_EX_223_NO_MARKET]));
+    const r = await M.lookupCardPPT(
+      { ...MODERN_READ, cardNumber: "125/197" }, "modern-nomarket", Promise.resolve(modernLegacy(null))
+    );
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous");
+    assert.strictEqual(r.pricingLookup, null);
+  });
+  await test("MODERN TWIN: a legacy number pointing at NEITHER twin is not corroboration", async () => {
+    // Real case, Mega Sharpedo ex: both models read 033/094, which exists
+    // nowhere in the pool, and scoring fell back to the PRICIEST of three
+    // same-set siblings on other signals alone. Agreement between the models
+    // is not corroboration of the WINNER.
+    installPptMock(modernRoutes([F.CHARIZARD_EX_125, F.CHARIZARD_EX_223]));
+    const r = await M.lookupCardPPT(
+      { ...MODERN_READ, cardNumber: "223/197" }, "modern-neither", Promise.resolve(modernLegacy("999/197"))
+    );
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous");
+  });
+  await test("MODERN TWIN: the cheap-stands rule needs the winner to be cheapest of ALL siblings", async () => {
+    // Three-way group (the real Charizard ex / Roaring Moon ex shape): the
+    // middle member is not the cheapest, so it must not stand.
+    const mid = { ...F.CHARIZARD_EX_223, tcgPlayerId: "517970", name: "Charizard ex - 215/197",
+      cardNumber: "215/197", rarity: "Ultra Rare", prices: { market: 20.74, primaryPrinting: "Holofoil" } };
+    installPptMock(modernRoutes([F.CHARIZARD_EX_125, mid, F.CHARIZARD_EX_223]));
+    const r = await M.lookupCardPPT(
+      { ...MODERN_READ, cardNumber: "215/197" }, "modern-middle", Promise.resolve(modernLegacy(null))
+    );
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous", "a middle-priced winner must not stand");
+    assert.strictEqual(r.siblingAmbiguity.candidates.length, 3, "all three siblings disclosed");
+  });
+  await test("MODERN TWIN: the cheapest of a three-way group still stands", async () => {
+    const mid = { ...F.CHARIZARD_EX_223, tcgPlayerId: "517970", name: "Charizard ex - 215/197",
+      cardNumber: "215/197", rarity: "Ultra Rare", prices: { market: 20.74, primaryPrinting: "Holofoil" } };
+    installPptMock(modernRoutes([F.CHARIZARD_EX_125, mid, F.CHARIZARD_EX_223]));
+    const r = await M.lookupCardPPT(
+      { ...MODERN_READ, cardNumber: "125/197" }, "modern-cheapest3", Promise.resolve(modernLegacy(null))
+    );
+    assert.strictEqual(r.pricingLookup.tcgPlayerId, "517940");
+    assert.strictEqual(r.matchConfidence, "High");
+    assert.ok(r.ambiguousNote.includes("223/197"), "the note names the PRICIEST twin");
   });
 
   // ----------------------------------------------------------------------

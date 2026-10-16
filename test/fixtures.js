@@ -153,7 +153,49 @@ const BLASTOISE_37 = {
   printingsAvailable: ["Reverse Holofoil", "Normal"],
 };
 
+// Real SV03 Obsidian Flames Charizard ex rows, captured from PPT 2026-10-15.
+// This is the modern twin class the #104 scope correction is about: because
+// candidateSiblingBaseName strips the " - 125/197" suffix, every one of these
+// is a sibling of the others. Charizard ex alone has FOUR same-set versions,
+// and 19 popular modern names yielded 92 such pairs.
+const CHARIZARD_EX_125 = {
+  tcgPlayerId: "517940",
+  setName: "SV03: Obsidian Flames",
+  name: "Charizard ex - 125/197",
+  cardNumber: "125/197",
+  rarity: "Double Rare",
+  cardType: "Pokemon",
+  hp: "330",
+  attacks: ["[2RR] Burning Darkness (180+)\r\n<br>Does 30 more damage for each Prize card your opponent has taken."],
+  prices: { market: 5.27, primaryPrinting: "Holofoil", listings: 410 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const CHARIZARD_EX_223 = {
+  tcgPlayerId: "517988",
+  setName: "SV03: Obsidian Flames",
+  name: "Charizard ex - 223/197",
+  cardNumber: "223/197",
+  rarity: "Special Illustration Rare",
+  cardType: "Pokemon",
+  hp: "330",
+  attacks: ["[2RR] Burning Darkness (180+)\r\n<br>Does 30 more damage for each Prize card your opponent has taken."],
+  prices: { market: 94.62, primaryPrinting: "Holofoil", listings: 120 },
+  printingsAvailable: ["Holofoil"],
+};
+
+// Same pair with the pricier twin's market missing — the real "Judge 167/182"
+// shape (siblingMarkets=[null,null,19.88]), where we cannot prove the winner
+// is the cheap one and so must fall to the capping side.
+const CHARIZARD_EX_223_NO_MARKET = {
+  ...CHARIZARD_EX_223,
+  prices: { primaryPrinting: "Holofoil", listings: 120 },
+};
+
 module.exports = {
+  CHARIZARD_EX_125,
+  CHARIZARD_EX_223,
+  CHARIZARD_EX_223_NO_MARKET,
   BLASTOISE_36,
   BLASTOISE_37,
   ALAKAZAM_33,
