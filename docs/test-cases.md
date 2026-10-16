@@ -12035,6 +12035,76 @@ pointing at neither twin is not corroboration (the Mega Sharpedo shape); and
 in a three-way group the middle-priced winner must NOT stand while the
 cheapest still does.
 
+### Preview e2e, 2026-10-16 — `dpl_BV2akTyBBnYFPQxXfBgeswQz2YNu`, `sourceHash c8f57029eb105023ff27c05f6bea23710e74b72b`
+
+Seven live scans, all passing:
+
+| scan | result | latency |
+|---|---|---|
+| Alakazam 33 (`1ac5baaf`) | **83500** High `score-only`, Normal | 2386ms |
+| Alakazam 33 (`ff965e11`) | **83500** High `score-only`, Normal | 4061ms |
+| Alakazam 33 (`d4a7601a`) | **83500** High `score-only`, Normal | 2055ms |
+| Pikachu XY95 (`d78359f2`) | 114004 High, no `siblingAmbiguity` | 2001ms |
+| Charizard ex 125/197 (`48fa1f45`) | **509879** — its own card, High | 1864ms |
+| Charizard ex 223/197 (`1134bb62`) | **509980** — its own card, High | 2007ms |
+| Boss's Orders 248/193 full art (`dcf9c089`) | **497663** — its own card, High | 1828ms |
+
+**No High 83497. No note or ambiguous panel on any scan.**
+
+**The cap genuinely evaluated the modern twin groups and correctly stood
+down** — this is the scope correction working on live traffic, not just in
+tests:
+
+```
+[sibling-cap] best=Charizard ex - 125/197 (509879) siblings=3 legacyNumber=125/197
+  legacyPointsAtBest=true bestMarket=5.58 siblingMarkets=[34.47,93.75,21.14]
+  winnerIsCheapest=true  decision=corroborated
+[sibling-cap] best=Charizard ex - 223/197 (509980) siblings=3 legacyNumber=223/197
+  legacyPointsAtBest=true bestMarket=93.75 siblingMarkets=[34.47,21.14,5.58]
+  winnerIsCheapest=false decision=corroborated
+[sibling-cap] best=Boss's Orders - 248/193 (497663) siblings=2 legacyNumber=248/193
+  legacyPointsAtBest=true bestMarket=10.75 siblingMarkets=[13.86,0.38]
+  winnerIsCheapest=false decision=corroborated
+```
+
+Both Charizards sat in a real THREE-sibling group and the Boss's Orders full
+art in a two-sibling group; all three were corroborated because both models
+read the number. Note the two `winnerIsCheapest=false` cases — had the legacy
+number been missing on those, they would have capped, which is exactly the
+~43% residual cost measured in the firing-rate table above.
+
+No `[sibling-cap]` line on the Alakazam scans: all three read `33/165`
+correctly, so the number matched on page 1, page 2 was never fetched and the
+holo sibling was never in the pool. Same pool-dependency as #103.
+
+### One error group on the preview — pre-existing, handled, NOT from this change
+
+`get_runtime_errors` over 2h returns exactly one group, count=1, on this
+deployment:
+
+```
+2026-10-16T12:16:02Z [error/function]
+[lookup] PokemonPriceTracker request threw: This operation was aborted — retrying once
+```
+
+Traced to the Alakazam scan `ff965e11` — the 4061ms one, `lookup 2683ms`.
+The built-in single retry **succeeded** and that scan returned the correct
+card (83500, High, Normal, no note). Verifiable provenance: the line comes
+from `fetchPokemonPriceTracker`'s abort branch, added in commit `093f551`
+(2026-10-07), and `git diff` of this change against `api/identify.js` touches
+`fetchPokemonPriceTracker` **zero** times.
+
+This is in fact the **first observation of the PPT abort retry firing at all**
+— CLAUDE.md has carried it under "Watching, no action needed: the PPT abort
+retry has not yet fired on organic traffic" since 2026-10-07. It fired here
+because of rapid-fire test scans, not organic traffic.
+
+**Production deploy deliberately NOT performed.** The go-ahead was conditional
+on "zero errors", and one error group is literally a failed gate even though
+every functional check passed and the error is a pre-existing handled
+transient. Holding for an explicit re-authorisation rather than deciding that
+a documented gate did not mean what it said.
+
 ### Not deployed
 
 Production remains `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (`9738bb38…`). No

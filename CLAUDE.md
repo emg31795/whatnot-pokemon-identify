@@ -484,9 +484,20 @@ now 3%. See the decision table on rescue path 10.
 **`extension/content.js` and `content.css` changed, so the extension needs a
 manual reload in `chrome://extensions`** before the two-printing panel
 appears.
-**Preview `dpl_EF2JaPbQFhaBYZngV69Ti8CKZTqk` (`a6052d3a…`) is the
-UNCORRECTED #103 build — do NOT promote it.** The corrected build has not
-been deployed anywhere yet. Two known limits, documented in #103/#104: the
+**Preview of the CORRECTED build: `dpl_BV2akTyBBnYFPQxXfBgeswQz2YNu`,
+`sourceHash c8f57029eb105023ff27c05f6bea23710e74b72b`** (commits `e3bda6b` +
+`cefe0cf`). 2026-10-16 e2e, 7/7 pass: Alakazam 33 x3 -> **83500** High (no
+High 83497), XY95 -> 114004 High unchanged, Charizard ex 125/197 -> 509879 and
+223/197 -> 509980 each its own card at High, Boss's Orders 248/193 full art ->
+497663 High. **The cap evaluated real modern twin groups live and correctly
+stood down** (`decision=corroborated` on 3-sibling Charizard groups and the
+2-sibling Boss's Orders group). **Not promoted to production**: the
+conditional go-ahead required zero runtime errors and the preview logged one
+group — the PPT abort retry (`093f551`, 2026-10-07) on a 4061ms Alakazam scan
+that then succeeded; unrelated to this change, and the first time that retry
+has ever been observed firing. Awaiting re-authorisation.
+**Earlier preview `dpl_EF2JaPbQFhaBYZngV69Ti8CKZTqk` (`a6052d3a…`) is the
+UNCORRECTED #103 build — do NOT promote it.** Two known limits, documented in #103/#104: the
 cap is **pool-dependent**, and the 30s PPT cache can return a pre-cap result
 inside its window.
 
