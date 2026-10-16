@@ -159,7 +159,7 @@ const BLASTOISE_37 = {
 // is a sibling of the others. Charizard ex alone has FOUR same-set versions,
 // and 19 popular modern names yielded 92 such pairs.
 const CHARIZARD_EX_125 = {
-  tcgPlayerId: "517940",
+  tcgPlayerId: "509879",
   setName: "SV03: Obsidian Flames",
   name: "Charizard ex - 125/197",
   cardNumber: "125/197",
@@ -172,7 +172,7 @@ const CHARIZARD_EX_125 = {
 };
 
 const CHARIZARD_EX_223 = {
-  tcgPlayerId: "517988",
+  tcgPlayerId: "509980",
   setName: "SV03: Obsidian Flames",
   name: "Charizard ex - 223/197",
   cardNumber: "223/197",

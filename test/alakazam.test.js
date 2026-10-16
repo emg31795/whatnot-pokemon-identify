@@ -969,7 +969,7 @@ async function main() {
     standsResult = await M.lookupCardPPT(
       { ...MODERN_READ, cardNumber: "125/197" }, "modern-stands", Promise.resolve(modernLegacy(null))
     );
-    assert.strictEqual(standsResult.pricingLookup.tcgPlayerId, "517940", "must still price the scanned card");
+    assert.strictEqual(standsResult.pricingLookup.tcgPlayerId, "509879", "must still price the scanned card");
     assert.strictEqual(standsResult.matchConfidence, "High", "a cheap winner must keep its normal confidence");
     assert.strictEqual(standsResult.siblingAmbiguity, undefined);
     assert.notStrictEqual(standsResult.matchBasis, "sibling-ambiguous");
@@ -1037,7 +1037,7 @@ async function main() {
   await test("MODERN TWIN: the cheap-stands rule needs the winner to be cheapest of ALL siblings", async () => {
     // Three-way group (the real Charizard ex / Roaring Moon ex shape): the
     // middle member is not the cheapest, so it must not stand.
-    const mid = { ...F.CHARIZARD_EX_223, tcgPlayerId: "517970", name: "Charizard ex - 215/197",
+    const mid = { ...F.CHARIZARD_EX_223, tcgPlayerId: "509936", name: "Charizard ex - 215/197",
       cardNumber: "215/197", rarity: "Ultra Rare", prices: { market: 20.74, primaryPrinting: "Holofoil" } };
     installPptMock(modernRoutes([F.CHARIZARD_EX_125, mid, F.CHARIZARD_EX_223]));
     const r = await M.lookupCardPPT(
@@ -1047,13 +1047,13 @@ async function main() {
     assert.strictEqual(r.siblingAmbiguity.candidates.length, 3, "all three siblings disclosed");
   });
   await test("MODERN TWIN: the cheapest of a three-way group still stands", async () => {
-    const mid = { ...F.CHARIZARD_EX_223, tcgPlayerId: "517970", name: "Charizard ex - 215/197",
+    const mid = { ...F.CHARIZARD_EX_223, tcgPlayerId: "509936", name: "Charizard ex - 215/197",
       cardNumber: "215/197", rarity: "Ultra Rare", prices: { market: 20.74, primaryPrinting: "Holofoil" } };
     installPptMock(modernRoutes([F.CHARIZARD_EX_125, mid, F.CHARIZARD_EX_223]));
     const r = await M.lookupCardPPT(
       { ...MODERN_READ, cardNumber: "125/197" }, "modern-cheapest3", Promise.resolve(modernLegacy(null))
     );
-    assert.strictEqual(r.pricingLookup.tcgPlayerId, "517940");
+    assert.strictEqual(r.pricingLookup.tcgPlayerId, "509879");
     assert.strictEqual(r.matchConfidence, "High");
     assert.ok(r.ambiguousNote.includes("223/197"), "the note names the PRICIEST twin");
   });
