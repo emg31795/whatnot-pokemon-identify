@@ -189,40 +189,44 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR`** (2026-10-15, the #101
-  Alakazam fixes), aliased to `whatnot-pokemon-identify.vercel.app`. Preview
-  of the same build: `dpl_EJ6MHs29CGxGThnSFWhgQeEZ18n4`.
-- **`sourceHash 9738bb38bddd790239d6c4e5a383eeb77abff4ba`** == `shasum
+- Deployment **`dpl_7EmniEgDDAdRmGvmDxJMMta53eZg`** (2026-10-16, the
+  sibling-disagreement cap, tests #103 + #104), aliased to
+  `whatnot-pokemon-identify.vercel.app`. Preview of the same build:
+  `dpl_BV2akTyBBnYFPQxXfBgeswQz2YNu`.
+- **`sourceHash c8f57029eb105023ff27c05f6bea23710e74b72b`** == `shasum
   api/identify.js` on disk, byte-exact on both deployments (CLI deploy from
-  disk). Built from commit `ba5f009`. `GET /api/identify` reports
-  **`slabLabelProbe: "on"`**.
-- E2E verified 2026-10-15: **Pikachu XY95** High / `score-only` / tcgPlayerId
-  114004 / `attackMismatch: false`, 2175ms (requestId `f4c9f028`) — unchanged.
-  **No runtime errors in a 3h window**, and the uncapped-await error that
-  fired twice in the prior 24h has not recurred.
-- **OPEN REGRESSION on this build — see test #102.** An Alakazam 33 e2e scan
-  (`159a5822`) returned the WRONG card **83497** at **High** confidence via
-  `score-only`. The primary model read `cardNumber "1/165"`, which matches
-  83497's `001/165` exactly, so scoring picked it (bestScore 26, tieCount 1)
-  and **no rescue ran** — the #101 guards only sit inside the rescue path.
-  Card selection there is unchanged from pre-#101, but the new ATTACK MISMATCH
-  suppression removed what had been an **accidental** safety net: measured
-  against `HEAD~1`, pre-fix gave `Low / attackMismatch true` on that same read
-  and the deployed build gives `High`. Both siblings share the attack
-  `[2P] Syncroblast (80)`, so the attack signal carries no card-identity
-  information in this group. **Proposed fix (not built): extend the
-  sibling-disagreement check to the scoring path** — see test #102 for the
-  three options.
+  disk). Built from commit `a939d95` (code is `e3bda6b`). `GET /api/identify`
+  reports **`slabLabelProbe: "on"`**.
+- E2E verified on production 2026-10-16: **Pikachu XY95** High /
+  `score-only` / 114004 / Holofoil, 2202ms (`732692f8`) — unchanged; and
+  **Alakazam 33** High / `score-only` / **83500** / Normal, 2033ms
+  (`c68020a4`) — the correct card. **Zero runtime errors** in the window.
+- Preview e2e on the same build, 7/7: Alakazam 33 x3 all 83500 High (no High
+  83497), XY95 unchanged, **Charizard ex 125/197 -> 509879 and 223/197 ->
+  509980 each its own card at High**, Boss's Orders 248/193 full art ->
+  497663 High. `[sibling-cap]` logged `decision=corroborated` on both
+  three-sibling Charizard groups and the two-sibling Boss's Orders group —
+  the cap evaluating real modern twins live and correctly standing down.
+- **#102 is CLOSED by this build.** The wrong-card-at-High path (primary
+  model reading "1/165" and scoring picking the $250 holo sibling on
+  `score-only`) is now capped. Confirmed against real PPT data with the exact
+  `159a5822` read: `decision=ambiguous-disagreement` -> Low /
+  `sibling-ambiguous` / no price, both printings disclosed.
+- **`extension/content.js` and `content.css` changed in this build, so the
+  extension needs a manual reload in `chrome://extensions`** before the
+  two-printing panel can render. Until it is reloaded, a sibling-ambiguous
+  scan shows the older "Printing undetermined — price withheld" line instead
+  of the two priced rows; the backend is correct either way.
 - **No real slab has been scanned end-to-end through Phase 2-lite or Phase 3.**
   Needs a live slab scan. Organic traffic shows Haiku still over-calling
   `isSlab` on raw cards (a Ponyta, grader/grade null, Gemini false) — which is
   exactly what Phase 0a exists to absorb, though the `SLAB FLAG IGNORED` line
   only fires when the ACTIVE read claims a slab.
-- Earlier production: `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj` (2026-10-14,
+- Earlier production: `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (2026-10-15, #101,
+  `9738bb38…`, `ba5f009`); `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj` (2026-10-14,
   `34774dc6…`, `531aac4`); `dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm` (2026-10-11,
   Phase 3, `092de9b5…`, `7940425`); `dpl_5H1C6MrxSNqCVod4BH7pZ42kz1uz`
-  (Phase 2-lite, `1d714d47…`, `044fd2f`);
-  `dpl_5S5eubh9PbQqKpcejRNACCzVxfL7` (Phase 0/1, `f5d2733f…`, `c37f575`).
+  (Phase 2-lite, `1d714d47…`, `044fd2f`).
 - Project `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team `leasedraftai`
   (`team_DZEpR5n7heCyZsNFjxZmxUP1`). **Not git-linked** — no build-on-push.
   GitHub: `https://github.com/emg31795/whatnot-pokemon-identify`.
@@ -470,36 +474,26 @@ sane bid for that card.
 `SIBLING AMBIGUITY — RESCUE REFUSED` — both need a misread that lands on a
 real sibling *and* misses the pool, which can't be forced.
 
-**BUILT LOCALLY, NOT DEPLOYED — the sibling-disagreement cap** (tests #103 +
-#104, 78 local tests), commit `c30f4f5` plus the #104 scope correction.
-Awaiting a production go-ahead. Closes the #102 hole: a single-model number
-misread that lands exactly on a sibling and wins on plain scoring at High.
-**Confirmed against REAL PPT data** with the exact 159a5822 read →
-Low / `sibling-ambiguous` / no price, both printings disclosed; production
-returns High 83497 on that same read.
-**The #104 correction is load-bearing**: without it, modern same-set twins
-(92 pairs across 19 popular names) would have made two-card ambiguity the
-normal outcome for chase cards — 88% of cheapest-winner/legacy-null cases,
-now 3%. See the decision table on rescue path 10.
+**DEPLOYED TO PRODUCTION 2026-10-16 — the sibling-disagreement cap** (tests
+#103 + #104, 78 local tests), `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg`,
+`sourceHash c8f57029…`, commit `a939d95`. Closes #102. The #104 scope
+correction is load-bearing: without it, modern same-set twins (92 pairs
+across 19 popular names) would have made two-card ambiguity the normal
+outcome for chase cards — 88% of cheapest-winner/legacy-null cases, now 3%.
+See the decision table on rescue path 10.
 **`extension/content.js` and `content.css` changed, so the extension needs a
 manual reload in `chrome://extensions`** before the two-printing panel
-appears.
-**Preview of the CORRECTED build: `dpl_BV2akTyBBnYFPQxXfBgeswQz2YNu`,
-`sourceHash c8f57029eb105023ff27c05f6bea23710e74b72b`** (commits `e3bda6b` +
-`cefe0cf`). 2026-10-16 e2e, 7/7 pass: Alakazam 33 x3 -> **83500** High (no
-High 83497), XY95 -> 114004 High unchanged, Charizard ex 125/197 -> 509879 and
-223/197 -> 509980 each its own card at High, Boss's Orders 248/193 full art ->
-497663 High. **The cap evaluated real modern twin groups live and correctly
-stood down** (`decision=corroborated` on 3-sibling Charizard groups and the
-2-sibling Boss's Orders group). **Not promoted to production**: the
-conditional go-ahead required zero runtime errors and the preview logged one
-group — the PPT abort retry (`093f551`, 2026-10-07) on a 4061ms Alakazam scan
-that then succeeded; unrelated to this change, and the first time that retry
-has ever been observed firing. Awaiting re-authorisation.
-**Earlier preview `dpl_EF2JaPbQFhaBYZngV69Ti8CKZTqk` (`a6052d3a…`) is the
-UNCORRECTED #103 build — do NOT promote it.** Two known limits, documented in #103/#104: the
-cap is **pool-dependent**, and the 30s PPT cache can return a pre-cap result
-inside its window.
+renders.
+**Live-confirmed:** `[sibling-cap] decision=corroborated` on real
+three-sibling Charizard ex groups and a two-sibling Boss's Orders group.
+**Not yet observed on organic traffic:** `decision=ambiguous-disagreement`,
+`decision=ambiguous-uncorroborated` and `decision=stands-cheaper` — all three
+need a sibling actually in the fetched pool, which the Alakazam scans never
+produce because a correct number read stops at page 1. Two known limits
+(#103/#104): the cap is **pool-dependent**, and the 30s PPT cache can return
+a pre-cap result inside its window.
+**Superseded previews:** `dpl_EF2JaPbQFhaBYZngV69Ti8CKZTqk` (`a6052d3a…`) is
+the UNCORRECTED #103 build — never promote it.
 
 **Noted, not built (test #101): Expedition Reverse Holofoil price curves can
 be inverted.** 83500's Reverse Holofoil reads NM **$16.00** (sold 0) against
@@ -560,7 +554,18 @@ partial list when an entry has no leading `[cost]` bracket;
 Confirmed on production: Snorlax 89392 reads `attackName: "Layabout"` and now
 comes back **High with no mismatch**, where HEAD would have fired.
 
-**Watching, no action needed:** `SUB-FLOOR LEGACY-MODEL NUMBER RESCUE` and the
-PPT abort retry have not yet fired on organic traffic.
+**The PPT abort retry HAS NOW BEEN OBSERVED FIRING** (2026-10-16, preview
+`dpl_BV2akTyBBnYFPQxXfBgeswQz2YNu`): `[lookup] PokemonPriceTracker request
+threw: This operation was aborted — retrying once` on an Alakazam scan
+(`ff965e11`, `lookup 2683ms`, total 4061ms). **The single retry succeeded and
+the scan returned the correct card** (83500, High, Normal, no note) — exactly
+the transient-blip case the retry was built for in `093f551`, so it needs no
+action. It surfaced under rapid-fire test scans rather than organic traffic,
+and it shows up in `get_runtime_errors` as a one-count group because the line
+is a `console.error`; that is expected, not a fault. Still not seen on
+organic traffic.
+
+**Watching, no action needed:** `SUB-FLOOR LEGACY-MODEL NUMBER RESCUE` has not
+yet fired on organic traffic.
 
 **Not decided:** switching the Vercel project to git-linked deploys.

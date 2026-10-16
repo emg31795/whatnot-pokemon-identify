@@ -12105,14 +12105,34 @@ every functional check passed and the error is a pre-existing handled
 transient. Holding for an explicit re-authorisation rather than deciding that
 a documented gate did not mean what it said.
 
-### Not deployed
+### Deployed to production 2026-10-16
 
-Production remains `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (`9738bb38…`). No
-preview deploy for this revision either — the previous preview
-(`dpl_EF2JaPbQFhaBYZngV69Ti8CKZTqk`, `a6052d3a…`) is the uncorrected #103
-build and should NOT be promoted. `extension/content.js` and `content.css`
-still carry the #103 panel changes, so an extension reload is still needed
-whenever this does ship.
+Re-authorised after the error group above was reviewed and accepted as the
+pre-existing PPT abort with a successful retry.
+
+- Pushed `ba18f39..a939d95` to `origin/main` (`e3bda6b`, `cefe0cf`, `a939d95`).
+- Production deployment **`dpl_7EmniEgDDAdRmGvmDxJMMta53eZg`**, target
+  `production`, Ready, created 2026-10-16 18:43 EDT
+  (`whatnot-pokemon-identify-bbizzvuq7-leasedraftai.vercel.app`), aliased to
+  `whatnot-pokemon-identify.vercel.app`. CLI deploy from disk.
+- **`sourceHash c8f57029eb105023ff27c05f6bea23710e74b72b`** from live
+  `GET /api/identify` == `shasum api/identify.js` on disk, byte-exact, and
+  identical to preview `dpl_BV2akTyBBnYFPQxXfBgeswQz2YNu`.
+  `slabLabelProbe: "on"`.
+- Prior production: `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (`9738bb38…`, `ba5f009`).
+- Production e2e: **Pikachu XY95** (`732692f8`) High / `score-only` / 114004 /
+  Holofoil, 2202ms — unchanged; **Alakazam 33** (`c68020a4`) High /
+  `score-only` / **83500** / Normal, 2033ms — the correct card, no note.
+- `get_runtime_errors` over the 30-minute window covering the deploy and both
+  scans: **no runtime errors at all.**
+
+**#102 is closed.** The wrong-card-at-High path is capped in production.
+
+**`extension/content.js` and `content.css` changed, so the extension needs a
+manual reload in `chrome://extensions`.** Until it is reloaded a
+sibling-ambiguous scan falls back to the older "Printing undetermined — price
+withheld" line rather than the two priced rows. The backend response is
+correct either way, so this degrades disclosure, not correctness.
 
 ## Related docs
 
