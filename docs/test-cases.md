@@ -12465,6 +12465,44 @@ instead of silently also asserting the padding behaviour it was never about.
 **NOT DEPLOYED.** Production remains `dpl_Eih1EtRbrtHgktna9QiRhq5D4259`
 (`b170a4e3…`).
 
+## #107 — 2026-10-18 — Disclosure polish: stop linking one of two disclosed cards, and stop calling a disclosure a guess
+
+Both gaps were found in #106's own preview e2e, not by reading code.
+
+**1. `tcgplayerUrl` named a card we had just refused to choose.** A Rayquaza
+tie disclosed POP Series 1 and Blister Exclusives in the rows while the
+top-level `tcgplayerUrl` still pointed at whichever product PPT's array order
+put first (88624). The rescue-path cap already returned `tcgplayerUrl: null`
+in its own literal; the two score-path cases did not. Now nulled — every
+disclosed row carries its own `tcgplayerUrl`, so nothing is lost.
+
+**2. The note opened by calling itself a guess.** Both `ambiguousNoteText`
+variants end with *"This is our best guess only; verify the exact printing…"*,
+which is accurate for a single priced candidate and wrong the moment a
+two-row disclosure replaces it. `stripBestGuessClause` removes that clause
+(regex covers both the "exact printing" and "exact set/number" wordings, and
+collapses the double space it leaves behind). The useful half of the tie
+sentence — *"Multiple different printings … share an identical card number,
+HP, attack, and type"* — is deliberately kept.
+
+Both applied at the **single point** where `pricingLookup` is set to null, so
+the score-path sibling cap and `number-tie-ambiguous` are covered by one
+change and cannot drift apart. A genuinely priced result is untouched: it
+keeps its link and its best-guess wording.
+
+### Tests — 108 pass, 0 fail
+
+Five new: a tie result nulls the header link while every row keeps its own; the
+score-path sibling cap does the same; the stale sentence is gone while the tie
+explanation and the disclosure prompt survive, with no double spaces; a priced
+result keeps both its link and its wording; and `stripBestGuessClause` unit
+cases for both variants, a null input and a no-op string.
+
+Two of those tests failed first and found a fixture defect rather than a code
+defect: the Rayquaza fixtures omitted `tcgPlayerUrl`, which real PPT rows
+always carry, so "the rows still have links" and "a priced result still links
+its product" were both unprovable. Fixtures now carry the real URLs.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

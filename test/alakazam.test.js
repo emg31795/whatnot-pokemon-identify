@@ -1331,25 +1331,25 @@ async function main() {
   // ======================================================================
   // Real rows captured from PPT 2026-10-18.
   const RAY_POP1 = {
-    tcgPlayerId: "88624", setName: "POP Series 1", name: "Rayquaza", cardNumber: "003/017",
+    tcgPlayerId: "88624", tcgPlayerUrl: "https://www.tcgplayer.com/product/88624", setName: "POP Series 1", name: "Rayquaza", cardNumber: "003/017",
     rarity: "Rare", cardType: "Pokemon", hp: "80",
     attacks: ["[1] Fly (10)", "[RL] Dragon Claw (30)"],
     prices: { market: 325.3, primaryPrinting: "Normal" }, printingsAvailable: ["Normal"],
   };
   const RAY_BLISTER = {
-    tcgPlayerId: "691978", setName: "Blister Exclusives", name: "Rayquaza - 003/017 (2006)",
+    tcgPlayerId: "691978", tcgPlayerUrl: "https://www.tcgplayer.com/product/691978", setName: "Blister Exclusives", name: "Rayquaza - 003/017 (2006)",
     cardNumber: "003/017", rarity: "Rare", cardType: "Pokemon", hp: "80",
     attacks: ["[1] Fly (10)", "[RL] Dragon Claw (30)"],
     prices: { market: 135.3, primaryPrinting: "Holofoil" }, printingsAvailable: ["Holofoil"],
   };
   const RAY_EMERALD = {
-    tcgPlayerId: "88626", setName: "EX Emerald", name: "Rayquaza", cardNumber: "9/106",
+    tcgPlayerId: "88626", tcgPlayerUrl: "https://www.tcgplayer.com/product/88626", setName: "EX Emerald", name: "Rayquaza", cardNumber: "9/106",
     rarity: "Rare", cardType: "Pokemon", hp: "80",
     attacks: ["[2] Dragon Breath (20)"],
     prices: { market: 12.0, primaryPrinting: "Normal" }, printingsAvailable: ["Normal"],
   };
   const RAY_DEOXYS = {
-    tcgPlayerId: "88625", setName: "EX Deoxys", name: "Rayquaza", cardNumber: "22/107",
+    tcgPlayerId: "88625", tcgPlayerUrl: "https://www.tcgplayer.com/product/88625", setName: "EX Deoxys", name: "Rayquaza", cardNumber: "22/107",
     rarity: "Rare", cardType: "Pokemon", hp: "80",
     attacks: ["[2] Tumbling Attack (20+)"],
     prices: { market: 48.84, primaryPrinting: "Normal" },
@@ -1445,6 +1445,56 @@ async function main() {
     assert.strictEqual(byId["88624"].graded.gradedPrice, 900);
     assert.strictEqual(byId["691978"].graded.gradedPrice, 420);
     assert.ok(typeof byId["88624"].graded.gradedSuggestedBid === "number");
+  });
+
+  // ======================================================================
+  // 22. DISCLOSURE POLISH (test #107, 2026-10-18)
+  // ======================================================================
+  await test("DISCLOSURE: a tie result does not link one of the tied products", async () => {
+    installPptMock(rayRoutes());
+    const r = await M.lookupCardPPT({ ...RAY_READ }, "polish-tie-url", Promise.resolve({ ...RAY_READ, found: true }));
+    assert.strictEqual(r.matchBasis, "number-tie-ambiguous");
+    assert.strictEqual(r.tcgplayerUrl, null, "the header must not link one of two disclosed products");
+    for (const c of r.siblingAmbiguity.candidates) {
+      assert.ok(c.tcgplayerUrl, `row ${c.number} still carries its own link`);
+    }
+  });
+  await test("DISCLOSURE: the score-path sibling cap does not link one sibling either", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const r = await M.lookupCardPPT({ ...SCORE_READ }, "polish-sib-url", Promise.resolve({ ...LEGACY_CORRECT }));
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous");
+    assert.strictEqual(r.tcgplayerUrl, null);
+  });
+  await test('DISCLOSURE: the stale "best guess" sentence is gone from a two-row result', async () => {
+    installPptMock(rayRoutes());
+    const r = await M.lookupCardPPT({ ...RAY_READ }, "polish-note", Promise.resolve({ ...RAY_READ, found: true }));
+    assert.ok(!/best guess/i.test(r.ambiguousNote), `note still claims a guess: ${r.ambiguousNote}`);
+    // the genuinely useful half of the tie sentence survives...
+    assert.ok(/identical card number/i.test(r.ambiguousNote), "the tie explanation should remain");
+    // ...and the disclosure wording is there
+    assert.ok(r.ambiguousNote.includes("set symbol"), "the disclosure prompt should remain");
+    assert.ok(!/\s{2,}/.test(r.ambiguousNote), "no double spaces left behind by the strip");
+  });
+  await test("DISCLOSURE: a PRICED result keeps its best-guess wording", async () => {
+    installPptMock(rayRoutes());
+    const r = await M.lookupCardPPT(
+      { ...RAY_READ, cardNumber: "22/107", setName: "EX Deoxys" }, "polish-priced",
+      Promise.resolve({ found: true, confidence: "High", cardName: "Rayquaza", cardNumber: "26/107", hp: "80", attackName: "Fly", language: "English", stampType: "none" })
+    );
+    assert.ok(r.pricingLookup, "this one is still a single priced guess");
+    assert.ok(r.tcgplayerUrl, "and still links its product");
+  });
+  await test("DISCLOSURE: stripBestGuessClause handles both variants and null", () => {
+    assert.strictEqual(M.stripBestGuessClause(null), null);
+    assert.strictEqual(
+      M.stripBestGuessClause("Foo bar. This is our best guess only; verify the exact printing on the physical card before trusting this match or price."),
+      "Foo bar."
+    );
+    assert.strictEqual(
+      M.stripBestGuessClause("Foo bar. This is our best guess only; verify the exact set/number on the physical card before trusting this match or price. Baz."),
+      "Foo bar. Baz."
+    );
+    assert.strictEqual(M.stripBestGuessClause("Nothing to strip here."), "Nothing to strip here.");
   });
 
   // ----------------------------------------------------------------------

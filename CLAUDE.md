@@ -130,7 +130,7 @@ api/flag.js      "Flag this scan" -> one greppable log line.
 docs/history.md  Full project history (was CLAUDE.md).
 docs/test-cases.md  Live test log.
 docs/archive/    ROADMAP.md, build-status.md.
-test/            Local suite, `node test/alakazam.test.js` (103 tests, no
+test/            Local suite, `node test/alakazam.test.js` (108 tests, no
                  network — mocks global.fetch over real captured PPT rows).
                  Excluded from deploys via .vercelignore. Two tests replay
                  against the pinned pre-fix commit `PRE_FIX_REF` (`1960cd5`)
@@ -250,8 +250,12 @@ pricing whichever candidate PPT's array order put first. Its own prompt —
 sibling cap these are different PRODUCTS sharing a number (Rayquaza 003/017
 POP Series 1 $325.30 vs Blister Exclusives $135.30). The sibling cap takes
 precedence. Measured on 46 saved real scans: fires on **2** (~4%).
-**Known gap:** `tcgplayerUrl` still points at one tied product on this and the
-score-path sibling cap.
+**FIXED 2026-10-18 (#107):** a disclosure result now nulls the top-level
+`tcgplayerUrl` (every disclosed row carries its own) and strips the stale
+"This is our best guess only…" clause from `ambiguousNote` via
+`stripBestGuessClause`, both at the single point where `pricingLookup` is
+nulled — so the score-path sibling cap and the number tie are covered
+together, and a genuinely priced result keeps its link and its wording.
 
 ### Rescue paths, in order, with their guards
 
@@ -478,8 +482,8 @@ sane bid for that card.
 
 ## Open items
 
-**BUILT LOCALLY, NOT DEPLOYED — the Rayquaza fixes** (test #106, 103 local
-tests). Preview `dpl_BbThxKMLK6K4uq3XVres81RQCaxJ`,
+**BUILT LOCALLY, NOT DEPLOYED — the Rayquaza fixes + disclosure polish**
+(tests #106 and #107, 108 local tests). Preview `dpl_BbThxKMLK6K4uq3XVres81RQCaxJ`,
 `sourceHash 29c0a254722ceb1081dbd7b902f7372e678bc630`. Two changes: the
 three-digit/three-digit number padding (recovers a $325.30 POP Series
 Rayquaza that was unreachable for seven straight scans) and
@@ -489,56 +493,32 @@ the SET, which is the only field separating a cross-set tie. Reload the
 extension.** Preview e2e: 3/3 Rayquaza runs give the two-row disclosure where
 all three previously withheld; XY95 and Alakazam 33 unchanged; zero errors.
 
-**Open from #106, not fixed:** (1) `tcgplayerUrl` still points at one tied
-product on the score-path sibling cap and the new tie path, so the header
-links one card while the rows disclose two — one line to align with the
-rescue path, which already nulls it. (2) The stacked ambiguous note opens
-with the stale "This is our best guess only" sentence when no single guess is
-shown. (3) **PPT minute-limit pressure**: a real 429 fired mid-burst on
-2026-10-17 (`22:25:19`, name=Rayquaza, required 3 available 2) because seven
-scans in 44 seconds each fire 3-5 searches; the padding fix adds a sixth to
-exactly those scans. Options to measure: a per-scan search budget,
-short-circuiting once a combined query returns a usable row, or client-side
-debouncing of repeat scans of the same frame.
-
-**DEPLOYED TO PRODUCTION 2026-10-15 — the Alakazam 33/165 fixes** (test
-#101, 47 local tests), `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR`,
-`sourceHash 9738bb38…`, commit `ba5f009`. `api/identify.js` only — **no
-`extension/` change, so no extension reload is needed.** **Live-confirmed:**
-`ATTACK MISMATCH SUPPRESSED` has now fired four times on real traffic
-(reads "Psymimic", "Prymimic", "Prypower"). **Not yet observed:**
-`LEGACY-MODEL NUMBER RESCUE DECLINED (DENOMINATOR CONTRADICTION)` and
-`SIBLING AMBIGUITY — RESCUE REFUSED` — both need a misread that lands on a
-real sibling *and* misses the pool, which can't be forced.
-
-**DEPLOYED TO PRODUCTION 2026-10-16 — the sibling-disagreement cap** (tests
-#103 + #104), `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg`, `sourceHash c8f57029…`.
-Closes #102. Live review of 36 real scans on 2026-10-17 (test #102 logs in
-scratch `logs-20261017-1749/`) showed it firing **7 times in one hour**, with
-one genuine 40x save (Machoke $1.29 vs $51.78).
-
-**DEPLOYED TO PRODUCTION 2026-10-17 — the three #105 follow-up fixes** (91
-local tests), `dpl_Eih1EtRbrtHgktna9QiRhq5D4259`, `sourceHash b170a4e3…`,
-commit `90b7d23`: the two-stage legacy wait (+399ms only on the one decision
-class; flipped a correctly-identified PSA 10 from withheld to priced), the
-`primaryPointsAtBest` requirement on `stands-cheaper`, and **per-row graded
-pricing for slabs** (2 credits/row, ~+600ms, thin gate per row).
-**`extension/content.js` changed — reload the extension.**
-**Not yet observed on organic traffic:** `legacyWaitExtended=true`,
-`PER-SIBLING GRADED`, and `decision=stands-cheaper` under the new
-`primaryPointsAtBest` rule. All three need the cap to fire, which the
-regression cards never trigger.
-
-**Open, investigated not fixed (#105): the cap overrides the Shadowless
-merge.** `Machoke 034/102` exists as 42376 (`Base Set`, Normal, $1.29) and
-107031 (`Base Set (Shadowless)`, primaryPrinting **1st Edition**, $51.78) —
-same `externalCatalogId base1-34`. `stripShadowlessSuffix` collapses the set
-names, so `sameSiblingGroup` calls them siblings and the cap withholds —
-discarding `lookupCardPPT`'s existing `shadowlessSibling` merge, which would
-have shown BOTH printings in one tagged dropdown. Recommendation: exclude
-opposite-Shadowless pairs from `sameSiblingGroup`. Do **not** use the stamp
-read to separate them — on that scan the primary read `1st Edition` and the
-legacy read `none`.
+**OPEN — PPT minute-limit pressure on rescan bursts (#106, not fixed).** A
+real 429 fired mid-burst on 2026-10-17: `22:25:19Z`,
+`[lookup] PokemonPriceTracker request FAILED — status= 429 {"error":"Minute
+rate limit exceeded", ... "required":3,"available":2} name= Rayquaza`. Seven
+scans of the same card in 44 seconds, each firing 3-5 searches at 3 units
+apiece, exhausted the 60-unit minute budget — so at least one scan ran on a
+degraded or empty pool through no fault of the matching logic (it is why
+`ba35511a`'s outcome line is missing). **The #106 padding fix adds a sixth
+search to exactly those scans**, so it brings the 429 forward on a burst. On
+a single scan the trade is clearly right (30 credits to recover a $325.30
+card); on a rescan storm it is not free. Three options, none measured yet:
+1. **A per-scan PPT search budget** — hard cap on searches per request, so
+   one scan can never consume a third of the minute allowance. Simplest, but
+   it would silently disable the later rescues on the hardest cards, which
+   are the ones that need them.
+2. **Short-circuit the combined-search loop** once a query returns a row that
+   matches the read number exactly. Already half-true (the loop `break`s on
+   success), so the win is narrower: it would only skip the WIDE variant when
+   the narrow one already worked. Cheap and safe.
+3. **Client-side debouncing of repeat scans of the same frame** in
+   `extension/content.js` — the burst was seven scans of one card, several
+   with near-identical reads. The 30s PPT cache already absorbs identical
+   reads; this would absorb the near-identical ones that currently each pay
+   full price. Most effective, and the only option that reduces the Gemini
+   spend too.
+Measure which bursts actually occur before building any of them.
 
 **Noted, not built (test #101): Expedition Reverse Holofoil price curves can
 be inverted.** 83500's Reverse Holofoil reads NM **$16.00** (sold 0) against

@@ -2101,6 +2101,23 @@ function confidenceForScore(score) {
 // type, e.g. a literal catalog duplicate that isn't the already-separately-
 // handled Shadowless case). Callers pass whether the number was actually
 // legible so the message matches what really happened.
+// ADDED (2026-10-18, test #107): both ambiguousNoteText variants end with
+// "This is our best guess only; verify the exact printing..." — accurate when
+// the panel shows ONE candidate and its price, and wrong the moment a
+// two-row disclosure replaces that single guess. A result with
+// `pricingLookup: null` and a `siblingAmbiguity` payload is not a guess at
+// all; it names every candidate and prices each one separately. Stripped at
+// the single point where that decision is finalised, so it covers the
+// score-path sibling cap and the exact-number tie path alike. The regex
+// matches both variants ("exact printing" and "exact set/number").
+function stripBestGuessClause(note) {
+  if (!note) return note;
+  return String(note)
+    .replace(/\s*This is our best guess only;[^.]*\./g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function ambiguousNoteText(numberWasLegible) {
   if (numberWasLegible) {
     return "Multiple different printings of this card share an identical card number, HP, attack, and type — there's nothing left in our data to tell them apart. This is our best guess only; verify the exact printing on the physical card before trusting this match or price.";
@@ -4832,6 +4849,17 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   if (siblingAmbiguity) {
     lookupResult.pricingLookup = null;
     lookupResult.siblingAmbiguity = siblingAmbiguity;
+    // ADDED (2026-10-18, test #107): the header must not link ONE of the
+    // candidates it just said it cannot choose between. Found in e2e: a
+    // Rayquaza tie disclosed both POP Series 1 and Blister Exclusives in the
+    // rows while `tcgplayerUrl` still pointed at whichever product PPT's
+    // array order put first. Every disclosed row carries its own
+    // `tcgplayerUrl`, so nulling the top-level one loses nothing and removes
+    // the implied pick. The rescue-path cap already returns
+    // `tcgplayerUrl: null` in its own literal; this brings the two
+    // score-path cases in line with it.
+    lookupResult.tcgplayerUrl = null;
+    lookupResult.ambiguousNote = stripBestGuessClause(lookupResult.ambiguousNote);
   }
 
   // Only a genuine `found: true` result is ever cached — never
@@ -6301,6 +6329,7 @@ module.exports.SIBLING_CAP_LEGACY_TOTAL_WAIT_MS = SIBLING_CAP_LEGACY_TOTAL_WAIT_
 module.exports.SIBLING_GRADED_MAX_LOOKUPS = SIBLING_GRADED_MAX_LOOKUPS;
 module.exports.buildZeroPaddedNumberVariant = buildZeroPaddedNumberVariant;
 module.exports.buildWideZeroPaddedNumberVariant = buildWideZeroPaddedNumberVariant;
+module.exports.stripBestGuessClause = stripBestGuessClause;
 module.exports.totalsContradict = totalsContradict;
 module.exports.numbersMatch = numbersMatch;
 module.exports.sameSiblingGroup = sameSiblingGroup;
