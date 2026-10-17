@@ -611,10 +611,15 @@ async function main() {
     const { mod: HEADM, cleanup } = loadPreFixModule("identify-prefix3");
     try {
       const newCalls = installPptMock(expeditionRoutes());
-      await M.lookupCardPPT({ ...realRead, cardNumber: "1/19" }, "call-count-new", Promise.resolve(realLegacy));
+      // 3-digit totals on purpose: buildWideZeroPaddedNumberVariant only
+      // fires for a total under 3 digits, so this holds query construction
+      // constant and isolates what the test is actually about — the sibling
+      // guards adding no PPT calls. The padding fix's own call count is
+      // asserted separately below.
+      await M.lookupCardPPT({ ...realRead, cardNumber: "1/190" }, "call-count-new", Promise.resolve(realLegacy));
 
       const headCalls = installPptMock(expeditionRoutes());
-      await HEADM.lookupCardPPT({ ...realRead, cardNumber: "1/21" }, "call-count-head", Promise.resolve(realLegacy));
+      await HEADM.lookupCardPPT({ ...realRead, cardNumber: "1/210" }, "call-count-head", Promise.resolve(realLegacy));
 
       assert.ok(newCalls.length > 0, "the replay should actually hit the mocked PPT");
       assert.strictEqual(
@@ -1262,6 +1267,184 @@ async function main() {
   });
   await test("PER-SIBLING GRADED: SIBLING_GRADED_MAX_LOOKUPS caps the fan-out", () => {
     assert.strictEqual(M.SIBLING_GRADED_MAX_LOOKUPS, 6);
+  });
+
+  // ======================================================================
+  // 20. WIDE ZERO-PADDING (fix 1, 2026-10-18)
+  // ======================================================================
+  await test("WIDE PADDING: a 2-digit total also produces the 3/3 form", () => {
+    assert.strictEqual(M.buildWideZeroPaddedNumberVariant("3/17"), "003/017");
+    assert.strictEqual(M.buildWideZeroPaddedNumberVariant("9/64"), "009/064");
+    assert.strictEqual(M.buildWideZeroPaddedNumberVariant("14/17"), "014/017");
+  });
+  await test("WIDE PADDING: a 3-digit total is left alone (Base Set / Base Set 2 unchanged)", () => {
+    assert.strictEqual(M.buildWideZeroPaddedNumberVariant("10/130"), null);
+    assert.strictEqual(M.buildWideZeroPaddedNumberVariant("1/102"), null);
+    assert.strictEqual(M.buildWideZeroPaddedNumberVariant("131/165"), null);
+    // and the ORIGINAL variant still produces the documented padding
+    assert.strictEqual(M.buildZeroPaddedNumberVariant("10/130"), "010/130");
+    assert.strictEqual(M.buildZeroPaddedNumberVariant("1/102"), "001/102");
+    assert.strictEqual(M.buildZeroPaddedNumberVariant("9/64"), "09/64");
+  });
+  await test("WIDE PADDING: handles junk and prefixed numbers safely", () => {
+    assert.strictEqual(M.buildWideZeroPaddedNumberVariant(null), null);
+    assert.strictEqual(M.buildWideZeroPaddedNumberVariant("XY95"), null);
+    assert.strictEqual(M.buildWideZeroPaddedNumberVariant("SWSH029"), null);
+    assert.strictEqual(M.buildWideZeroPaddedNumberVariant("H01/H32"), "H001/H032");
+  });
+  await test("WIDE PADDING: adds exactly ONE combined search, and only when the number matched nothing", async () => {
+    const lone = {
+      tcgPlayerId: "900001", setName: "Some Set", name: "Zzzz", cardNumber: "050/100",
+      rarity: "Rare", cardType: "Pokemon", hp: "70",
+      attacks: ["[C] Tackle (10)"], prices: { market: 1.0, primaryPrinting: "Normal" },
+      printingsAvailable: ["Normal"],
+    };
+    // (a) the number MATCHES in the pool -> no combined search at all.
+    let calls = installPptMock({ "Zzzz": F.padTo([lone], 5, "Zzzz") });
+    await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Zzzz", hp: "70", cardNumber: "050/100", attackName: "Tackle" },
+      "pad-match", null
+    );
+    assert.strictEqual(calls.filter((c) => c.includes("/")).length, 0, `no combined search when the number matches: ${calls.join(",")}`);
+
+    // (b) number matches nothing AND the total is 2 digits -> read + narrow + wide.
+    calls = installPptMock({ "Zzzz": F.padTo([lone], 30, "Zzzz"), "Zzzz|offset=30": F.padTo([], 3, "ZzzzP2") });
+    await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Zzzz", hp: "70", cardNumber: "3/17", attackName: "Tackle" },
+      "pad-2digit", null
+    );
+    const combined2 = calls.filter((c) => c.startsWith("Zzzz ")).map((c) => c.replace("Zzzz ", ""));
+    assert.deepStrictEqual(combined2, ["3/17", "03/17", "003/017"], `got ${combined2.join(",")}`);
+
+    // (c) number matches nothing AND the total is 3 digits -> unchanged, 2 queries.
+    calls = installPptMock({ "Zzzz": F.padTo([lone], 30, "Zzzz"), "Zzzz|offset=30": F.padTo([], 3, "ZzzzP2") });
+    await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Zzzz", hp: "70", cardNumber: "7/130", attackName: "Tackle" },
+      "pad-3digit", null
+    );
+    const combined3 = calls.filter((c) => c.startsWith("Zzzz ")).map((c) => c.replace("Zzzz ", ""));
+    assert.deepStrictEqual(combined3, ["7/130", "007/130"], `got ${combined3.join(",")}`);
+  });
+
+  // ======================================================================
+  // 21. RAYQUAZA — padding fix + exact-number tie disclosure (2026-10-18)
+  // ======================================================================
+  // Real rows captured from PPT 2026-10-18.
+  const RAY_POP1 = {
+    tcgPlayerId: "88624", setName: "POP Series 1", name: "Rayquaza", cardNumber: "003/017",
+    rarity: "Rare", cardType: "Pokemon", hp: "80",
+    attacks: ["[1] Fly (10)", "[RL] Dragon Claw (30)"],
+    prices: { market: 325.3, primaryPrinting: "Normal" }, printingsAvailable: ["Normal"],
+  };
+  const RAY_BLISTER = {
+    tcgPlayerId: "691978", setName: "Blister Exclusives", name: "Rayquaza - 003/017 (2006)",
+    cardNumber: "003/017", rarity: "Rare", cardType: "Pokemon", hp: "80",
+    attacks: ["[1] Fly (10)", "[RL] Dragon Claw (30)"],
+    prices: { market: 135.3, primaryPrinting: "Holofoil" }, printingsAvailable: ["Holofoil"],
+  };
+  const RAY_EMERALD = {
+    tcgPlayerId: "88626", setName: "EX Emerald", name: "Rayquaza", cardNumber: "9/106",
+    rarity: "Rare", cardType: "Pokemon", hp: "80",
+    attacks: ["[2] Dragon Breath (20)"],
+    prices: { market: 12.0, primaryPrinting: "Normal" }, printingsAvailable: ["Normal"],
+  };
+  const RAY_DEOXYS = {
+    tcgPlayerId: "88625", setName: "EX Deoxys", name: "Rayquaza", cardNumber: "22/107",
+    rarity: "Rare", cardType: "Pokemon", hp: "80",
+    attacks: ["[2] Tumbling Attack (20+)"],
+    prices: { market: 48.84, primaryPrinting: "Normal" },
+    printingsAvailable: ["Reverse Holofoil", "Normal"],
+  };
+  // The real pool: 60 heavily-reprinted Rayquaza products, with NEITHER
+  // 003/017 row present — that is the pool cutoff the padding fix works around.
+  function rayRoutes() {
+    return {
+      "Rayquaza": F.padTo([RAY_EMERALD, RAY_DEOXYS], 30, "Rayquaza"),
+      "Rayquaza|offset=30": F.padTo([], 30, "RayquazaP2"),
+      // "3/17" and "03/17" return nothing, exactly as PPT did live.
+      "Rayquaza 3/17": [],
+      "Rayquaza 03/17": [],
+      // ...and the new 3/3 form finds both real products.
+      "Rayquaza 003/017": [RAY_POP1, RAY_BLISTER],
+    };
+  }
+  const RAY_READ = {
+    ...BASE_READ, cardName: "Rayquaza", hp: "80", cardNumber: "3/17", attackName: "Fly",
+  };
+  let rayResult = null;
+  await test("REPLAY 082ffff6: the 3/3 padded query surfaces the POP Series card", async () => {
+    const calls = installPptMock(rayRoutes());
+    rayResult = await M.lookupCardPPT({ ...RAY_READ }, "ray-replay", Promise.resolve({ ...RAY_READ, found: true }));
+    assert.ok(calls.includes("Rayquaza 003/017"), `the 3/3 query must be tried: ${calls.join(",")}`);
+  });
+  await test("REPLAY 082ffff6: resolves to the two-row tie disclosure, never a single price", () => {
+    assert.strictEqual(rayResult.matchBasis, "number-tie-ambiguous");
+    assert.strictEqual(rayResult.pricingLookup, null);
+    assert.strictEqual(rayResult.matchConfidence, "Low");
+    const ids = rayResult.siblingAmbiguity.candidates.map((c) => c.tcgPlayerId).sort();
+    assert.deepStrictEqual(ids, ["691978", "88624"].sort());
+  });
+  await test("REPLAY 082ffff6: each row carries name, set, number and a usable pricingLookup", () => {
+    for (const c of rayResult.siblingAmbiguity.candidates) {
+      assert.ok(c.name && c.number && c.setName, "name/number/set required on every row");
+      assert.ok(c.pricingLookup && c.pricingLookup.tcgPlayerId, "each row needs its own pricingLookup");
+    }
+    const sets = rayResult.siblingAmbiguity.candidates.map((c) => c.setName).sort();
+    assert.deepStrictEqual(sets, ["Blister Exclusives", "POP Series 1"]);
+  });
+  await test("REPLAY 082ffff6: never prices the $325.30 card as if it were confirmed", () => {
+    const blob = JSON.stringify(rayResult);
+    assert.ok(!/"tcgPlayerId":"88624"[^}]*\}\s*,\s*"tag"/.test(blob) || rayResult.pricingLookup === null);
+    assert.strictEqual(rayResult.tcgplayerUrl, null);
+    assert.ok(rayResult.ambiguousNote.includes("set symbol"), "the note must point at the set, not the finish");
+  });
+  await test("REPLAY fbec1b80: the misread 22/107 is unchanged — attack mismatch, Low, priced", async () => {
+    installPptMock(rayRoutes());
+    const r = await M.lookupCardPPT(
+      { ...RAY_READ, cardNumber: "22/107", setName: "EX Deoxys" },
+      "ray-deoxys",
+      Promise.resolve({ found: true, confidence: "High", cardName: "Rayquaza", cardNumber: "26/107", hp: "80", attackName: "Fly", language: "English", stampType: "none" })
+    );
+    assert.strictEqual(r.pricingLookup && r.pricingLookup.tcgPlayerId, "88625");
+    assert.strictEqual(r.attackMismatch, true, "read Fly vs Tumbling Attack must still cap");
+    assert.strictEqual(r.matchConfidence, "Low");
+    assert.notStrictEqual(r.matchBasis, "number-tie-ambiguous");
+  });
+  await test("NUMBER TIE: a single exact match is NOT disclosed as a tie", async () => {
+    installPptMock({
+      "Rayquaza": F.padTo([RAY_EMERALD], 5, "Rayquaza"),
+    });
+    const r = await M.lookupCardPPT(
+      { ...RAY_READ, cardNumber: "9/106", attackName: "Dragon Breath" }, "ray-single", null
+    );
+    assert.ok(r.pricingLookup, "one exact match must still price normally");
+    assert.strictEqual(r.siblingAmbiguity, undefined);
+  });
+  await test("NUMBER TIE: the disclosed group always contains the scoring winner", () => {
+    const ids = rayResult.siblingAmbiguity.candidates.map((c) => c.tcgPlayerId);
+    assert.ok(ids.includes("88624") && ids.includes("691978"));
+  });
+  await test("NUMBER TIE: a graded slab gets per-row graded pricing on this path too", async () => {
+    const recent = new Date(Date.now() - 10 * 86400000).toISOString();
+    const gr = (id, median, count) => ({
+      tcgPlayerId: id, cardNumber: "003/017", name: "Rayquaza", setName: "POP Series 1",
+      prices: { market: 325.3, primaryPrinting: "Normal" },
+      ebay: {
+        dateRangeStart: new Date(Date.now() - 90 * 86400000).toISOString(),
+        dateRangeEnd: new Date().toISOString(),
+        salesByGrade: { psa9: { medianPrice: median, count, lastSaleDate: recent } },
+      },
+    });
+    installPptMock({ ...rayRoutes(), "id:88624": gr("88624", 900, 7), "id:691978": gr("691978", 420, 5) });
+    const r = await M.lookupCardPPT(
+      { ...RAY_READ, isSlab: true, grader: "PSA", grade: "9" }, "ray-slab",
+      Promise.resolve({ ...RAY_READ, found: true })
+    );
+    assert.strictEqual(r.matchBasis, "number-tie-ambiguous");
+    const byId = Object.fromEntries(r.siblingAmbiguity.candidates.map((c) => [c.tcgPlayerId, c]));
+    assert.strictEqual(byId["88624"].graded.gradedPrice, 900);
+    assert.strictEqual(byId["691978"].graded.gradedPrice, 420);
+    assert.ok(typeof byId["88624"].graded.gradedSuggestedBid === "number");
   });
 
   // ----------------------------------------------------------------------

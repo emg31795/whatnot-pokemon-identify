@@ -1494,6 +1494,39 @@ function buildZeroPaddedNumberVariant(rawNumber) {
   return `${parsed.prefix}${paddedNum}/${parsed.totalPrefix}${parsed.total}`;
 }
 
+// ADDED (2026-10-18, live Rayquaza run): the SECOND stored padding
+// convention. buildZeroPaddedNumberVariant above pads the numerator to the
+// width of the read's own total, which is right for Base Set/Base Set 2
+// ("10/130" -> "010/130") and for Jungle/Fossil ("9/64" -> "09/64"). It is
+// wrong for the small promo sets, which pad BOTH sides to three digits: POP
+// Series stores a 17-card set as "003/017", not "03/17".
+//
+// Real cost of the gap: seven consecutive scans of a Rayquaza POP Series 1
+// 003/017 ($325.30). All three models read "3/17" correctly and agreed on
+// hp 80 and the attack "Fly" — the read was never the problem. The card was
+// simply absent from the 60-candidate pool ("Rayquaza" is one of the most
+// reprinted names in the game), and the combined name+number rescue that
+// exists precisely to recover that case queried "Rayquaza 3/17" and
+// "Rayquaza 03/17", both of which return ZERO rows. Verified directly
+// against PPT: `search="Rayquaza 003/017"` returns the card.
+//
+// `numbersMatch` already handles the comparison once the row is in the pool
+// (normalizeNumber strips leading zeros), so this is purely a
+// query-construction gap — the same class as the 2026-09-27 Base Set 2 fix,
+// which derived padding from the total and stopped one digit short of this.
+//
+// Scoped to a read total of fewer than three digits, so it never fires for
+// the modern/vintage sets the existing variant already covers and can never
+// change a query that works today. Returns null when it would duplicate.
+function buildWideZeroPaddedNumberVariant(rawNumber) {
+  const parsed = normalizeNumber(rawNumber);
+  if (!parsed || !parsed.total) return null;
+  if (parsed.total.length >= 3) return null;
+  const paddedNum = parsed.num.padStart(3, "0");
+  const paddedTotal = parsed.total.padStart(3, "0");
+  return `${parsed.prefix}${paddedNum}/${parsed.totalPrefix}${paddedTotal}`;
+}
+
 // ADDED (2026-10-03, Southern Islands Mew wrong-number class — see
 // docs/test-cases.md): the "read total orphan" signal, used ONLY by the
 // setName-scoped search rescue further down.
@@ -1900,6 +1933,89 @@ function candidateSiblingBaseName(candidate) {
 //     never read as corroboration.
 // Used only by the sibling-disagreement cap, which asks "do the two models'
 // numbers point at the SAME member of this sibling group?"
+// ADDED (2026-10-18): builds the two-row disclosure payload shared by BOTH
+// ambiguity paths — the sibling-disagreement cap and the exact-number tie
+// below. Factored out so the panel contract, the card-number ordering and
+// the per-row graded pricing exist in exactly one place; the extension
+// renders `siblingAmbiguity` and does not care which path produced it.
+//
+// Ordered by card number ascending — deterministic, and never price-ranked,
+// so the panel cannot imply the expensive one is the likely answer.
+async function buildAmbiguityDisclosure(group, read, requestId, { prompt, reason, label }) {
+  const ordered = group.slice().sort((x, y) => {
+    const nx = normalizeNumber(x.number);
+    const ny = normalizeNumber(y.number);
+    return (nx ? Number(nx.num) : 0) - (ny ? Number(ny.num) : 0);
+  });
+  const payload = {
+    prompt,
+    reason,
+    candidates: ordered.map((c) => ({
+      tcgPlayerId: c.tcgPlayerId || null,
+      name: c.name,
+      number: c.number,
+      rarity: c.rarity || null,
+      setName: c.setName || null,
+      tcgplayerUrl: c.tcgPlayerUrl || null,
+      // Ready-to-use for a POST /api/price call per candidate, so the panel
+      // can show each one's real NM market and NM Suggested Bid from live
+      // TCGplayer data. api/price.js is UNCHANGED — this is the same shape
+      // it already takes.
+      pricingLookup: {
+        tcgPlayerId: c.tcgPlayerId || null,
+        tag: null,
+        siblingTcgPlayerId: null,
+        siblingTag: null,
+        siblingSetName: null,
+        stampType: read.stampType,
+        primaryPrinting: c.prices?.primaryPrinting ?? null,
+        listingCount: c.prices?.listings ?? null,
+      },
+    })),
+  };
+
+  // Per-row graded pricing for a slab (see test #105). Applies to this path
+  // too: a graded slab whose number ties across two products is exactly as
+  // unpriceable as one whose siblings tie, and each row can still be priced
+  // at the scanned grade on its own.
+  if (normalizeGraderForCompare(read.grader) && normalizeGradeForCompare(read.grade)) {
+    const targets = payload.candidates.slice(0, SIBLING_GRADED_MAX_LOOKUPS);
+    const started = Date.now();
+    const results = await Promise.all(
+      targets.map(async (cand) => {
+        const source = ordered.find((c) => String(c.tcgPlayerId) === String(cand.tcgPlayerId));
+        if (!source) return null;
+        try {
+          return await lookupGradedPrice(read, source);
+        } catch (e) {
+          console.error(
+            `[requestId=${requestId}]`,
+            `[lookup] per-row graded lookup failed for tcgPlayerId=${cand.tcgPlayerId} (treating as unavailable):`,
+            e && e.message
+          );
+          return null;
+        }
+      })
+    );
+    let priced = 0;
+    let thin = 0;
+    targets.forEach((cand, i) => {
+      const gr = results[i];
+      if (!gr || gr.error === "rate-limited") return;
+      cand.graded = gr;
+      if (gr.gradedPrice != null) priced += 1;
+      else if (gr.gradedThin) thin += 1;
+    });
+    console.log(
+      `[requestId=${requestId}]`,
+      `[${label}] PER-SIBLING GRADED: ${read.grader} ${read.grade} over ${targets.length} row(s) ` +
+        `-> ${priced} priced, ${thin} thin-gated, ${targets.length - priced - thin} no data; ` +
+        `${Date.now() - started}ms, ~${targets.length * 2} credits`
+    );
+  }
+  return payload;
+}
+
 function numberPointsAtCandidate(numberRaw, candidate) {
   if (!numberRaw || !candidate || !candidate.number) return false;
   const nm = numbersMatch(numberRaw, candidate.number);
@@ -3244,9 +3360,17 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     // variant is null or identical to the original and this loop runs
     // exactly once, exactly as before — purely additive.
     const paddedNumberVariant = buildZeroPaddedNumberVariant(read.cardNumber);
+    // CHANGED 2026-10-18: also try the three-digit/three-digit form — see
+    // buildWideZeroPaddedNumberVariant. Deduped against what is already in
+    // the list, so a read whose two conventions coincide (e.g. Base Set
+    // "10/130", where both produce "010/130") adds no extra request. This
+    // list is only ever walked on the combined-search path, which by
+    // construction runs only when the read number matched nothing in the
+    // fetched pool, so ordinary scans are untouched.
+    const wideNumberVariant = buildWideZeroPaddedNumberVariant(read.cardNumber);
     const numberVariantsToTry = [read.cardNumber];
-    if (paddedNumberVariant && paddedNumberVariant !== read.cardNumber) {
-      numberVariantsToTry.push(paddedNumberVariant);
+    for (const variant of [paddedNumberVariant, wideNumberVariant]) {
+      if (variant && !numberVariantsToTry.includes(variant)) numberVariantsToTry.push(variant);
     }
     for (const numberVariant of numberVariantsToTry) {
       const combinedQuery = `${searchCardName} ${numberVariant}`;
@@ -4489,98 +4613,19 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         // Ordered by card number ascending — deterministic, and never
         // price-ranked, so the panel cannot imply the expensive one is the
         // likely answer.
-        const group = [best, ...poolSiblings].sort((x, y) => {
-          const nx = normalizeNumber(x.number);
-          const ny = normalizeNumber(y.number);
-          return (nx ? Number(nx.num) : 0) - (ny ? Number(ny.num) : 0);
-        });
-        siblingAmbiguity = {
-          // One plain-language line. Kept generic (2026-10-15, test #104):
-          // the first version said "check whether the card is holo", which is
-          // right for the e-Card double prints that motivated this but wrong
-          // for modern ex/SIR and V/alt-art twins, where the tell is the
-          // artwork and finish rather than holo-vs-not.
-          prompt: SIBLING_DISAMBIGUATION_HINT,
-          reason: legacySibling
-            ? `the two AI models read different card numbers ("${read.cardNumber || "unreadable"}" vs "${legacyNumber}"), each pointing at a different one of these printings`
-            : `only one AI model produced a usable card number ("${read.cardNumber || "unreadable"}"), and the printing it picked is the more valuable one here`,
-          candidates: group.map((c) => ({
-            tcgPlayerId: c.tcgPlayerId || null,
-            name: c.name,
-            number: c.number,
-            rarity: c.rarity || null,
-            setName: c.setName || null,
-            tcgplayerUrl: c.tcgPlayerUrl || null,
-            // Ready-to-use for a POST /api/price call per candidate, so the
-            // panel can show each one's real NM market and NM Suggested Bid
-            // from live TCGplayer data. api/price.js is UNCHANGED — this is
-            // the same shape it already takes.
-            pricingLookup: {
-              tcgPlayerId: c.tcgPlayerId || null,
-              tag: null,
-              siblingTcgPlayerId: null,
-              siblingTag: null,
-              siblingSetName: null,
-              stampType: read.stampType,
-              primaryPrinting: c.prices?.primaryPrinting ?? null,
-              listingCount: c.prices?.listings ?? null,
-            },
-          })),
-        };
-        // FIX 3 (2026-10-18): price the slab on EVERY disclosed row.
-        //
-        // Live review found three real graded slabs reaching this branch and
-        // getting `GRADED FETCH SKIPPED: no card matched` — Burmy CGC 9 and
-        // two Iono's Bellibolt ex PSA 10 scans. The graded path keys off a
-        // single matched card, and a sibling-ambiguous result deliberately
-        // has none, so the most valuable category on these streams came back
-        // with no graded figure at all.
-        //
-        // There is no need to pick a card to price a grade: each disclosed
-        // sibling can be priced on its own. lookupGradedPrice already takes
-        // a specific candidate and enforces the id check, the card-number
-        // check and the thin-data gate, so per-row pricing reuses all of it
-        // unchanged — the gate applies independently to each row, and a row
-        // whose bucket is thin says so rather than borrowing a sibling's
-        // number. Runs in parallel; 2 credits per row.
-        if (normalizeGraderForCompare(read.grader) && normalizeGradeForCompare(read.grade)) {
-          const gradedTargets = siblingAmbiguity.candidates.slice(0, SIBLING_GRADED_MAX_LOOKUPS);
-          const gradedStart = Date.now();
-          const gradedResults = await Promise.all(
-            gradedTargets.map(async (cand) => {
-              const sourceCandidate = group.find(
-                (c) => String(c.tcgPlayerId) === String(cand.tcgPlayerId)
-              );
-              if (!sourceCandidate) return null;
-              try {
-                return await lookupGradedPrice(read, sourceCandidate);
-              } catch (e) {
-                console.error(
-                  `[requestId=${requestId}]`,
-                  `[lookup] per-sibling graded lookup failed for tcgPlayerId=${cand.tcgPlayerId} (treating as unavailable):`,
-                  e && e.message
-                );
-                return null;
-              }
-            })
-          );
-          let priced = 0;
-          let thin = 0;
-          gradedTargets.forEach((cand, i) => {
-            const gr = gradedResults[i];
-            if (!gr || gr.error === "rate-limited") return;
-            cand.graded = gr;
-            if (gr.gradedPrice != null) priced += 1;
-            else if (gr.gradedThin) thin += 1;
-          });
-          console.log(
-            `[requestId=${requestId}]`,
-            `[sibling-cap] PER-SIBLING GRADED: ${read.grader} ${read.grade} over ${gradedTargets.length} row(s) ` +
-              `-> ${priced} priced, ${thin} thin-gated, ${gradedTargets.length - priced - thin} no data; ` +
-              `${Date.now() - gradedStart}ms, ~${gradedTargets.length * 2} credits`
-          );
-        }
-
+        siblingAmbiguity = await buildAmbiguityDisclosure(
+          [best, ...poolSiblings],
+          read,
+          requestId,
+          {
+            prompt: SIBLING_DISAMBIGUATION_HINT,
+            reason: legacySibling
+              ? `the two AI models read different card numbers ("${read.cardNumber || "unreadable"}" vs "${legacyNumber}"), each pointing at a different one of these printings`
+              : `only one AI model produced a usable card number ("${read.cardNumber || "unreadable"}"), and the printing it picked is the more valuable one here`,
+            label: "sibling-cap",
+          }
+        );
+        const group = siblingAmbiguity.candidates;
         matchConfidence = "Low";
         matchBasis = "sibling-ambiguous";
         const siblingNote =
@@ -4592,6 +4637,65 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
           `[lookup] SIBLING DISAGREEMENT CAP (${decision}): ${group.map((c) => `${c.name} ${c.number} (${c.rarity || "?"}, tcgPlayerId=${c.tcgPlayerId})`).join(" | ")} — capped to Low, no single price`
         );
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // EXACT-NUMBER TIE ACROSS DIFFERENT PRODUCTS (2026-10-18)
+  // -------------------------------------------------------------------------
+  // `tieCount >= 2` already forces Low, but the panel still showed ONE of the
+  // tied candidates and priced it — and which one is decided by PPT's array
+  // order, which carries no meaning. When every tied candidate genuinely
+  // matches the read number, the number cannot break the tie and neither can
+  // anything else we have; picking by array order is the same coin-flip the
+  // sibling cap was built to stop.
+  //
+  // Real case from the Rayquaza run: once the padding fix puts the card in
+  // the pool, "3/17" matches BOTH Rayquaza 003/017 POP Series 1 ($325.30)
+  // and Rayquaza - 003/017 (2006) Blister Exclusives ($135.30) — same hp 80,
+  // same two attacks ("Fly", "Dragon Claw"), different sets, a 2.4x spread.
+  // The 2026-10-17 window also held Rayquaza SWSH029 (two products, score 30,
+  // tie 2) and Radiant Charizard 020/159 (score 32, tie 2).
+  //
+  // Distinct from the sibling cap: those are printings of one card inside one
+  // set, told apart by finish and artwork. These are different PRODUCTS that
+  // happen to share a number, so the tell is the set symbol or the packaging
+  // — hence its own prompt and its own `matchBasis`. The payload and the
+  // panel are shared (see buildAmbiguityDisclosure), including per-row graded
+  // pricing for slabs.
+  //
+  // Runs only when the sibling cap did not already fire, and cannot change
+  // which candidate scoring chose — the disclosed group always contains it.
+  if (
+    !siblingAmbiguity &&
+    best &&
+    read.cardNumber &&
+    tieCount >= 2 &&
+    Array.isArray(tiedCandidates) &&
+    tiedCandidates.length >= 2 &&
+    tiedCandidates.every((c) => numberPointsAtCandidate(read.cardNumber, c))
+  ) {
+    const distinctTied = distinctByDedupKey(tiedCandidates).filter(
+      (c, i, arr) => arr.findIndex((o) => String(o.tcgPlayerId) === String(c.tcgPlayerId)) === i
+    );
+    if (distinctTied.length >= 2) {
+      siblingAmbiguity = await buildAmbiguityDisclosure(distinctTied, read, requestId, {
+        prompt: "Check the set symbol, or the pack or box it came from, to tell these apart.",
+        reason: `the card number that was read ("${read.cardNumber}") belongs to ${distinctTied.length} different products, and nothing else on the card separates them`,
+        label: "number-tie",
+      });
+      matchConfidence = "Low";
+      matchBasis = "number-tie-ambiguous";
+      const tieNote =
+        `The card number ("${read.cardNumber}") is used by ${distinctTied.length} different products, so the number cannot tell them apart. ` +
+        `All of them are shown below with their own price and bid. ${siblingAmbiguity.prompt}`;
+      ambiguousNote = ambiguousNote ? `${ambiguousNote} ${tieNote}` : tieNote;
+      console.log(
+        `[requestId=${requestId}]`,
+        `[lookup] EXACT-NUMBER TIE DISCLOSED: read=${read.cardNumber} -> ${distinctTied
+          .map((c) => `${c.name} ${c.number} [${c.setName}] (tcgPlayerId=${c.tcgPlayerId}, market=${c.prices?.market ?? "null"})`)
+          .join(" | ")} — capped to Low, no single price`
+      );
     }
   }
 
@@ -6195,6 +6299,8 @@ module.exports.lookupCardPPT = lookupCardPPT;
 module.exports.__cacheDisabledForTests = !getCache;
 module.exports.SIBLING_CAP_LEGACY_TOTAL_WAIT_MS = SIBLING_CAP_LEGACY_TOTAL_WAIT_MS;
 module.exports.SIBLING_GRADED_MAX_LOOKUPS = SIBLING_GRADED_MAX_LOOKUPS;
+module.exports.buildZeroPaddedNumberVariant = buildZeroPaddedNumberVariant;
+module.exports.buildWideZeroPaddedNumberVariant = buildWideZeroPaddedNumberVariant;
 module.exports.totalsContradict = totalsContradict;
 module.exports.numbersMatch = numbersMatch;
 module.exports.sameSiblingGroup = sameSiblingGroup;

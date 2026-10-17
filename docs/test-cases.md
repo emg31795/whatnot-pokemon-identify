@@ -12330,6 +12330,141 @@ The slab fixture needed a cheaper third sibling (the real `030/100` at $0.31)
 to reproduce the live group — without it the confirmed `114/100` winner
 legitimately takes the new `stands-cheaper` path, which is fix 2 working.
 
+## #106 — 2026-10-18 — The Rayquaza fixes: 3-digit padding, and exact-number ties disclosed instead of guessed
+
+From the live Rayquaza investigation (logs in scratch
+`rayquaza-20261017-2227/`). Seven scans in 44 seconds, six withheld, one
+priced as the wrong card.
+
+### Fix 1 — the second stored padding convention
+
+`buildWideZeroPaddedNumberVariant` emits the three-digit/three-digit form
+(`"3/17"` → `"003/017"`) when the read's total has fewer than three digits.
+`buildZeroPaddedNumberVariant` is **unchanged, byte for byte**, so every
+Base Set / Base Set 2 / Jungle case keeps its documented behaviour.
+
+PPT stores POP Series as `003/017`, not `03/17`. The existing variant pads the
+numerator to the width of the read's own total (`"17"` → 2 chars), which is
+right for `"10/130"` → `"010/130"` and wrong here. Verified against PPT:
+`search="Rayquaza 003/017"` returns the card; `"Rayquaza 3/17"` and
+`"Rayquaza 03/17"` both return **zero rows**, which is exactly what the live
+logs show.
+
+`numbersMatch` already handles the comparison once a row is in the pool, so
+this is query construction only — no scoring change.
+
+**PPT call cost, asserted by test:**
+- number matches in the pool → **no combined search at all** (unchanged)
+- number matches nothing, total < 3 digits → `3/17`, `03/17`, **`003/017`** — one extra request
+- number matches nothing, total ≥ 3 digits → `7/130`, `007/130` — **unchanged**
+
+### Fix 2 — exact-number ties are disclosed, not picked by array order
+
+`tieCount >= 2` already forced Low, but the panel still showed and priced ONE
+tied candidate, chosen by PPT's array order, which carries no meaning. When
+every tied candidate genuinely matches the read number, the number cannot
+break the tie and nothing else we hold can either.
+
+New `matchBasis "number-tie-ambiguous"`: Low, `pricingLookup: null`, and the
+**same `siblingAmbiguity` payload and panel** the sibling cap uses, via a new
+shared `buildAmbiguityDisclosure` helper — including per-row graded pricing
+for slabs. Its own prompt, because the tell is different: *"Check the set
+symbol, or the pack or box it came from, to tell these apart."* The sibling
+cap takes precedence, and the disclosed group always contains the scoring
+winner.
+
+**Extension change needed and made:** the row now shows the **set**. For the
+sibling cap the set adds nothing (same set by construction), but for a
+cross-set number tie it is the only field that separates the rows.
+**Reload required in `chrome://extensions`.**
+
+**Coverage cost, measured on the saved 2026-10-14 + 10-17 windows** (46
+distinct scans, 41 with a final `best=` line captured): **2 scans would fire**
+— the Rayquaza SWSH029 tie (score 30, tie 2, `214240` plain promo vs `619563`
+Pixel Cosmos Holo) and Radiant Charizard 020/159 (score 32, tie 2, `478098`
+vs `513804`). 16 other ties score under 20, meaning the number did not match,
+so they keep going through the weak-signal floor or the sibling cap untouched.
+~4% of scans, and both firings are genuine two-product ambiguities.
+
+### Preview e2e — `dpl_BbThxKMLK6K4uq3XVres81RQCaxJ`, `sourceHash 29c0a254722ceb1081dbd7b902f7372e678bc630`
+
+Three runs of a clean Rayquaza 003/017 POP Series 1 image (product 88624),
+each spaced past the 30s cache, plus the two regression cards:
+
+| scan | result | latency |
+|---|---|---|
+| Rayquaza (`59849612`) | **Low / `number-tie-ambiguous`**, no single price, 2 rows | 2347ms |
+| Rayquaza (`d5ff4199`) | same | 1965ms |
+| Rayquaza (`0e5098d0`) | same | 1745ms |
+| Pikachu XY95 (`0f204d1f`) | 114004 High `score-only` | 1582ms |
+| Alakazam 33 (`b9e640c1`) | 83500 High `score-only` | 1706ms |
+
+Rows returned, in card-number order, each with its own `pricingLookup`:
+
+```
+003/017 [POP Series 1]        'Rayquaza'                   Rare
+003/017 [Blister Exclusives]  'Rayquaza - 003/017 (2006)'  Rare
+```
+
+Before this change all three of those scans withheld everything. **Zero
+runtime errors on the preview deployment.**
+
+### A 429 fired during the live burst — and this fix makes that pressure worse
+
+`get_runtime_errors` surfaced something the first investigation missed:
+
+```
+2026-10-17T22:25:19Z  dpl_Eih1EtRbrtHgktna9QiRhq5D4259
+[lookup] PokemonPriceTracker request FAILED — status= 429
+  {"error":"Minute rate limit exceeded", ... "required":3,"available":2}  name= Rayquaza
+```
+
+Between scans 4 and 5 of the burst. Seven scans in 44 seconds, each firing
+3-5 searches at 3 units apiece, exhausted the 60-unit minute budget — so at
+least one of those scans had a degraded or empty pool through no fault of the
+matching logic, and `ba35511a`'s outcome line is missing for that reason.
+
+**Fix 1 adds one more search to exactly the scans that already fire 3-5**, on
+exactly the bursts where the minute cap is already binding. On a single scan
+that is 30 credits and one round trip, which is the right trade for recovering
+a $325.30 card. On a seven-scan burst it brings the 429 forward. Not addressed
+here; the honest options are a per-scan search budget, a short-circuit once a
+combined query returns a usable row, or client-side debouncing of repeat
+scans of the same frame. Worth its own measurement pass.
+
+### Two disclosure-polish gaps, found in e2e and NOT fixed
+
+1. **`tcgplayerUrl` still points at one tied product.** On the score-path cap
+   and on this new tie path the result mutates `lookupResult`, setting
+   `pricingLookup: null` but leaving `tcgplayerUrl` at `best`'s product page
+   (here 88624). The rows carry their own links, so the panel discloses both
+   while its header link names one. The rescue-path cap returns a literal with
+   `tcgplayerUrl: null` and does not have this. One line to align.
+2. **The stacked note opens with a stale sentence.** The pre-existing tie note
+   ("…This is our best guess only; verify the exact printing…") now precedes
+   the new disclosure, and "best guess" is wrong when no single guess is
+   shown.
+
+Neither is a money risk — no price is attached either way — but both weaken
+the disclosure this change exists to provide.
+
+### Tests — 103 pass, 0 fail (`node test/alakazam.test.js`)
+
+Up from 95. Padding: the 3/3 form for 2-digit totals, `null` for 3-digit
+totals, Base Set/Base Set 2/Jungle values unchanged on the original function,
+junk and `H01/H32` handled, and the three call-count cases above.
+Rayquaza: the `082ffff6` replay on real captured rows (3/3 query tried, two-row
+disclosure, both sets named, every row with a usable `pricingLookup`, note
+pointing at the set), the `fbec1b80` replay unchanged (attack mismatch, Low,
+priced 88625), a single exact match still pricing normally, the winner always
+present in the disclosed group, and per-row graded pricing on this path.
+One pre-existing test was corrected rather than deleted: the "sibling guards
+add no PPT calls" case now uses 3-digit totals so it isolates the guards
+instead of silently also asserting the padding behaviour it was never about.
+
+**NOT DEPLOYED.** Production remains `dpl_Eih1EtRbrtHgktna9QiRhq5D4259`
+(`b170a4e3…`).
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

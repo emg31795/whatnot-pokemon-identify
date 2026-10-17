@@ -1613,6 +1613,12 @@
   // ADDED 2026-10-15 (test #102). Deliberately NOT price-ranked: rows arrive
   // in the backend's card-number order so the panel never implies the
   // expensive printing is the likely answer.
+  //
+  // CHANGED 2026-10-18: the row now shows the SET as well. The sibling cap
+  // discloses printings inside one set, where the set adds nothing — but the
+  // exact-number tie path discloses different PRODUCTS that share a number
+  // (Rayquaza 003/017 POP Series 1 vs Blister Exclusives), and there the set
+  // is the only field that tells them apart.
   function siblingRowsHtml(siblingAmbiguity) {
     const rows = (siblingAmbiguity.candidates || [])
       .map(
@@ -1620,7 +1626,9 @@
         <div class="wnpk-sib-row">
           <div class="wnpk-sib-name">${escapeHtml(c.name)} <span class="wnpk-sib-meta">${escapeHtml(
           c.number || "?"
-        )}${c.rarity ? ` · ${escapeHtml(c.rarity)}` : ""}</span></div>
+        )}${c.setName ? ` · ${escapeHtml(c.setName)}` : ""}${
+          c.rarity ? ` · ${escapeHtml(c.rarity)}` : ""
+        }</span></div>
           <div class="wnpk-sib-price" id="wnpk-sib-price-${escapeHtml(c.tcgPlayerId)}">${siblingPriceCellHtml(c)}</div>
         </div>`
       )

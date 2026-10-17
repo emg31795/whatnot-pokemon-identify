@@ -130,7 +130,7 @@ api/flag.js      "Flag this scan" -> one greppable log line.
 docs/history.md  Full project history (was CLAUDE.md).
 docs/test-cases.md  Live test log.
 docs/archive/    ROADMAP.md, build-status.md.
-test/            Local suite, `node test/alakazam.test.js` (91 tests, no
+test/            Local suite, `node test/alakazam.test.js` (103 tests, no
                  network — mocks global.fetch over real captured PPT rows).
                  Excluded from deploys via .vercelignore. Two tests replay
                  against the pinned pre-fix commit `PRE_FIX_REF` (`1960cd5`)
@@ -237,7 +237,21 @@ card; coincidental, worth 0.35x). A *disagreeing* total is **not** a match.
 
 `matchBasis` (machine-readable reason code on the response): `score-only`,
 `tie`, `weak-number`, `legacy-number-rescue`, `setname-search`,
-`setname-narrowed`, `name-rescued-by-number`, `sibling-ambiguous`.
+`setname-narrowed`, `name-rescued-by-number`, `sibling-ambiguous`,
+`number-tie-ambiguous`.
+
+**`number-tie-ambiguous`** (2026-10-18, test #106) — when `tieCount >= 2` and
+EVERY tied candidate matches the read number, the number cannot break the tie,
+so the result is Low with `pricingLookup: null` and the shared
+`siblingAmbiguity` payload (via `buildAmbiguityDisclosure`, which both this
+and the sibling cap now use, per-row graded pricing included) instead of
+pricing whichever candidate PPT's array order put first. Its own prompt —
+*"Check the set symbol, or the pack or box it came from"* — because unlike the
+sibling cap these are different PRODUCTS sharing a number (Rayquaza 003/017
+POP Series 1 $325.30 vs Blister Exclusives $135.30). The sibling cap takes
+precedence. Measured on 46 saved real scans: fires on **2** (~4%).
+**Known gap:** `tcgplayerUrl` still points at one tied product on this and the
+score-path sibling cap.
 
 ### Rescue paths, in order, with their guards
 
@@ -247,8 +261,14 @@ Each exists because retrieval or the read failed, not because scoring did.
    `offset=30` fetch, merge, re-score.
 2. **Combined name+number search** — still missing → search `"Name 25/99"`,
    then retry with a zero-padded numerator derived from the read's own total
-   (Base Set/Base Set 2 pad to 3, Jungle/Fossil to 2). Accepted only on an
-   exact number match.
+   (Base Set/Base Set 2 pad to 3, Jungle/Fossil to 2), **then, when the read
+   total has fewer than 3 digits, the three-digit/three-digit form**
+   (`buildWideZeroPaddedNumberVariant`, 2026-10-18, test #106): PPT stores POP
+   Series as `003/017`, so `"3/17"` and `"03/17"` both return ZERO rows and a
+   $325.30 Rayquaza was unreachable for seven straight scans. Accepted only on
+   an exact number match. Adds **one** extra request, only on this path, only
+   for sub-3-digit totals — and on a rapid rescan burst it brings the PPT
+   minute-limit 429 forward (one fired live at 22:25:19 on 2026-10-17).
 3. **Name-filter rescue by number** (`name-rescued-by-number`) — zero name
    survivors + a legible number → one search, filtered **strictly by number,
    never by name** (PPT returns unrelated *filler*, not an empty array, for
@@ -457,6 +477,29 @@ sane bid for that card.
   The API wants raw base64 and 400s, manufacturing a fake error cluster.
 
 ## Open items
+
+**BUILT LOCALLY, NOT DEPLOYED — the Rayquaza fixes** (test #106, 103 local
+tests). Preview `dpl_BbThxKMLK6K4uq3XVres81RQCaxJ`,
+`sourceHash 29c0a254722ceb1081dbd7b902f7372e678bc630`. Two changes: the
+three-digit/three-digit number padding (recovers a $325.30 POP Series
+Rayquaza that was unreachable for seven straight scans) and
+`number-tie-ambiguous` disclosure for exact-number ties across different
+products. **`extension/content.js` changed — the sibling/tie rows now show
+the SET, which is the only field separating a cross-set tie. Reload the
+extension.** Preview e2e: 3/3 Rayquaza runs give the two-row disclosure where
+all three previously withheld; XY95 and Alakazam 33 unchanged; zero errors.
+
+**Open from #106, not fixed:** (1) `tcgplayerUrl` still points at one tied
+product on the score-path sibling cap and the new tie path, so the header
+links one card while the rows disclose two — one line to align with the
+rescue path, which already nulls it. (2) The stacked ambiguous note opens
+with the stale "This is our best guess only" sentence when no single guess is
+shown. (3) **PPT minute-limit pressure**: a real 429 fired mid-burst on
+2026-10-17 (`22:25:19`, name=Rayquaza, required 3 available 2) because seven
+scans in 44 seconds each fire 3-5 searches; the padding fix adds a sixth to
+exactly those scans. Options to measure: a per-scan search budget,
+short-circuiting once a combined query returns a usable row, or client-side
+debouncing of repeat scans of the same frame.
 
 **DEPLOYED TO PRODUCTION 2026-10-15 — the Alakazam 33/165 fixes** (test
 #101, 47 local tests), `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR`,
