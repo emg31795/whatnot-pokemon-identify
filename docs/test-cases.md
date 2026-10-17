@@ -12237,6 +12237,31 @@ only enriches an already-ambiguous result, so the other 29 are unchanged by
 construction rather than by measurement. One flip (`787f6fce`), and it is the
 PSA 10 that should never have been withheld.
 
+### Preview e2e — `dpl_5A8cjfnP6jmdmoBbGXAmmFUqKTWY`, `sourceHash b170a4e3850bdf090d4ceaaa00ce2a93ec8f02c3`
+
+| scan | result | latency |
+|---|---|---|
+| Alakazam 33 (`a8e88057`) | **83500** High `score-only`, Normal | 2522ms |
+| Pikachu XY95 (`518134c7`) | 114004 High, no `siblingAmbiguity` | 2196ms |
+| Charizard ex 125/197 (`3a6cdf1b`) | **509879** — its own card, High | 2317ms |
+| Charizard ex 223/197 (`be1140aa`) | **509980** — its own card, High | 2481ms |
+| Boss's Orders 248/193 (`5a16cdf2`) | **497663** — its own card, High | 2103ms |
+
+No High 83497, XY95 unchanged, both Charizard twins and the full-art Trainer
+each identify their own card. **Zero runtime errors on this deployment.** The
+one error group in the window belongs to PRODUCTION organic traffic — a
+`Gemini call failed: This operation was aborted after ms= 5004` on
+`dpl_7EmniEgDDAdRmGvmDxJMMta53eZg` (requestId `82ff73a1`), which is the
+Haiku-fallback path and unrelated to this change.
+
+The cap did not fire on any of the five, so the three fixes are not
+exercised end-to-end here — none of these cards misreads its number, and the
+corroborated path is the one that deliberately costs nothing. The fixes are
+covered by 91 local tests plus the real-pool replays above.
+
+**NOT DEPLOYED TO PRODUCTION.** Production remains
+`dpl_7EmniEgDDAdRmGvmDxJMMta53eZg` (`c8f57029…`).
+
 ### Investigation only (no fix): the Machoke 034/102 pair
 
 Hypothesis confirmed. Both rows share `externalCatalogId "base1-34"`:
