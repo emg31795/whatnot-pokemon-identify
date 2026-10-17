@@ -12262,6 +12262,28 @@ covered by 91 local tests plus the real-pool replays above.
 **NOT DEPLOYED TO PRODUCTION.** Production remains
 `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg` (`c8f57029…`).
 
+### Deployed to production 2026-10-17
+
+- Pushed `8ee7bac..90b7d23` to `origin/main` (`e8d5a7d`, `90b7d23`).
+- Production **`dpl_Eih1EtRbrtHgktna9QiRhq5D4259`**, Ready, created
+  2026-10-17 18:13 EDT (`whatnot-pokemon-identify-jszxk7lw5-…`), aliased to
+  `whatnot-pokemon-identify.vercel.app`. CLI deploy from disk.
+- **`sourceHash b170a4e3850bdf090d4ceaaa00ce2a93ec8f02c3`** == `shasum
+  api/identify.js`, byte-exact, same as preview
+  `dpl_5A8cjfnP6jmdmoBbGXAmmFUqKTWY`.
+- **Propagation note:** the alias served the PREVIOUS hash (`c8f57029…`) for
+  roughly 15 seconds after `vercel inspect` reported Ready. Re-checking
+  resolved it. Worth knowing before concluding a deploy silently failed.
+- Production e2e: **XY95** (`7bf1773b`) High / `score-only` / 114004 /
+  Holofoil, 1657ms; **Alakazam 33** (`1cfab2f8`) High / `score-only` /
+  **83500** / Normal, 1306ms — both unchanged and the fastest readings yet.
+- `get_runtime_errors`: **zero errors on this deployment.** The one group in
+  the window (`82ff73a1`, `Gemini call failed ... aborted after ms= 5004`)
+  is organic traffic on the PREVIOUS deployment at 22:04:47Z, nine minutes
+  before this deploy, and is the ordinary Haiku-fallback path.
+
+**Reload the extension** — `content.js`/`content.css` changed in this build.
+
 ### Investigation only (no fix): the Machoke 034/102 pair
 
 Hypothesis confirmed. Both rows share `externalCatalogId "base1-34"`:

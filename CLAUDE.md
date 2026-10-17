@@ -189,44 +189,31 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_7EmniEgDDAdRmGvmDxJMMta53eZg`** (2026-10-16, the
-  sibling-disagreement cap, tests #103 + #104), aliased to
-  `whatnot-pokemon-identify.vercel.app`. Preview of the same build:
-  `dpl_BV2akTyBBnYFPQxXfBgeswQz2YNu`.
-- **`sourceHash c8f57029eb105023ff27c05f6bea23710e74b72b`** == `shasum
+- Deployment **`dpl_Eih1EtRbrtHgktna9QiRhq5D4259`** (2026-10-17, the #105 cap
+  follow-up fixes), aliased to `whatnot-pokemon-identify.vercel.app`. Preview
+  of the same build: `dpl_5A8cjfnP6jmdmoBbGXAmmFUqKTWY`.
+- **`sourceHash b170a4e3850bdf090d4ceaaa00ce2a93ec8f02c3`** == `shasum
   api/identify.js` on disk, byte-exact on both deployments (CLI deploy from
-  disk). Built from commit `a939d95` (code is `e3bda6b`). `GET /api/identify`
-  reports **`slabLabelProbe: "on"`**.
-- E2E verified on production 2026-10-16: **Pikachu XY95** High /
-  `score-only` / 114004 / Holofoil, 2202ms (`732692f8`) — unchanged; and
-  **Alakazam 33** High / `score-only` / **83500** / Normal, 2033ms
-  (`c68020a4`) — the correct card. **Zero runtime errors** in the window.
-- Preview e2e on the same build, 7/7: Alakazam 33 x3 all 83500 High (no High
-  83497), XY95 unchanged, **Charizard ex 125/197 -> 509879 and 223/197 ->
-  509980 each its own card at High**, Boss's Orders 248/193 full art ->
-  497663 High. `[sibling-cap]` logged `decision=corroborated` on both
-  three-sibling Charizard groups and the two-sibling Boss's Orders group —
-  the cap evaluating real modern twins live and correctly standing down.
-- **#102 is CLOSED by this build.** The wrong-card-at-High path (primary
-  model reading "1/165" and scoring picking the $250 holo sibling on
-  `score-only`) is now capped. Confirmed against real PPT data with the exact
-  `159a5822` read: `decision=ambiguous-disagreement` -> Low /
-  `sibling-ambiguous` / no price, both printings disclosed.
+  disk). Built from commit `90b7d23` (code is `e8d5a7d`). `GET /api/identify`
+  reports **`slabLabelProbe: "on"`**. NOTE: the alias served the previous
+  hash for ~15s after the deployment reported Ready — re-check before
+  concluding a deploy failed.
+- E2E verified on production 2026-10-17: **Pikachu XY95** High /
+  `score-only` / 114004 / Holofoil, 1657ms (`7bf1773b`); **Alakazam 33**
+  High / `score-only` / **83500** / Normal, 1306ms (`1cfab2f8`). **Zero
+  runtime errors** on this deployment.
 - **`extension/content.js` and `content.css` changed in this build, so the
-  extension needs a manual reload in `chrome://extensions`** before the
-  two-printing panel can render. Until it is reloaded, a sibling-ambiguous
-  scan shows the older "Printing undetermined — price withheld" line instead
-  of the two priced rows; the backend is correct either way.
+  extension needs a manual reload in `chrome://extensions`** before graded
+  sibling rows render. Without the reload a sibling-ambiguous slab shows the
+  older raw-NM row treatment; the backend response is correct either way.
 - **No real slab has been scanned end-to-end through Phase 2-lite or Phase 3.**
-  Needs a live slab scan. Organic traffic shows Haiku still over-calling
-  `isSlab` on raw cards (a Ponyta, grader/grade null, Gemini false) — which is
-  exactly what Phase 0a exists to absorb, though the `SLAB FLAG IGNORED` line
-  only fires when the ACTIVE read claims a slab.
-- Earlier production: `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (2026-10-15, #101,
-  `9738bb38…`, `ba5f009`); `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj` (2026-10-14,
-  `34774dc6…`, `531aac4`); `dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm` (2026-10-11,
-  Phase 3, `092de9b5…`, `7940425`); `dpl_5H1C6MrxSNqCVod4BH7pZ42kz1uz`
-  (Phase 2-lite, `1d714d47…`, `044fd2f`).
+  The graded bid path HAS now fired on organic traffic (see #102/#105), but
+  Phase 2-lite label identification still has not.
+- Earlier production: `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg` (2026-10-16,
+  `c8f57029…`, `a939d95`); `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (2026-10-15,
+  #101, `9738bb38…`, `ba5f009`); `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj`
+  (2026-10-14, `34774dc6…`, `531aac4`); `dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm`
+  (2026-10-11, Phase 3, `092de9b5…`, `7940425`).
 - Project `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team `leasedraftai`
   (`team_DZEpR5n7heCyZsNFjxZmxUP1`). **Not git-linked** — no build-on-push.
   GitHub: `https://github.com/emg31795/whatnot-pokemon-identify`.
@@ -487,13 +474,17 @@ Closes #102. Live review of 36 real scans on 2026-10-17 (test #102 logs in
 scratch `logs-20261017-1749/`) showed it firing **7 times in one hour**, with
 one genuine 40x save (Machoke $1.29 vs $51.78).
 
-**BUILT LOCALLY, NOT DEPLOYED — three follow-up fixes** (test #105, 91 local
-tests): the two-stage legacy wait (+399ms only on the one decision class,
-flipped a correctly-identified PSA 10 from withheld to priced), the
+**DEPLOYED TO PRODUCTION 2026-10-17 — the three #105 follow-up fixes** (91
+local tests), `dpl_Eih1EtRbrtHgktna9QiRhq5D4259`, `sourceHash b170a4e3…`,
+commit `90b7d23`: the two-stage legacy wait (+399ms only on the one decision
+class; flipped a correctly-identified PSA 10 from withheld to priced), the
 `primaryPointsAtBest` requirement on `stands-cheaper`, and **per-row graded
 pricing for slabs** (2 credits/row, ~+600ms, thin gate per row).
-**`extension/content.js` changed, so the extension needs a manual reload in
-`chrome://extensions`.** Awaiting a preview/production go-ahead.
+**`extension/content.js` changed — reload the extension.**
+**Not yet observed on organic traffic:** `legacyWaitExtended=true`,
+`PER-SIBLING GRADED`, and `decision=stands-cheaper` under the new
+`primaryPointsAtBest` rule. All three need the cap to fire, which the
+regression cards never trigger.
 
 **Open, investigated not fixed (#105): the cap overrides the Shadowless
 merge.** `Machoke 034/102` exists as 42376 (`Base Set`, Normal, $1.29) and
