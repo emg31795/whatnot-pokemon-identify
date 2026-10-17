@@ -189,31 +189,32 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_Eih1EtRbrtHgktna9QiRhq5D4259`** (2026-10-17, the #105 cap
-  follow-up fixes), aliased to `whatnot-pokemon-identify.vercel.app`. Preview
-  of the same build: `dpl_5A8cjfnP6jmdmoBbGXAmmFUqKTWY`.
-- **`sourceHash b170a4e3850bdf090d4ceaaa00ce2a93ec8f02c3`** == `shasum
+- Deployment **`dpl_3f4sgBW1BVdLjA4mvFk383thicTg`** (2026-10-17, the Rayquaza
+  fixes + disclosure polish, tests #106/#107), aliased to
+  `whatnot-pokemon-identify.vercel.app`. Preview of the same build:
+  `dpl_AVp9R5smnhwRv3bkemCkX1Ujinmw`.
+- **`sourceHash 9f08298eaa1d2f4abb6e5816a45e6af23ddc0d29`** == `shasum
   api/identify.js` on disk, byte-exact on both deployments (CLI deploy from
-  disk). Built from commit `90b7d23` (code is `e8d5a7d`). `GET /api/identify`
-  reports **`slabLabelProbe: "on"`**. NOTE: the alias served the previous
-  hash for ~15s after the deployment reported Ready — re-check before
-  concluding a deploy failed.
+  disk). Built from commit `0601fcc`. `GET /api/identify` reports
+  **`slabLabelProbe: "on"`**. The alias served the new hash on the first
+  check this time (contrast the ~15s lag on 2026-10-16 — check twice before
+  concluding a deploy failed).
 - E2E verified on production 2026-10-17: **Pikachu XY95** High /
-  `score-only` / 114004 / Holofoil, 1657ms (`7bf1773b`); **Alakazam 33**
-  High / `score-only` / **83500** / Normal, 1306ms (`1cfab2f8`). **Zero
-  runtime errors** on this deployment.
-- **`extension/content.js` and `content.css` changed in this build, so the
-  extension needs a manual reload in `chrome://extensions`** before graded
-  sibling rows render. Without the reload a sibling-ambiguous slab shows the
-  older raw-NM row treatment; the backend response is correct either way.
-- **No real slab has been scanned end-to-end through Phase 2-lite or Phase 3.**
-  The graded bid path HAS now fired on organic traffic (see #102/#105), but
-  Phase 2-lite label identification still has not.
-- Earlier production: `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg` (2026-10-16,
+  `score-only` / 114004, linked, 1431ms; **Rayquaza 003/017** Low /
+  `number-tie-ambiguous`, no single price, `tcgplayerUrl: null`, both rows
+  (POP Series 1 and Blister Exclusives) carrying their own links, and the
+  stale "best guess" phrasing gone — 1957ms. **Zero runtime errors.**
+- **`extension/content.js` and `content.css` changed in the 2026-10-17
+  builds, so the extension needs a manual reload in `chrome://extensions`**
+  before the sibling/tie rows (with set names) and the per-row graded
+  medians render.
+- **No real slab has been scanned end-to-end through Phase 2-lite.** The
+  graded bid path HAS fired on organic traffic.
+- Earlier production: `dpl_Eih1EtRbrtHgktna9QiRhq5D4259` (2026-10-17,
+  `b170a4e3…`, `90b7d23`); `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg` (2026-10-16,
   `c8f57029…`, `a939d95`); `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (2026-10-15,
-  #101, `9738bb38…`, `ba5f009`); `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj`
-  (2026-10-14, `34774dc6…`, `531aac4`); `dpl_DMg9zeZGrYhLSzaX9fSHifaHZFdm`
-  (2026-10-11, Phase 3, `092de9b5…`, `7940425`).
+  `9738bb38…`, `ba5f009`); `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj` (2026-10-14,
+  `34774dc6…`, `531aac4`).
 - Project `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team `leasedraftai`
   (`team_DZEpR5n7heCyZsNFjxZmxUP1`). **Not git-linked** — no build-on-push.
   GitHub: `https://github.com/emg31795/whatnot-pokemon-identify`.
@@ -482,9 +483,9 @@ sane bid for that card.
 
 ## Open items
 
-**BUILT LOCALLY, NOT DEPLOYED — the Rayquaza fixes + disclosure polish**
-(tests #106 and #107, 108 local tests). Preview `dpl_BbThxKMLK6K4uq3XVres81RQCaxJ`,
-`sourceHash 29c0a254722ceb1081dbd7b902f7372e678bc630`. Two changes: the
+**DEPLOYED TO PRODUCTION 2026-10-17 — the Rayquaza fixes + disclosure
+polish** (tests #106 and #107, 108 local tests),
+`dpl_3f4sgBW1BVdLjA4mvFk383thicTg`, `sourceHash 9f08298e…`, commit `0601fcc`. Two changes: the
 three-digit/three-digit number padding (recovers a $325.30 POP Series
 Rayquaza that was unreachable for seven straight scans) and
 `number-tie-ambiguous` disclosure for exact-number ties across different

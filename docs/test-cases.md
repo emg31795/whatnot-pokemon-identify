@@ -12503,6 +12503,25 @@ defect: the Rayquaza fixtures omitted `tcgPlayerUrl`, which real PPT rows
 always carry, so "the rows still have links" and "a priced result still links
 its product" were both unprovable. Fixtures now carry the real URLs.
 
+### Deployed to production 2026-10-17 (#106 + #107)
+
+- Pushed `d357c99..0601fcc` to `origin/main`.
+- Production **`dpl_3f4sgBW1BVdLjA4mvFk383thicTg`**, Ready, created
+  2026-10-17 18:50 EDT (`whatnot-pokemon-identify-giux1zdho-…`), aliased to
+  `whatnot-pokemon-identify.vercel.app`.
+- **`sourceHash 9f08298eaa1d2f4abb6e5816a45e6af23ddc0d29`** == `shasum
+  api/identify.js`, byte-exact, same as preview
+  `dpl_AVp9R5smnhwRv3bkemCkX1Ujinmw`. The alias served it on the first check.
+- Production e2e: **XY95** High / `score-only` / 114004, linked, 1431ms;
+  **Rayquaza 003/017** Low / `number-tie-ambiguous`, `pricingLookup: null`,
+  `tcgplayerUrl: null`, rows `003/017 [POP Series 1]` and
+  `003/017 [Blister Exclusives]` each with their own link, "best guess"
+  phrasing gone — 1957ms.
+- `get_runtime_errors`: **no runtime errors at all** in the window.
+
+Before these two builds the same Rayquaza image withheld everything seven
+times running. **Reload the extension** — `content.js`/`content.css` changed.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and
