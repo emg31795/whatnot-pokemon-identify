@@ -149,6 +149,37 @@ const LEGACY_NUMBER_RESCUE_TIMEOUT_MS = 500;
 // where the tell is the artwork and the finish rather than holo-vs-not.
 const SIBLING_DISAMBIGUATION_HINT = "Check the finish and artwork to tell these apart.";
 
+// Total budget for waiting on the legacy shadow read inside the
+// sibling-disagreement cap, measured from the moment the cap starts.
+//
+// ADDED 2026-10-18 (live review of 2026-10-17): the cap took its first
+// organic `legacyReady=no` on requestId 787f6fce — an Iono's Bellibolt ex
+// PSA 10 whose card was identified CORRECTLY (114/100, bestScore 34,
+// tieCount 1, and the PSA label itself reads "#114"). The only reason it
+// came back ambiguous with no price was that the legacy read landed just
+// after the 500ms cap; the shadow log shows it eventually read "114/100",
+// which would have corroborated. A PSA 10 Japanese SR is the most valuable
+// thing on these streams to leave unpriced.
+//
+// So the first wait stays at LEGACY_NUMBER_RESCUE_TIMEOUT_MS and the cap
+// only spends the rest of this budget in the ONE case where more waiting
+// can change the answer: it is about to say ambiguous-uncorroborated purely
+// because no legacy number has arrived yet. A corroborated or
+// disagreement decision is already final on the evidence in hand and never
+// waits. Measured legacy reads in the 2026-10-17 window ran 1927-2656ms
+// total against a primary of 1657-2260ms, so the extra ~700ms covers the
+// realistic overhang without approaching GEMINI_TIMEOUT_MS.
+const SIBLING_CAP_LEGACY_TOTAL_WAIT_MS = 1200;
+
+// Cap on per-sibling graded lookups in a sibling-ambiguous slab result.
+// Each is a `limit=1` fetchPptCardByTcgPlayerId — 2 credits, not the 30 a
+// search costs — and they run in parallel, so the real cost of a 4-way group
+// is 8 credits and one round trip. The cap exists so a pathologically large
+// sibling group can never turn one scan into a credit burn. Observed groups
+// in the 2026-10-17 window topped out at 4 (Iono's Bellibolt ex, Venusaur &
+// Snivy GX, Roaring Moon ex).
+const SIBLING_GRADED_MAX_LOOKUPS = 6;
+
 // PHASE 2-LITE (2026-10-11): hard cap on label-driven PPT searches per
 // scan. Each is a full limit=30 request (30 credits, ~3 rate-limit units),
 // and this path only runs on a slab that the ordinary lookup already
@@ -4333,9 +4364,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     if (poolSiblings.length) {
       const primaryPointsAtBest = numberPointsAtCandidate(read.cardNumber, best);
       const legacyRead = await awaitLegacyReadCapped(legacyReadPromise, requestId, "the sibling-disagreement cap");
-      const legacyNumber = legacyRead && legacyRead.found ? legacyRead.cardNumber || null : null;
-      const legacyPointsAtBest = numberPointsAtCandidate(legacyNumber, best);
-      const legacySibling = poolSiblings.find((c) => numberPointsAtCandidate(legacyNumber, c)) || null;
+      const legacyNumberFirst = legacyRead && legacyRead.found ? legacyRead.cardNumber || null : null;
 
       // SCOPE CORRECTION (2026-10-15, test #104). The first cut capped on ANY
       // uncorroborated sibling scan, which was far too broad: because
@@ -4377,13 +4406,56 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         (c, i) => siblingMarkets[i] == null || bestMarket == null || siblingMarkets[i] > bestMarket
       );
 
+      // FIX 1 (2026-10-18): a second, longer wait — but ONLY when the sole
+      // reason we are about to withhold is that no legacy number has turned
+      // up yet. See SIBLING_CAP_LEGACY_TOTAL_WAIT_MS. Deliberately not a
+      // longer first wait: corroborated and disagreement decisions are final
+      // on the evidence already in hand and must not pay for this.
+      let legacyNumber = legacyNumberFirst;
+      let legacyPointsAtBest = numberPointsAtCandidate(legacyNumber, best);
+      let legacySibling = poolSiblings.find((c) => numberPointsAtCandidate(legacyNumber, c)) || null;
+      let legacyWaitExtended = false;
+      if (!legacyNumber && legacyReadPromise) {
+        const extraMs = SIBLING_CAP_LEGACY_TOTAL_WAIT_MS - LEGACY_NUMBER_RESCUE_TIMEOUT_MS;
+        if (extraMs > 0) {
+          const extendedStart = Date.now();
+          const legacyRetry = await awaitLegacyReadCapped(
+            legacyReadPromise,
+            requestId,
+            "the sibling-disagreement cap (extended wait)",
+            extraMs
+          );
+          legacyWaitExtended = true;
+          const retryNumber = legacyRetry && legacyRetry.found ? legacyRetry.cardNumber || null : null;
+          console.log(
+            `[requestId=${requestId}]`,
+            `[sibling-cap] extended legacy wait +${Date.now() - extendedStart}ms (budget ${extraMs}ms) -> legacyNumber=${retryNumber || "still null"}`
+          );
+          if (retryNumber) {
+            legacyNumber = retryNumber;
+            legacyPointsAtBest = numberPointsAtCandidate(legacyNumber, best);
+            legacySibling = poolSiblings.find((c) => numberPointsAtCandidate(legacyNumber, c)) || null;
+          }
+        }
+      }
+
       const corroborated = legacyPointsAtBest && !legacySibling;
       const modelsDisagree = !!legacySibling;
+      // FIX 2 (2026-10-18): `stands-cheaper` now also requires the PRIMARY
+      // read's number to point at the winner. Live case 7eb57832: a Flareon
+      // read as "4/105" matched nothing in the pool, scoring fell through
+      // NO NUMBER MATCH IN POOL and picked Flareon (19) 19/64 Jungle
+      // ($48.62) on hp/attack alone — with a same-set sibling at $337.50,
+      // a 6.9x gap. "Cheapest of the group" was never meant to excuse a
+      // winner that no number confirms: with neither model's number pointing
+      // at it, being the cheap one is a coincidence, not evidence, and the
+      // panel would have shown a confident $48.62 for a card that could be
+      // the $337.50 printing. Now that case discloses both instead.
       const decision = corroborated
         ? "corroborated"
         : modelsDisagree
         ? "ambiguous-disagreement"
-        : winnerIsCheapest
+        : winnerIsCheapest && primaryPointsAtBest
         ? "stands-cheaper"
         : "ambiguous-uncorroborated";
 
@@ -4394,7 +4466,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
           `primaryPointsAtBest=${primaryPointsAtBest} legacyPointsAtBest=${legacyPointsAtBest} ` +
           `legacyPointsAtSibling=${legacySibling ? `${legacySibling.name} ${legacySibling.number}` : "no"} ` +
           `bestMarket=${bestMarket == null ? "null" : bestMarket} siblingMarkets=${JSON.stringify(siblingMarkets)} ` +
-          `winnerIsCheapest=${winnerIsCheapest} decision=${decision}`
+          `winnerIsCheapest=${winnerIsCheapest} legacyWaitExtended=${legacyWaitExtended} decision=${decision}`
       );
 
       if (decision === "stands-cheaper") {
@@ -4455,6 +4527,60 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
             },
           })),
         };
+        // FIX 3 (2026-10-18): price the slab on EVERY disclosed row.
+        //
+        // Live review found three real graded slabs reaching this branch and
+        // getting `GRADED FETCH SKIPPED: no card matched` — Burmy CGC 9 and
+        // two Iono's Bellibolt ex PSA 10 scans. The graded path keys off a
+        // single matched card, and a sibling-ambiguous result deliberately
+        // has none, so the most valuable category on these streams came back
+        // with no graded figure at all.
+        //
+        // There is no need to pick a card to price a grade: each disclosed
+        // sibling can be priced on its own. lookupGradedPrice already takes
+        // a specific candidate and enforces the id check, the card-number
+        // check and the thin-data gate, so per-row pricing reuses all of it
+        // unchanged — the gate applies independently to each row, and a row
+        // whose bucket is thin says so rather than borrowing a sibling's
+        // number. Runs in parallel; 2 credits per row.
+        if (normalizeGraderForCompare(read.grader) && normalizeGradeForCompare(read.grade)) {
+          const gradedTargets = siblingAmbiguity.candidates.slice(0, SIBLING_GRADED_MAX_LOOKUPS);
+          const gradedStart = Date.now();
+          const gradedResults = await Promise.all(
+            gradedTargets.map(async (cand) => {
+              const sourceCandidate = group.find(
+                (c) => String(c.tcgPlayerId) === String(cand.tcgPlayerId)
+              );
+              if (!sourceCandidate) return null;
+              try {
+                return await lookupGradedPrice(read, sourceCandidate);
+              } catch (e) {
+                console.error(
+                  `[requestId=${requestId}]`,
+                  `[lookup] per-sibling graded lookup failed for tcgPlayerId=${cand.tcgPlayerId} (treating as unavailable):`,
+                  e && e.message
+                );
+                return null;
+              }
+            })
+          );
+          let priced = 0;
+          let thin = 0;
+          gradedTargets.forEach((cand, i) => {
+            const gr = gradedResults[i];
+            if (!gr || gr.error === "rate-limited") return;
+            cand.graded = gr;
+            if (gr.gradedPrice != null) priced += 1;
+            else if (gr.gradedThin) thin += 1;
+          });
+          console.log(
+            `[requestId=${requestId}]`,
+            `[sibling-cap] PER-SIBLING GRADED: ${read.grader} ${read.grade} over ${gradedTargets.length} row(s) ` +
+              `-> ${priced} priced, ${thin} thin-gated, ${gradedTargets.length - priced - thin} no data; ` +
+              `${Date.now() - gradedStart}ms, ~${gradedTargets.length * 2} credits`
+          );
+        }
+
         matchConfidence = "Low";
         matchBasis = "sibling-ambiguous";
         const siblingNote =
@@ -6067,6 +6193,8 @@ module.exports.lookupCardPPT = lookupCardPPT;
 // Must live down here: `module.exports = handler` above replaces the whole
 // exports object, so anything assigned earlier is discarded.
 module.exports.__cacheDisabledForTests = !getCache;
+module.exports.SIBLING_CAP_LEGACY_TOTAL_WAIT_MS = SIBLING_CAP_LEGACY_TOTAL_WAIT_MS;
+module.exports.SIBLING_GRADED_MAX_LOOKUPS = SIBLING_GRADED_MAX_LOOKUPS;
 module.exports.totalsContradict = totalsContradict;
 module.exports.numbersMatch = numbersMatch;
 module.exports.sameSiblingGroup = sameSiblingGroup;

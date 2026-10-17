@@ -65,6 +65,16 @@ function installPptMock(routes, opts = {}) {
   const calls = [];
   global.fetch = async (url) => {
     const u = new URL(String(url));
+    // Graded lookups go by tcgPlayerId (limit=1, includeEbay=true) rather
+    // than by search, so they get their own route key: "id:<tcgPlayerId>".
+    const byId = u.searchParams.get("tcgPlayerId");
+    if (byId) {
+      const idKey = `id:${byId}`;
+      calls.push(idKey);
+      if (opts.onCall) opts.onCall(idKey);
+      const row = Object.prototype.hasOwnProperty.call(routes, idKey) ? routes[idKey] : null;
+      return { ok: true, status: 200, json: async () => ({ data: row }) };
+    }
     const search = u.searchParams.get("search") || "";
     const offset = u.searchParams.get("offset") || "";
     const key = offset ? `${search}|offset=${offset}` : search;
@@ -1056,6 +1066,202 @@ async function main() {
     assert.strictEqual(r.pricingLookup.tcgPlayerId, "509879");
     assert.strictEqual(r.matchConfidence, "High");
     assert.ok(r.ambiguousNote.includes("223/197"), "the note names the PRICIEST twin");
+  });
+
+  // ======================================================================
+  // 17. EXTENDED LEGACY WAIT (fix 1, 2026-10-18)
+  // ======================================================================
+  await test("EXTENDED WAIT: a legacy read landing after 500ms but inside the budget corroborates", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const slow = new Promise((resolve) =>
+      setTimeout(() => resolve({ ...LEGACY_CORRECT, cardNumber: "001/165" }), 700)
+    );
+    const started = Date.now();
+    const r = await M.lookupCardPPT({ ...SCORE_READ, cardNumber: "001/165" }, "ext-corroborate", slow);
+    const elapsed = Date.now() - started;
+    assert.strictEqual(r.pricingLookup && r.pricingLookup.tcgPlayerId, "83497", "should price the corroborated card");
+    assert.strictEqual(r.siblingAmbiguity, undefined);
+    assert.ok(elapsed >= 600, `should have waited past the 500ms first cap, took ${elapsed}ms`);
+    assert.ok(elapsed < 2500, `should not have waited anywhere near the vision timeout, took ${elapsed}ms`);
+  });
+  await test("EXTENDED WAIT: a legacy read that never arrives still stops at the total budget", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const never = new Promise((resolve) => setTimeout(() => resolve({ ...LEGACY_CORRECT }), 8000));
+    const started = Date.now();
+    const r = await M.lookupCardPPT({ ...SCORE_READ, cardNumber: "001/165" }, "ext-timeout", never);
+    const elapsed = Date.now() - started;
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous");
+    assert.ok(elapsed < 3000, `must not wait for the slow read, took ${elapsed}ms`);
+    assert.ok(elapsed >= 1000, `should have spent roughly the full budget, took ${elapsed}ms`);
+  });
+  await test("EXTENDED WAIT: a corroborating first read does NOT pay the extra wait", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const started = Date.now();
+    const r = await M.lookupCardPPT(
+      { ...SCORE_READ, cardNumber: "001/165" }, "ext-fast",
+      Promise.resolve({ ...LEGACY_CORRECT, cardNumber: "001/165" })
+    );
+    const elapsed = Date.now() - started;
+    assert.strictEqual(r.pricingLookup.tcgPlayerId, "83497");
+    assert.ok(elapsed < 400, `corroborated path must not wait, took ${elapsed}ms`);
+  });
+  await test("EXTENDED WAIT: a disagreement on the first read does NOT pay the extra wait", async () => {
+    installPptMock(scoreOnlyRoutes());
+    const started = Date.now();
+    const r = await M.lookupCardPPT({ ...SCORE_READ }, "ext-disagree", Promise.resolve({ ...LEGACY_CORRECT }));
+    const elapsed = Date.now() - started;
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous");
+    assert.ok(elapsed < 400, `disagreement path must not wait, took ${elapsed}ms`);
+  });
+  await test("SIBLING_CAP_LEGACY_TOTAL_WAIT_MS is 1200", () => {
+    assert.strictEqual(M.SIBLING_CAP_LEGACY_TOTAL_WAIT_MS, 1200);
+  });
+
+  // ======================================================================
+  // 18. stands-cheaper NEEDS A CONFIRMED NUMBER (fix 2, 2026-10-18)
+  // ======================================================================
+  // Live case 7eb57832: Flareon read "4/105" matched nothing, scoring picked
+  // Flareon (19) 19/64 Jungle ($48.62) on hp/attack alone, and the same-set
+  // sibling was $337.50 — a 6.9x gap allowed to stand at full confidence.
+  const FLAREON_CHEAP = {
+    tcgPlayerId: "106981", setName: "Jungle", name: "Flareon (19)", cardNumber: "19/64",
+    rarity: "Rare", cardType: "Pokemon", hp: "70",
+    attacks: ["[RR] Quick Attack (10+)\r\n<br>Flip a coin."],
+    prices: { market: 48.62, primaryPrinting: "Holofoil" }, printingsAvailable: ["Holofoil"],
+  };
+  const FLAREON_PRICEY = {
+    tcgPlayerId: "45129", setName: "Jungle", name: "Flareon (19)", cardNumber: "19/64",
+    rarity: "Rare", cardType: "Pokemon", hp: "70",
+    attacks: ["[RR] Quick Attack (10+)\r\n<br>Flip a coin."],
+    prices: { market: 337.5, primaryPrinting: "1st Edition" }, printingsAvailable: ["1st Edition"],
+  };
+  await test("REPLAY 7eb57832: an unconfirmed cheap winner no longer stands", async () => {
+    installPptMock({
+      "Flareon": F.padTo([FLAREON_CHEAP, FLAREON_PRICEY], 30, "Flareon"),
+      "Flareon|offset=30": F.padTo([], 3, "FlareonP2"),
+      "Flareon 4/105": F.padTo([], 3, "NoMatch"),
+    });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Flareon", hp: "70", cardNumber: "4/105", attackName: "Quick Attack" },
+      "flareon-replay",
+      Promise.resolve({ found: true, confidence: "High", cardName: "Flareon", cardNumber: "4/107", hp: "70", attackName: "Quick Attack", language: "English", stampType: "none" })
+    );
+    assert.strictEqual(r.matchBasis, "sibling-ambiguous", "neither model's number points at the winner");
+    assert.strictEqual(r.pricingLookup, null);
+    const nums = r.siblingAmbiguity.candidates.map((c) => c.tcgPlayerId).sort();
+    assert.deepStrictEqual(nums, ["106981", "45129"].sort());
+  });
+  await test("stands-cheaper still fires when the PRIMARY number confirms the cheap winner", async () => {
+    installPptMock({
+      "Flareon": F.padTo([FLAREON_CHEAP, FLAREON_PRICEY], 30, "Flareon"),
+      "Flareon|offset=30": F.padTo([], 3, "FlareonP2"),
+    });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Flareon", hp: "70", cardNumber: "19/64", attackName: "Quick Attack" },
+      "flareon-stands", null
+    );
+    assert.ok(r.pricingLookup, "a confirmed cheap winner must still price");
+    assert.strictEqual(r.siblingAmbiguity, undefined);
+    assert.ok(r.ambiguousNote.includes("337.50"), "and must still name the pricier sibling");
+  });
+
+  // ======================================================================
+  // 19. PER-SIBLING GRADED PRICING (fix 3, 2026-10-18)
+  // ======================================================================
+  const recentSale = new Date(Date.now() - 10 * 86400000).toISOString();
+  const gradedRow = (tcgPlayerId, cardNumber, median, count) => ({
+    tcgPlayerId, cardNumber, name: "Iono's Bellibolt ex", setName: "SV9: Battle Partners",
+    prices: { market: 2.35, primaryPrinting: "Holofoil" },
+    ebay: {
+      dateRangeStart: new Date(Date.now() - 90 * 86400000).toISOString(),
+      dateRangeEnd: new Date().toISOString(),
+      salesByGrade: { psa10: { medianPrice: median, count, lastSaleDate: recentSale } },
+    },
+  });
+  const BELLI_114 = {
+    tcgPlayerId: "614990", setName: "SV9: Battle Partners", name: "Iono's Bellibolt ex - 114/100",
+    cardNumber: "114/100", rarity: "Super Rare", cardType: "Pokemon", hp: "280",
+    attacks: ["[LLLC] Thunderous Bolt (230)"],
+    prices: { market: 2.35, primaryPrinting: "Holofoil" }, printingsAvailable: ["Holofoil"],
+  };
+  const BELLI_125 = {
+    tcgPlayerId: "615001", setName: "SV9: Battle Partners", name: "Iono's Bellibolt ex - 125/100",
+    cardNumber: "125/100", rarity: "Special Art Rare", cardType: "Pokemon", hp: "280",
+    attacks: ["[LLLC] Thunderous Bolt (230)"],
+    prices: { market: 38.17, primaryPrinting: "Holofoil" }, printingsAvailable: ["Holofoil"],
+  };
+  const SLAB_READ = {
+    ...BASE_READ, cardName: "Bellibolt ex", hp: "280", cardNumber: "114/100",
+    setName: "SV9", language: "Japanese", isSlab: true, grader: "PSA", grade: "10",
+    attackName: "Thunderous Bolt",
+  };
+  // The real 2026-10-17 group had a CHEAPER sibling (030/100 at $0.31), which
+  // is why winnerIsCheapest was false and the cap fired. Without it the
+  // confirmed 114/100 winner would legitimately take the stands-cheaper path.
+  const BELLI_030 = {
+    tcgPlayerId: "614881", setName: "SV9: Battle Partners", name: "Iono's Bellibolt ex",
+    cardNumber: "030/100", rarity: "Double Rare", cardType: "Pokemon", hp: "280",
+    attacks: ["[LLLC] Thunderous Bolt (230)"],
+    prices: { market: 0.31, primaryPrinting: "Holofoil" }, printingsAvailable: ["Holofoil"],
+  };
+  function slabRoutes() {
+    return {
+      "Bellibolt ex": F.padTo([BELLI_114, BELLI_125, BELLI_030], 30, "Belli"),
+      "Bellibolt ex|offset=30": F.padTo([], 3, "BelliP2"),
+      "id:614990": gradedRow("614990", "114/100", 120.5, 9),
+      "id:615001": gradedRow("615001", "125/100", 480.0, 6),
+      "id:614881": gradedRow("614881", "030/100", 41.0, 5),
+    };
+  }
+  let slabResult = null;
+  await test("PER-SIBLING GRADED: every disclosed row is priced at the scanned grade", async () => {
+    installPptMock(slabRoutes());
+    slabResult = await M.lookupCardPPT({ ...SLAB_READ }, "slab-graded", null);
+    assert.strictEqual(slabResult.matchBasis, "sibling-ambiguous");
+    const byId = Object.fromEntries(slabResult.siblingAmbiguity.candidates.map((c) => [c.tcgPlayerId, c]));
+    assert.ok(byId["614990"].graded, "114/100 row needs graded data");
+    assert.ok(byId["615001"].graded, "125/100 row needs graded data");
+    assert.strictEqual(byId["614990"].graded.gradedPrice, 120.5);
+    assert.strictEqual(byId["615001"].graded.gradedPrice, 480);
+    assert.strictEqual(byId["614990"].graded.grader, "PSA");
+    assert.strictEqual(byId["614990"].graded.grade, "10");
+  });
+  await test("PER-SIBLING GRADED: each row carries its own graded bid", () => {
+    for (const c of slabResult.siblingAmbiguity.candidates) {
+      if (c.graded && c.graded.gradedPrice != null) {
+        assert.ok(typeof c.graded.gradedSuggestedBid === "number", `row ${c.number} needs a bid`);
+        assert.ok(c.graded.gradedSuggestedBid < c.graded.gradedPrice, "a bid must sit below the median");
+        assert.ok(c.graded.gradedBreakEven != null && c.graded.gradedSellThrough, "and its own BE + tier");
+      }
+    }
+  });
+  await test("PER-SIBLING GRADED: the thin-data gate still applies per row", async () => {
+    installPptMock({
+      ...slabRoutes(),
+      // 2 sales is under GRADED_MIN_SALES (3) for the 125 row only.
+      "id:615001": gradedRow("615001", "125/100", 480.0, 2),
+    });
+    const r = await M.lookupCardPPT({ ...SLAB_READ }, "slab-thin", null);
+    const byId = Object.fromEntries(r.siblingAmbiguity.candidates.map((c) => [c.tcgPlayerId, c]));
+    assert.strictEqual(byId["614990"].graded.gradedPrice, 120.5, "the healthy row still prices");
+    assert.strictEqual(byId["615001"].graded.gradedPrice, null, "the thin row must not price");
+    assert.strictEqual(byId["615001"].graded.gradedThin, true);
+    assert.strictEqual(byId["615001"].graded.gradedThinReason, "too-few-sales");
+  });
+  await test("PER-SIBLING GRADED: a NON-slab sibling result makes no graded calls", async () => {
+    const calls = installPptMock(scoreOnlyRoutes());
+    await M.lookupCardPPT({ ...SCORE_READ }, "nonslab-nograded", Promise.resolve({ ...LEGACY_CORRECT }));
+    assert.strictEqual(calls.filter((c) => c.startsWith("id:")).length, 0, "no by-id lookups on a raw card");
+  });
+  await test("PER-SIBLING GRADED: costs 2 credits per row and no more", async () => {
+    const calls = installPptMock(slabRoutes());
+    await M.lookupCardPPT({ ...SLAB_READ }, "slab-credits", null);
+    const idCalls = calls.filter((c) => c.startsWith("id:"));
+    assert.strictEqual(idCalls.length, 3, `one by-id call per disclosed row, got ${idCalls.join(",")}`);
+    assert.strictEqual(new Set(idCalls).size, idCalls.length, "no duplicate lookups");
+  });
+  await test("PER-SIBLING GRADED: SIBLING_GRADED_MAX_LOOKUPS caps the fan-out", () => {
+    assert.strictEqual(M.SIBLING_GRADED_MAX_LOOKUPS, 6);
   });
 
   // ----------------------------------------------------------------------

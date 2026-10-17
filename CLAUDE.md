@@ -130,7 +130,7 @@ api/flag.js      "Flag this scan" -> one greppable log line.
 docs/history.md  Full project history (was CLAUDE.md).
 docs/test-cases.md  Live test log.
 docs/archive/    ROADMAP.md, build-status.md.
-test/            Local suite, `node test/alakazam.test.js` (78 tests, no
+test/            Local suite, `node test/alakazam.test.js` (91 tests, no
                  network — mocks global.fetch over real captured PPT rows).
                  Excluded from deploys via .vercelignore. Two tests replay
                  against the pinned pre-fix commit `PRE_FIX_REF` (`1960cd5`)
@@ -326,48 +326,55 @@ Each exists because retrieval or the read failed, not because scoring did.
    recover that case — the cross-model check is what does, and it is
    live-confirmed (`ATTACK MISMATCH SUPPRESSED`).
 
-10. **Sibling-disagreement cap** (`sibling-ambiguous`, 2026-10-15, tests #103
-    + #104) — runs AFTER every path above has chosen a winner, including plain
+10. **Sibling-disagreement cap** (`sibling-ambiguous`, tests #103, #104, #105)
+    — runs AFTER every path above has chosen a winner, including plain
     `score-only`. Fires only when the fetched pool holds an above-floor
     `sameSiblingGroup` sibling of the winner (same base name, same set).
     **This is a BIG class**: `candidateSiblingBaseName` strips the
     `" - 125/197"` suffix, so every modern ex/SIR, V/alt-art and
-    regular/full-art-Trainer twin qualifies — 19 popular names measured on
-    real PPT pools gave **92 sibling pairs**, and SV03 Charizard ex alone has
-    four same-set versions ($5.27 / $20.74 / $35.11 / $94.62).
+    regular/full-art-Trainer twin qualifies — 19 popular names gave **92
+    sibling pairs**, and SV03 Charizard ex alone has four same-set versions.
     Corroboration = `numberPointsAtCandidate(legacyRead.cardNumber, best)`
     (a **non-weak** `numbersMatch` AND no `totalsContradict`), and that number
     must not point at a sibling instead. Decision table:
     - legacy points at the winner → **corroborated**, normal confidence, no note.
     - legacy points at a DIFFERENT sibling → **ambiguous**, always.
-    - no usable legacy number AND the winner is the **cheapest** in its group
-      → **stands** at normal confidence, with a one-line note naming the
-      pricier twin and its market price. Errs toward underbidding, which costs
-      nothing — same err-cheap principle as the stamped-twin rule.
-    - no usable legacy number and the winner is **not** cheapest → **ambiguous**.
+    - no usable legacy number, winner is **cheapest** in its group **AND the
+      primary read's number points at the winner** → **stands** at normal
+      confidence with a note naming the pricier twin. The
+      `primaryPointsAtBest` requirement was added 2026-10-18 (#105) after a
+      live Flareon scan whose number matched nothing stood at $48.62 beside a
+      $337.50 sibling — being cheapest is not evidence when no number
+      confirms the winner.
+    - otherwise → **ambiguous**.
     An **unknown market** anywhere in the group counts as "not provably
-    cheapest" and caps (real case: `Judge - 167/182`,
-    `siblingMarkets=[null,null,19.88]`). Market comes from PPT's own
+    cheapest" and caps (real case `Judge - 167/182`,
+    `siblingMarkets=[null,null,19.88]`). Market comes from PPT's
     `prices.market` on already-fetched rows — no extra call.
+    **Legacy wait is two-stage** (#105): 500ms first, then the rest of
+    `SIBLING_CAP_LEGACY_TOTAL_WAIT_MS` (1200) **only** when the cap is about
+    to say `ambiguous-uncorroborated` purely because no legacy number has
+    arrived. Corroborated/disagreement decisions never wait. Measured cost:
+    **+399ms** on that one class, and it flipped a correctly-identified PSA 10
+    from withheld to priced.
     Ambiguous returns **Low**, `pricingLookup: null`, and a
     `siblingAmbiguity` payload listing every candidate with number, rarity and
-    **its own ready-made `pricingLookup`**, so the panel prices each one;
-    ordered by card number, never price-ranked. Hint text is generic —
-    *"Check the finish and artwork to tell these apart."* — not holo-specific.
-    Cannot change which candidate won; adds no PPT calls.
-    **Measured firing rate** (33 real same-set groups, 198 runs): cheapest
-    winner + null legacy **88% → 3%** after the #104 split; overall 58% → 43%.
-    A scan of the PRICIEST twin still caps whenever the legacy number is
-    missing (~43% of scans) — the deliberate trade. Real-traffic replay of the
-    saved 2026-10-14 shadow pairs: **1/8, identical before and after**, and
-    that one is a genuine catch (Mega Sharpedo ex, both models reading a
-    number absent from the pool, scoring landing on the $16.10 sibling of a
-    $0.78 card). **Agreement between the two models is NOT corroboration** —
-    the legacy number must point at the winner.
-    **Pool-dependent**: it only sees a sibling that was actually fetched, so a
-    wrong number matching a sibling already on page 1 (no page-2 fetch) is
-    still invisible to it. `[sibling-cap]` logs the full decision, including
-    `decision=` and `winnerIsCheapest=`, on every firing.
+    **its own ready-made `pricingLookup`**; ordered by card number, never
+    price-ranked. Hint text is generic — *"Check the finish and artwork to
+    tell these apart."*
+    **Graded slabs are priced PER ROW** (#105): when the read carries a
+    grader+grade, each disclosed sibling gets its own
+    `lookupGradedPrice` by tcgPlayerId, in parallel —
+    **2 credits per row** (`limit=1`, not the 30 a search costs), capped at
+    `SIBLING_GRADED_MAX_LOOKUPS` (6), ~+600ms. The thin-data gate applies
+    **independently per row**. Each candidate carries `graded` with
+    `gradedPrice` / **`gradedSuggestedBid`** (note the prefix — reading
+    `suggestedBid` silently yields "Bid: —"). Before this, three real slabs
+    hit `GRADED FETCH SKIPPED: no card matched` and showed no graded figure.
+    Cannot change which candidate won; adds no PPT *searches*.
+    **Pool-dependent**: it only sees a sibling that was actually fetched.
+    `[sibling-cap]` logs the full decision, `winnerIsCheapest`,
+    `legacyWaitExtended` and `PER-SIBLING GRADED` on every firing.
 
 PPT fetch aborts retry **once** at `CARDDB_RETRY_TIMEOUT_MS` (1200ms), scoped
 to the abort branch only — by construction it can never retry a 429.
@@ -475,25 +482,29 @@ sane bid for that card.
 real sibling *and* misses the pool, which can't be forced.
 
 **DEPLOYED TO PRODUCTION 2026-10-16 — the sibling-disagreement cap** (tests
-#103 + #104, 78 local tests), `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg`,
-`sourceHash c8f57029…`, commit `a939d95`. Closes #102. The #104 scope
-correction is load-bearing: without it, modern same-set twins (92 pairs
-across 19 popular names) would have made two-card ambiguity the normal
-outcome for chase cards — 88% of cheapest-winner/legacy-null cases, now 3%.
-See the decision table on rescue path 10.
-**`extension/content.js` and `content.css` changed, so the extension needs a
-manual reload in `chrome://extensions`** before the two-printing panel
-renders.
-**Live-confirmed:** `[sibling-cap] decision=corroborated` on real
-three-sibling Charizard ex groups and a two-sibling Boss's Orders group.
-**Not yet observed on organic traffic:** `decision=ambiguous-disagreement`,
-`decision=ambiguous-uncorroborated` and `decision=stands-cheaper` — all three
-need a sibling actually in the fetched pool, which the Alakazam scans never
-produce because a correct number read stops at page 1. Two known limits
-(#103/#104): the cap is **pool-dependent**, and the 30s PPT cache can return
-a pre-cap result inside its window.
-**Superseded previews:** `dpl_EF2JaPbQFhaBYZngV69Ti8CKZTqk` (`a6052d3a…`) is
-the UNCORRECTED #103 build — never promote it.
+#103 + #104), `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg`, `sourceHash c8f57029…`.
+Closes #102. Live review of 36 real scans on 2026-10-17 (test #102 logs in
+scratch `logs-20261017-1749/`) showed it firing **7 times in one hour**, with
+one genuine 40x save (Machoke $1.29 vs $51.78).
+
+**BUILT LOCALLY, NOT DEPLOYED — three follow-up fixes** (test #105, 91 local
+tests): the two-stage legacy wait (+399ms only on the one decision class,
+flipped a correctly-identified PSA 10 from withheld to priced), the
+`primaryPointsAtBest` requirement on `stands-cheaper`, and **per-row graded
+pricing for slabs** (2 credits/row, ~+600ms, thin gate per row).
+**`extension/content.js` changed, so the extension needs a manual reload in
+`chrome://extensions`.** Awaiting a preview/production go-ahead.
+
+**Open, investigated not fixed (#105): the cap overrides the Shadowless
+merge.** `Machoke 034/102` exists as 42376 (`Base Set`, Normal, $1.29) and
+107031 (`Base Set (Shadowless)`, primaryPrinting **1st Edition**, $51.78) —
+same `externalCatalogId base1-34`. `stripShadowlessSuffix` collapses the set
+names, so `sameSiblingGroup` calls them siblings and the cap withholds —
+discarding `lookupCardPPT`'s existing `shadowlessSibling` merge, which would
+have shown BOTH printings in one tagged dropdown. Recommendation: exclude
+opposite-Shadowless pairs from `sameSiblingGroup`. Do **not** use the stamp
+read to separate them — on that scan the primary read `1st Edition` and the
+legacy read `none`.
 
 **Noted, not built (test #101): Expedition Reverse Holofoil price curves can
 be inverted.** 83500's Reverse Holofoil reads NM **$16.00** (sold 0) against

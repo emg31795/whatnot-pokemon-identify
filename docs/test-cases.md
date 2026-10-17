@@ -12134,6 +12134,155 @@ sibling-ambiguous scan falls back to the older "Printing undetermined — price
 withheld" line rather than the two priced rows. The backend response is
 correct either way, so this degrades disclosure, not correctness.
 
+## #105 — 2026-10-18 — Three fixes from the 2026-10-17 live review, plus the Machoke Shadowless finding
+
+Driven by the 36-scan review of production `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg`
+(logs preserved in scratch `logs-20261017-1749/`). The cap fired 7 times that
+hour and let only one result stand.
+
+### Fix 1 — extended legacy wait, only where waiting can change the answer
+
+`SIBLING_CAP_LEGACY_TOTAL_WAIT_MS = 1200`. The first wait stays at 500ms; the
+cap spends the remaining ~700ms **only** when it is about to say
+`ambiguous-uncorroborated` purely because no legacy number has arrived yet.
+Corroborated and disagreement decisions are final on evidence already in hand
+and never wait.
+
+Live case that forced it — `787f6fce`, an Iono's Bellibolt ex **PSA 10**
+identified CORRECTLY (`114/100`, bestScore 34, tieCount 1, and the PSA label
+itself reads `#114`). It came back ambiguous with no price solely because the
+legacy read landed just after 500ms; the shadow log shows it eventually read
+`114/100`, which corroborates.
+
+**Replayed against its real PPT pool:**
+
+| | BEFORE (`HEAD`) | AFTER |
+|---|---|---|
+| `787f6fce` | AMBIGUOUS, no price | **priced 614990 / `score-only`** |
+| latency | 502ms | 901ms (**+399ms**) |
+
+That is the whole cost: ~400ms on the one decision class that was throwing
+away a correct identification. Tests confirm the other paths pay nothing —
+a corroborating or disagreeing first read returns in under 400ms, and a legacy
+read that never arrives still stops at the budget rather than at
+`GEMINI_TIMEOUT_MS`.
+
+### Fix 2 — `stands-cheaper` now requires the PRIMARY number to point at the winner
+
+Live case `7eb57832`: Flareon read as `4/105`, which matched nothing. Scoring
+fell through `NO NUMBER MATCH IN POOL` and picked Flareon (19) 19/64 Jungle
+($48.62) on hp/attack alone, with a same-set sibling at **$337.50** — a 6.9x
+gap shown at full confidence. "Cheapest of the group" was never meant to
+excuse a winner that no number confirms: with neither model's number pointing
+at it, being the cheap one is a coincidence, not evidence.
+
+Now `winnerIsCheapest && primaryPointsAtBest` is required; otherwise
+`ambiguous-uncorroborated`. A confirmed cheap winner still stands with its
+note, which the existing modern-twin tests cover.
+
+**Honest limitation on the replay:** re-fetching the Flareon pool today gives
+a different pool than this morning's (best became `Flareon (H7) H07/H32` and
+the scan took the weak-signal floor, never reaching the cap), so the real-pool
+replay shows `withheld -> withheld` and does **not** exercise the change. The
+controlled test `REPLAY 7eb57832` reproduces the actual shape on captured rows
+and shows `stands-cheaper -> sibling-ambiguous` with both printings disclosed.
+
+### Fix 3 — price a slab on EVERY disclosed row
+
+Three real graded slabs reached the cap and got
+`GRADED FETCH SKIPPED: no card matched`: Burmy CGC 9 and both Iono's Bellibolt
+ex PSA 10 scans. The graded path keys off one matched card, and a
+sibling-ambiguous result deliberately has none — so the most valuable
+category on these streams came back with no graded figure at all.
+
+Nothing requires picking a card to price a grade. Each disclosed sibling is
+now priced on its own via `lookupGradedPrice(read, candidate)`, in parallel,
+reusing the existing id check, card-number check and thin-data gate
+unchanged — **the gate applies per row**, so one row can read "too few sales"
+while its sibling shows a real figure. `SIBLING_GRADED_MAX_LOOKUPS = 6` caps
+the fan-out.
+
+**Cost:** `fetchPptCardByTcgPlayerId` is `limit=1` = **2 credits per row**, not
+the 30 a search costs — so 8 credits for a 4-way group, in one parallel round
+trip. Replayed on `d8671204`'s real pool: still ambiguous (correctly — the
+winner was the wrong card) but now carrying **+4 graded rows**. The mocked
+replay cannot measure real PPT latency; the single graded lookup in production
+took **578ms**, and these run in parallel, so expect roughly **+600ms** on a
+sibling-ambiguous slab and nothing at all on every other scan.
+
+**Extension changed** (`content.js`): `siblingPriceCellHtml` renders a graded
+row straight from the identify response and `fetchAndRenderSiblingPrices`
+skips it, so a graded row is never overwritten with raw NM.
+**Reload required in `chrome://extensions`.**
+
+A local test caught a real bug here before it shipped: the helper read
+`suggestedBid` when `computeGradedBidForBucket` returns **`gradedSuggestedBid`**,
+which would have shown "Bid: —" on every graded row.
+
+### Replay of the 7 real cap scans (real PPT pools)
+
+| id | card | BEFORE | AFTER |
+|---|---|---|---|
+| `ac86fc9d` | Venusaur & Snivy GX (JP) | ambiguous | ambiguous (unchanged — `bestMarket` null) |
+| `7eb57832` | Flareon 4/105 | withheld | withheld (pool drifted; see above) |
+| `c479a222` | Machoke 1st-Ed read | ambiguous | ambiguous (genuine disagreement) |
+| `8033fb07` | Burmy CGC 9 | — | replay harness file error, not re-run |
+| `d8671204` | Bellibolt PSA 10 (number null) | ambiguous | ambiguous **+4 graded rows** |
+| `787f6fce` | Bellibolt PSA 10 (legacy late) | ambiguous | **priced 614990**, +399ms |
+| `7d7b7362` | Mega Chandelure EX | withheld | withheld (pool now 3 rows) |
+
+**Withheld rate across the 36 scans: 11 before → 10 after.** Only the 7 cap
+scans can move: fixes 1 and 2 execute solely inside the cap block and fix 3
+only enriches an already-ambiguous result, so the other 29 are unchanged by
+construction rather than by measurement. One flip (`787f6fce`), and it is the
+PSA 10 that should never have been withheld.
+
+### Investigation only (no fix): the Machoke 034/102 pair
+
+Hypothesis confirmed. Both rows share `externalCatalogId "base1-34"`:
+
+| tcgPlayerId | setName | rarity | primaryPrinting | printingsAvailable | market |
+|---|---|---|---|---|---|
+| 42376 | `Base Set` | Uncommon | Normal | `['Normal']` | **$1.29** |
+| 107031 | `Base Set (Shadowless)` | Uncommon | **1st Edition** | `['1st Edition','Unlimited']` | **$51.78** |
+
+So 107031 **is** the Shadowless/1st-Edition product, and
+`stripShadowlessSuffix` collapsing `"Base Set (Shadowless)"` to `"Base Set"`
+is exactly what makes `sameSiblingGroup` treat the pair as siblings.
+
+**This pair already has a dedicated mechanism, and the cap is overriding it.**
+`lookupCardPPT`'s `shadowlessSibling` merge finds the opposite-Shadowless
+candidate with the same number and merges its prices into the same dropdown
+as a tagged variant (`tag: "Shadowless"`, `siblingTcgPlayerId`,
+`siblingSetName`) — a strictly better outcome than "no price", because the
+user gets both printings *and* a selectable dropdown. On `c479a222` the cap
+set `pricingLookup: null` and that merge was discarded.
+
+**Recommendation (not built): exclude opposite-Shadowless pairs from
+`sameSiblingGroup`** and let the existing merge handle them.
+`candidateDedupKey` already treats shadowless as a distinct key, so the two
+mechanisms are meant to be disjoint. The stamp signal is not a safe
+substitute: on this very scan the primary read `stampType "1st Edition"` and
+the legacy read `none`, which is precisely the false-negative direction
+CLAUDE.md's DO-NOT list warns about. Worth its own measurement pass over how
+often a Shadowless pair reaches the cap.
+
+### Tests — 91 pass, 0 fail (`node test/alakazam.test.js`)
+
+Up from 78; every prior case unchanged (Alakazam `159a5822`/`f033dcfe`,
+Charizard ex twins, Boss's Orders, XY95, Snorlax stamped twins, 30th
+Celebration, Trainer sub-floor, graded SM210/Dragonite source assertions).
+New: four extended-wait cases (flip inside the budget, hard stop when the read
+never arrives, and no added latency on either the corroborated or the
+disagreement path), the `7eb57832` replay plus a confirmed-cheap-winner
+control, and five per-sibling graded cases (every row priced, each with its
+own bid/BE/tier, the thin gate firing on one row only, no by-id calls on a raw
+card, and exactly one by-id call per row).
+
+The slab fixture needed a cheaper third sibling (the real `030/100` at $0.31)
+to reproduce the live group — without it the confirmed `114/100` winner
+legitimately takes the new `stands-cheaper` path, which is fix 2 working.
+
 ## Related docs
 
 - `whatnot-pokemon-extension-build-status.md` — architecture history and

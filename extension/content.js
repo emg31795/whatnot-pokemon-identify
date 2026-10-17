@@ -734,6 +734,10 @@
     const list = (identifyData.siblingAmbiguity && identifyData.siblingAmbiguity.candidates) || [];
     list.forEach((cand) => {
       if (!cand.pricingLookup || !cand.pricingLookup.tcgPlayerId) return;
+      // Already filled from the identify response by siblingPriceCellHtml —
+      // a graded row is priced at the scanned grade, not at raw NM, so an
+      // /api/price call here would overwrite it with the wrong number.
+      if (cand.graded && (cand.graded.gradedPrice != null || cand.graded.gradedThin)) return;
       getPriceUrl()
         .then((url) =>
           fetch(url, {
@@ -1578,6 +1582,34 @@
     `;
   }
 
+  // ADDED 2026-10-18 (per-sibling graded pricing): for a graded slab the
+  // backend now prices EACH disclosed sibling at the scanned grade, so the
+  // row is filled straight from the identify response and never fires an
+  // /api/price call. The thin-data gate runs per row, so a row can come back
+  // "too few sales" while its sibling has a real figure — that is the honest
+  // answer for that printing, not a reason to borrow the other one's.
+  function siblingPriceCellHtml(c) {
+    const g = c.graded;
+    if (g && g.gradedPrice != null) {
+      const label = `${g.grader || ""} ${g.grade || ""}`.trim();
+      // `gradedSuggestedBid`, not `suggestedBid` — computeGradedBidForBucket
+      // prefixes every field it returns. A local test caught this reading the
+      // wrong name and silently showing "Bid: —" on every graded row.
+      const bid =
+        g.gradedSuggestedBid == null
+          ? "Bid: —"
+          : g.gradedSuggestedBid <= 0
+          ? "Bid: Skip"
+          : `Bid: $${Number(g.gradedSuggestedBid).toFixed(2)}`;
+      return `${escapeHtml(label)} $${Number(g.gradedPrice).toFixed(2)} · ${escapeHtml(bid)}`;
+    }
+    if (g && g.gradedThin) {
+      const label = `${g.grader || ""} ${g.grade || ""}`.trim();
+      return `${escapeHtml(label)} — too few sales to price`;
+    }
+    return "Loading price…";
+  }
+
   // ADDED 2026-10-15 (test #102). Deliberately NOT price-ranked: rows arrive
   // in the backend's card-number order so the panel never implies the
   // expensive printing is the likely answer.
@@ -1589,7 +1621,7 @@
           <div class="wnpk-sib-name">${escapeHtml(c.name)} <span class="wnpk-sib-meta">${escapeHtml(
           c.number || "?"
         )}${c.rarity ? ` · ${escapeHtml(c.rarity)}` : ""}</span></div>
-          <div class="wnpk-sib-price" id="wnpk-sib-price-${escapeHtml(c.tcgPlayerId)}">Loading price…</div>
+          <div class="wnpk-sib-price" id="wnpk-sib-price-${escapeHtml(c.tcgPlayerId)}">${siblingPriceCellHtml(c)}</div>
         </div>`
       )
       .join("");
