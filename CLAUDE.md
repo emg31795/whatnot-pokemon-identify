@@ -189,28 +189,36 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_3f4sgBW1BVdLjA4mvFk383thicTg`** (2026-10-17, the Rayquaza
-  fixes + disclosure polish, tests #106/#107), aliased to
+- Deployment **`dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV`** (2026-10-18, the
+  Pokédex-number fix, test #108), aliased to
   `whatnot-pokemon-identify.vercel.app`. Preview of the same build:
-  `dpl_AVp9R5smnhwRv3bkemCkX1Ujinmw`.
-- **`sourceHash 9f08298eaa1d2f4abb6e5816a45e6af23ddc0d29`** == `shasum
+  `dpl_9tJCbdVenieuPKeyFFWY7SNMDJtx`.
+- **`sourceHash 2fe9412de7fb829ba1918048a65f1a32bbee7e3d`** == `shasum
   api/identify.js` on disk, byte-exact on both deployments (CLI deploy from
-  disk). Built from commit `0601fcc`. `GET /api/identify` reports
+  disk). Built from commit `6247b40`. `GET /api/identify` reports
   **`slabLabelProbe: "on"`**. The alias served the new hash on the first
-  check this time (contrast the ~15s lag on 2026-10-16 — check twice before
+  check again (contrast the ~15s lag on 2026-10-16 — check twice before
   concluding a deploy failed).
-- E2E verified on production 2026-10-17: **Pikachu XY95** High /
-  `score-only` / 114004, linked, 1431ms; **Rayquaza 003/017** Low /
-  `number-tie-ambiguous`, no single price, `tcgplayerUrl: null`, both rows
-  (POP Series 1 and Blister Exclusives) carrying their own links, and the
-  stale "best guess" phrasing gone — 1957ms. **Zero runtime errors.**
-- **`extension/content.js` and `content.css` changed in the 2026-10-17
-  builds, so the extension needs a manual reload in `chrome://extensions`**
-  before the sibling/tie rows (with set names) and the per-row graded
-  medians render.
+- E2E verified on production 2026-10-18, three scans, **zero runtime
+  errors**: **Pikachu XY95** High / `score-only` / 114004, linked, 1634ms
+  (`c9fd1a6f`); **Rayquaza 003/017** Low / `number-tie-ambiguous`, no single
+  price, `tcgplayerUrl: null`, both rows (POP Series 1 `88624`, Blister
+  Exclusives `691978`) carrying their own links, no "best guess" clause,
+  2158ms (`158aa726`); **Alakazam 33/165** High / `score-only` / 83500,
+  2295ms (`cfbd47bf`). No `[dex-number]` line on any of them, which is the
+  correct negative — none is a Pokédex read.
+- **The dex path itself is NOT e2e-verified on production.** It needs a
+  Japanese Neo-era frame, which no saved payload has; it rests on 122 local
+  tests and mocked replays over real captured PPT rows. **Watch for
+  `[dex-number]` on organic traffic** — it has never fired outside tests.
+- **`extension/content.js` and `content.css` last changed in the 2026-10-17
+  builds, so if the extension has not been reloaded in
+  `chrome://extensions` since then**, the sibling/tie rows (with set names)
+  and the per-row graded medians will not render. #108 is backend-only.
 - **No real slab has been scanned end-to-end through Phase 2-lite.** The
   graded bid path HAS fired on organic traffic.
-- Earlier production: `dpl_Eih1EtRbrtHgktna9QiRhq5D4259` (2026-10-17,
+- Earlier production: `dpl_3f4sgBW1BVdLjA4mvFk383thicTg` (2026-10-17,
+  `9f08298e…`, `0601fcc`); `dpl_Eih1EtRbrtHgktna9QiRhq5D4259` (2026-10-17,
   `b170a4e3…`, `90b7d23`); `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg` (2026-10-16,
   `c8f57029…`, `a939d95`); `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (2026-10-15,
   `9738bb38…`, `ba5f009`); `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj` (2026-10-14,
@@ -492,9 +500,9 @@ sane bid for that card.
 
 ## Open items
 
-**BUILT AND PREVIEW-VERIFIED 2026-10-18, NOT DEPLOYED TO PRODUCTION (#108)
-— the Japanese Meganium Pokédex-number fix.** Commit `6247b40`, preview
-`dpl_9tJCbdVenieuPKeyFFWY7SNMDJtx`, `sourceHash 2fe9412d…` byte-exact with
+**DEPLOYED TO PRODUCTION 2026-10-18 (#108) — the Japanese Meganium
+Pokédex-number fix.** Commit `6247b40`, production
+`dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV`, `sourceHash 2fe9412d…` byte-exact with
 disk, 122 local tests (108 before). A Japanese Neo-era card prints no
 collector number — the only number on it is the Pokédex "No. 154" — and the
 pipeline spent it as a collector number (~10 searches / 300 credits across
@@ -505,10 +513,29 @@ the real 5-scan burst). Now classified **after** retrieval fails, so SV2a's
 old gate also needed `best.number`, which these empty-`cardNumber` rows
 lack, so BOTH floor branches were skipped). Preview e2e: XY95
 High/`score-only`, the Rayquaza two-row disclosure intact, zero runtime
-errors. **The dex path is not e2e-verified** — no Japanese Neo-era frame
-exists in any saved payload. The Meganium outcome is deliberately unchanged
-(still Low, still withheld): this removes waste and a dishonest message, it
-does not identify the card.
+errors; production e2e re-ran all three cleanly on 2026-10-18. **The dex
+path is not e2e-verified** — no Japanese Neo-era frame exists in any saved
+payload. The Meganium outcome is deliberately unchanged (still Low, still
+withheld): this removes waste and a dishonest message, it does not identify
+the card.
+
+**OPEN — the empty-number-WINNER floor hole, measured 2026-10-18 (#108
+follow-up, NOT fixed).** #108 routes the floor on effective-absence, which
+closed the hole only for a **dex-classified** read. Probed before/after:
+a NON-dex read (e.g. `"94/105"`) whose winner has an empty `cardNumber`
+still skips BOTH floor branches and is priced at Medium on **one** signal.
+Scale: across all saved windows, **103 winner observations, zero with an
+empty number** — never observed firing, but the Meganium 7-way tie came one
+tie-break from it (the true `575820` was tied at the top with an empty
+number). Fix is the same shape: treat an empty-number winner as "no number
+to match" for the floor regardless of what the read holds. Note the
+**≥2-signal allowance already exists** — the floor's bar is
+`corroboratingSignals < 2`, so hp+attack or hp+set already price today; the
+only thing withheld is the 1-signal case. Evidence for keeping that: of the
+14 weak-signal-floor scans on record (all 1-signal), the candidate that
+would have been priced was **wrong in all 9 where ground truth is known**
+(Meganium ×4, Rayquaza ×5). The one known counter-case, test #28 Dark
+Gengar at $223, predates the floor (2026-08-27 vs 2026-09-27).
 
 **OPEN — the Haiku fallback is DEAD (#108).** Every scan in the 2026-10-18
 window logged `Haiku error 400 ... "Your credit balance is too low to

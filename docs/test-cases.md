@@ -12650,7 +12650,133 @@ api/identify.js`, byte-exact. `slabLabelProbe: "on"`.
 - Zero runtime errors; no `[dex-number]` line on either (neither is a dex
   read), which is the correct negative.
 
-**Not deployed to production** — awaiting Eric's approval. The dex path
-itself is NOT e2e-verified: that needs a Japanese Neo-era frame, which no
-saved payload has. It rests on the 122 local tests and the mocked replays
-over real captured PPT rows.
+### Deployed to production 2026-10-18 (#108)
+
+Production **`dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV`**, built from commit
+`6247b40`, `sourceHash 2fe9412de7fb829ba1918048a65f1a32bbee7e3d` ==
+`shasum api/identify.js`, byte-exact on both the preview and production
+deployments. `slabLabelProbe: "on"`. The alias served the new hash on the
+first check (checked twice).
+
+Production e2e, three scans, **zero runtime errors**:
+
+| scan | result | requestId | total |
+|---|---|---|---|
+| Pikachu XY95 | High / `score-only` / 114004, linked | `c9fd1a6f` | 1634ms |
+| Rayquaza 003/017 | Low / `number-tie-ambiguous`, `pricingLookup` null, top-level `tcgplayerUrl` null, 2 rows (`88624` POP Series 1, `691978` Blister Exclusives) each linked, no "best guess" clause | `158aa726` | 2158ms |
+| Alakazam 33/165 | High / `score-only` / 83500 | `cfbd47bf` | 2295ms |
+
+No `[dex-number]` line on any of the three — the correct negative, since
+none is a Pokédex read. **The dex path itself is NOT e2e-verified**: that
+needs a Japanese Neo-era frame, which no saved payload has. It rests on the
+122 local tests and the mocked replays over real captured PPT rows. Watch
+for `[dex-number]` on organic traffic; it has never fired outside tests.
+
+### Follow-up measurement (same day): the empty-number-WINNER hole
+
+Asked before approving the deploy: quantify the floor change. Result —
+across every saved window (16 files, 60 scans) there were **103 winner
+observations and ZERO with an empty `cardNumber`**, so #108's floor routing
+changed the outcome of **no scan on record**. Null-number candidates
+reached a pool only 7 times (3 Japanese Bayleef, 2 Fezandipiti ex promos, 2
+Code Cards) and never won — but the Meganium 7-way tie came one tie-break
+from it, since the true `575820` was tied at the top with an empty number.
+
+Probed before/after, which also scoped the fix precisely:
+
+| case | before | after |
+|---|---|---|
+| read `94/105` (non-dex) + empty-number winner, 1 signal | Medium/priced | Medium/priced — **unchanged, hole still open** |
+| read `No. 94` (dex) + empty-number winner, 1 signal | Medium/priced | **Low/withheld** — the only changed case |
+| read null + empty-number winner, 1 signal | Low/withheld | unchanged |
+| read `No. 94` (dex) + empty-number winner, **2 signals** | High/priced | High/priced — unchanged |
+| read null + empty-number winner, **2 signals** | High/priced | High/priced — unchanged |
+
+So the **"allow a price when ≥2 independent non-number signals agree" rule
+already exists**: the floor's bar is `corroboratingSignals < 2` over
+hp/subtype/set/attackName/stampMatch, so hp+English-attack and hp+exact-set
+both price today. Only the 1-signal case is withheld.
+
+**Recommendation: keep the withhold.** All 14 weak-signal-floor scans on
+record are 1-signal, and of the 9 with known ground truth the candidate
+that would have been priced was **wrong in all 9** — Meganium ×4 (winner
+`102/128` Base Expansion Pack vs true `575820`) and Rayquaza ×5 (winner
+`9/106` EX Emerald vs true `003/017`, $325.30). The Meganium hp-only tie
+spanned $17.39–$40+. The single known counter-case is **test #28** (Dark
+Gengar JP, $223, "correct card and price, per user"), which was Medium —
+i.e. ~1 corroborating signal — but **predates the weak-signal floor**
+(2026-08-27 vs 2026-09-27), so it was priced because no floor existed.
+1 known right vs 9 known wrong.
+
+**Open follow-up:** close the non-dex case the same way — treat an
+empty-number winner as "no number to match" for the floor regardless of
+what the read holds. Not built.
+
+### Item 2 — floor disclosure ("possible matches — unconfirmed"): measured, recommend AGAINST
+
+14 weak-signal-floor scans across all saved windows (the 10-14 window
+contributed none):
+
+| scan | card | distinct tied candidates | true card | in list? |
+|---|---|---|---|---|
+| `3e8a347f` | Meganium | **7** (page1+2) | `575820` | **YES** |
+| `8fa04fec` | Meganium | **7** (page1+2) | `575820` | **YES** |
+| `19dc6a39` | Meganium | 4 (page 1 only) | `575820` | **NO** |
+| `4b3d3f59` | Meganium | 4 (page 1 only) | `575820` | **NO** |
+| `940b12ff` | Bayleef 24 | 5 | unknown | — |
+| `082ffff6` | Rayquaza 9/106 | 1 (4 merged) | `88624` | **NO** |
+| `167ba6ca` | Rayquaza 9/106 | 1 | `88624` | **NO** |
+| `30be68e6` | Rayquaza 9/106 | 1 | `88624` | **NO** |
+| `4aafbcd8` | Rayquaza 9/106 | 1 | `88624` | **NO** |
+| `960e80d9` | Rayquaza 9/106 | 1 | `88624` | **NO** |
+| `27334273` | Gardevoir ex 028/053 | 1 | unknown | — |
+| `c455e98a` | Gardevoir 072/068 | 1 | unknown | — |
+| `ffb372cf` | Happiny 76/127 | 6 | unknown | — |
+| `74b6ec04` | Fennekin XY02 | 8 | unknown | — |
+
+Where the answer is known, the list would have held the right card in
+**2 of 9**. **7 of 14** scans have a single tied candidate, so the "list"
+is one row — a guess with a softer label; all 5 Rayquaza scans are in that
+group, offering an EX-era Rayquaza for a $325.30 POP Series 1 card.
+
+- `tieCount >= 2` is **necessary** (removes all 7 single-row cases).
+- **"all tied share name + hp" does NOT help**: the 4-row Meganium list
+  (`576020, 576019, 614522, 611868`) is all "Meganium" at hp 100 and passes
+  it, yet the true card is absent.
+- A **max-rows cap is actively harmful**: observed ties are 1, 4, 5, 6, 7,
+  8, so a cap of 4 truncates the only two lists that held the right card,
+  and ordering by card number puts `575820` (empty number) at an arbitrary
+  end. Keeping the hits needs ~8 rows, which is not a panel anyone reads in
+  a 10-second auction.
+- **The real discriminator is retrieval, not display**: the two lists that
+  held the truth are exactly the two where **page 2 ran**; the two that
+  missed are the two where it did not (a null-number read skips the page-2
+  trigger). So the cheaper, strictly better change is: when the floor is
+  about to withhold and page 2 never ran, fetch page 2 once (1 search, 30
+  credits). On Meganium scans 2/3/4 that pulls `575820` into the pool.
+  Measure before building.
+
+### Item 3 — disabling just the Haiku shadow test
+
+**No env var exists, and silencing the log saves nothing.** The Haiku API
+call and the shadow test are not separable: `haikuPromise` is fired
+unconditionally whenever `ANTHROPIC_API_KEY` is set, because it is the
+pre-warmed fallback (that is what bounds a Gemini failure by
+`max(geminiMs, haikuMs)` instead of additive). `runHaikuShadowTest` only
+subscribes to that same promise — it never makes a second call.
+
+- **Keep the fallback, silence the log:** add an env gate around the
+  `if (anthropicKey) { runHaikuShadowTest… }` block (~3 lines), e.g.
+  `HAIKU_SHADOW_TEST=off`. Saves **$0**. Needs a redeploy.
+- **Actually stop the spend:** make the call lazy (only on a Gemini throw).
+  Healthy scans → $0, but the fallback becomes serial: a Gemini failure
+  costs `geminiTimeout + haikuMs` (~5s + ~2s). Reverses the 2026-09-04
+  "keep as-is, don't tune the timeout, don't revert" decision.
+- **Removing `ANTHROPIC_API_KEY`** kills both the log and the fallback.
+
+**Cost per scan today: $0.00** — Haiku is erroring `400 credit balance too
+low` on every scan, so the fallback is dead and there is nothing to disable
+for cost reasons. When funded, from **56 real `haikuCostUsd` values** in
+the saved windows: median **$0.00325/scan**, mean $0.00326, range
+$0.00302–$0.00350 (input ~2738 tokens, output ~99, at $1/$5 per 1M) —
+**~$3.25 per 1,000 scans**.
