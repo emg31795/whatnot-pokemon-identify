@@ -12533,3 +12533,124 @@ times running. **Reload the extension** — `content.js`/`content.css` changed.
 *Snapshot through test #51 (2026-08-29), migrated into the repo as
 durable on-disk reference 2026-08-30. See CLAUDE.md at the repo root for
 the current, condensed summary.*
+
+## #108 — 2026-10-18 — Japanese Meganium: a Pokédex number is not a card number
+
+**Reported:** Eric scanned a Japanese Meganium on a Whatnot stream and the
+extension could not identify it. Investigated read-only first (production
+`dpl_3f4sgBW1BVdLjA4mvFk383thicTg`, `9f08298e…`), then fixed.
+
+### The scans
+
+Five scans in 24 seconds, 2026-10-18 `21:10:06.197Z` → `21:10:30.804Z`:
+
+| # | requestId | primary read | legacy read | outcome |
+|---|---|---|---|---|
+| 1 | `3e8a347f` | Meganium / **No. 154** / hp100 / アロマスリープ | same + setName "Neo Genesis" | NO NUMBER MATCH, 1 signal → withheld |
+| 2 | `4b3d3f59` | Meganium / null (fingers/shadow) / hp100 | Meganium / null | NULL CARDNUMBER, 1 signal → withheld |
+| 3 | `19dc6a39` | Meganium / null (glare) / hp100 / おいしげる | Meganium / **No. 154** | NULL CARDNUMBER, 1 signal → withheld |
+| 4 | `940b12ff` | **Bayleef** / null / hp70 | **Meganium** / null / hp100 | NULL CARDNUMBER, 1 signal → withheld |
+| 5 | `8fa04fec` | Meganium / **No.154** / hp100 / アロマスリープ | same | NO NUMBER MATCH, 1 signal → withheld |
+
+Every scan scored **6 = `SCORE.hp` alone**, tied 4-way on page 1 (7-way
+after page 2), and the weak-signal floor withheld the price. No 429, zero
+runtime errors, and **zero `/api/price` calls** — no price was ever shown,
+so there was no money risk. Haiku errored `400 credit balance too low` on
+every scan, i.e. the Gemini-failure fallback is currently dead.
+
+### The card
+
+**tcgPlayerId 575820 — "Gold, Silver, to a New World…" (Japanese Neo
+Genesis), Holo Rare, HP 100, Soothing Scent (40), NM Holofoil-Japanese
+$18.14**, 23 sellers. The attack read pins it: アロマスリープ is PPT's
+"Soothing Scent", confirmed against the English pair (`87287` Meganium (11)
+011/111 Soothing Scent vs `87286` Meganium (10) 010/111 Body Slam, both
+Sugimori HP 100). Same-artwork Japanese siblings, both in the pool:
+`614091` Intro Pack Neo $27.50, `607832` Neo Premium File 1 $17.39. **All
+three carry `cardNumber: ""` in PPT.**
+
+### Why it failed — three independent causes
+
+1. **"No. 154" is the Pokédex number.** Japanese Neo-era cards print no
+   collector number at all. `NUMBER_LABEL_PATTERN` strips the "No." and
+   `normalizeNumber` yields the bare promo number 154, so
+   `numbersMatch("No.154","154")` is an **exact 20-point match** and
+   `numbersMatch("No.154","154/165")` a weak 7-point one. Nothing in this
+   pool was numbered 154, so the cost was wasted retrieval: ~10 searches /
+   ~300 credits across the burst.
+2. **The attack could not corroborate.** `scoreCandidate` compares
+   `attackNameEnglish || attackName` to PPT's attack name. The model gave
+   the literal "Aroma Sleep"; PPT holds the release name "Soothing Scent".
+   The prompt already asks for the official release name — it did not comply.
+3. **The set hint named a set PPT does not use.** `"Meganium Neo Genesis"`
+   → 2 rows, **0 qualified**; PPT's Japanese set is "Gold, Silver, to a New
+   World…". The exact-set-equality guard was right, the hint unmappable.
+
+### The fix (commit `6247b40`)
+
+Pokédex classification is a **last resort, never a pre-filter** — because
+"No. N" is also a legitimate card-number format. SV2a: Pokémon Card 151
+prints its collector number that way (Lapras "No. 131" really is 131/165),
+which the 2026-09-26 `NUMBER_LABEL_PATTERN` fix exists to match. On those
+cards the card number *equals* the Pokédex number, so "N is the species'
+dex number" cannot separate the cases. Only retrieval can.
+
+So `classifyPokedexNumberRead` runs **only after page 1 and page 2 have
+both failed to match N**, and requires N to appear in the pool's own
+`pokedexNumbers` (now carried through `normalizePptCard`). When it fires it
+logs `[dex-number]`, skips the remaining combined name+number searches, and
+treats `cardNumber` as absent for the floor. It is **never a scoring signal
+and never counts toward the 2-signal floor** — every printing of a Pokémon
+shares a dex number, so counting it would unlock pricing on exactly the
+ties it cannot break.
+
+**Latent bug closed in passing.** The old floor gate also required
+`best.number`, and these Japanese rows have none — so a winner with an
+empty `cardNumber` skipped *both* floor branches and was priced at Medium
+on one weak signal with no disclosure. Verified against the pre-fix module
+on a reconstructed Azumarill "No. 184": Medium+priced before,
+Low+withheld after. On the real Meganium scans array order handed the tie
+to a numbered sibling, so the floor fired — luck, not logic.
+
+### Measured (mocked over the real captured PPT rows)
+
+| case | searches | credits | outcome |
+|---|---|---|---|
+| 5 Meganium scans | 10 → **8** | 300 → **240** | unchanged: Low, withheld |
+| SV2a Lapras "No. 131" | 1 → 1 | 30 → 30 | **unchanged**: Medium, priced, no classification |
+| SV2a Victreebel "No.071" | 1 → 1 | 30 → 30 | **unchanged**: Medium, priced |
+| JP Azumarill "No. 184" | 2 → **1** | 60 → **30** | Medium+priced → **Low+withheld** |
+| JP Typhlosion "No.157" | 2 → **1** | 60 → **30** | Medium+priced → **Low+withheld** |
+
+Per-scan: scan 1 4→3 searches, scan 5 3→2, scans 2–4 unchanged at 1.
+The Meganium outcome is deliberately unchanged — this removes wasted
+retrieval and a dishonest message; **it does not identify the card.**
+
+**122 local tests pass** (108 before), including two validity replays pinned
+to `eab9b6c` so the new section cannot pass vacuously.
+
+### Known residual risk, accepted
+
+A dex read whose N collides with a real collector number **in the same
+pool** still matches at full strength — a pool row numbered "154" would be
+picked and priced. That is unchanged from today, not made worse, and
+closing it would break the SV2a fix: the two cases are indistinguishable
+from the data. Covered by a test that documents the choice.
+
+### Preview e2e — `dpl_9tJCbdVenieuPKeyFFWY7SNMDJtx`
+
+`sourceHash 2fe9412de7fb829ba1918048a65f1a32bbee7e3d` == `shasum
+api/identify.js`, byte-exact. `slabLabelProbe: "on"`.
+- **Pikachu XY95**: High / `score-only` / 114004, linked. Unchanged.
+- **Rayquaza 003/017**: Low / `number-tie-ambiguous`, `pricingLookup` null,
+  top-level `tcgplayerUrl` null, two disclosed rows (POP Series 1 `88624`,
+  Blister Exclusives `691978`) each with its own link, no stale "best
+  guess" clause. The #106 padding still finds 003/017, so gating the
+  combined-search block did not break it.
+- Zero runtime errors; no `[dex-number]` line on either (neither is a dex
+  read), which is the correct negative.
+
+**Not deployed to production** — awaiting Eric's approval. The dex path
+itself is NOT e2e-verified: that needs a Japanese Neo-era frame, which no
+saved payload has. It rests on the 122 local tests and the mocked replays
+over real captured PPT rows.

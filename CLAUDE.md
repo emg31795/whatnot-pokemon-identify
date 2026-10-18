@@ -271,8 +271,17 @@ Each exists because retrieval or the read failed, not because scoring did.
    (`buildWideZeroPaddedNumberVariant`, 2026-10-18, test #106): PPT stores POP
    Series as `003/017`, so `"3/17"` and `"03/17"` both return ZERO rows and a
    $325.30 Rayquaza was unreachable for seven straight scans. Accepted only on
-   an exact number match. Adds **one** extra request, only on this path, only
-   for sub-3-digit totals — and on a rapid rescan burst it brings the PPT
+   an exact number match. **Skipped entirely when the read is classified as a
+   Pokédex number** (#108): `classifyPokedexNumberRead` fires only after page
+   1 AND page 2 have both failed to match N and N appears in the pool's own
+   `pokedexNumbers`, logs `[dex-number]`, and makes `cardNumber` count as
+   absent for the floor. **Never a scoring signal, never counts toward the
+   2-signal floor** — every printing of a Pokémon shares its dex number.
+   Ordering is load-bearing: `"No. N"` is ALSO a real card-number format
+   (SV2a: Pokémon Card 151, Lapras "No. 131" == 131/165, the 2026-09-26
+   `NUMBER_LABEL_PATTERN` fix), and on those cards number == dex number, so
+   only retrieval can separate the two cases. Adds **one** extra request,
+   only on this path, only for sub-3-digit totals — and on a rapid rescan burst it brings the PPT
    minute-limit 429 forward (one fired live at 22:25:19 on 2026-10-17).
 3. **Name-filter rescue by number** (`name-rescued-by-number`) — zero name
    survivors + a legible number → one search, filtered **strictly by number,
@@ -482,6 +491,38 @@ sane bid for that card.
   The API wants raw base64 and 400s, manufacturing a fake error cluster.
 
 ## Open items
+
+**BUILT AND PREVIEW-VERIFIED 2026-10-18, NOT DEPLOYED TO PRODUCTION (#108)
+— the Japanese Meganium Pokédex-number fix.** Commit `6247b40`, preview
+`dpl_9tJCbdVenieuPKeyFFWY7SNMDJtx`, `sourceHash 2fe9412d…` byte-exact with
+disk, 122 local tests (108 before). A Japanese Neo-era card prints no
+collector number — the only number on it is the Pokédex "No. 154" — and the
+pipeline spent it as a collector number (~10 searches / 300 credits across
+the real 5-scan burst). Now classified **after** retrieval fails, so SV2a's
+"No. XXX" card numbers still match. Measured: Meganium 10→8 searches
+(300→240 credits); SV2a Lapras/Victreebel unchanged; Azumarill/Typhlosion
+2→1 search and Medium+priced → **Low+withheld** (a latent floor hole: the
+old gate also needed `best.number`, which these empty-`cardNumber` rows
+lack, so BOTH floor branches were skipped). Preview e2e: XY95
+High/`score-only`, the Rayquaza two-row disclosure intact, zero runtime
+errors. **The dex path is not e2e-verified** — no Japanese Neo-era frame
+exists in any saved payload. The Meganium outcome is deliberately unchanged
+(still Low, still withheld): this removes waste and a dishonest message, it
+does not identify the card.
+
+**OPEN — the Haiku fallback is DEAD (#108).** Every scan in the 2026-10-18
+window logged `Haiku error 400 ... "Your credit balance is too low to
+access the Anthropic API"`, so vision is a single point of failure if Gemini
+throws. Costs money to fix → Eric's call. Measured cost when it was funded:
+**median $0.00325/scan** across 56 real `haikuCostUsd` values (~$3.25 per
+1,000 scans; input ~2738 tokens, output ~99). Note the Haiku API call and
+the `[haiku-shadow-test]` logging are **not separable by an env var** —
+`haikuPromise` is fired unconditionally whenever `ANTHROPIC_API_KEY` is set,
+and the shadow test only consumes that same promise, so silencing the log
+saves nothing. Stopping the spend means making the call lazy (the fallback
+becomes serial, additive latency on a Gemini failure), which reverses the
+2026-09-04 "keep as-is" decision.
+
 
 **DEPLOYED TO PRODUCTION 2026-10-17 — the Rayquaza fixes + disclosure
 polish** (tests #106 and #107, 108 local tests),
