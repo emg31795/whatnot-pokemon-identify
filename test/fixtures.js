@@ -192,6 +192,130 @@ const CHARIZARD_EX_223_NO_MARKET = {
   prices: { primaryPrinting: "Holofoil", listings: 120 },
 };
 
+
+// Real rows from PPT's Japanese catalog, captured 2026-10-18 during the
+// Meganium investigation (search=Meganium&language=japanese). The three
+// HP-100 Ken Sugimori rows all carry an EMPTY cardNumber, because Japanese
+// Neo-era cards print no collector number at all — the only number on the
+// card is the Pokedex "No. 154".
+const MEGANIUM_NEO_JP = {
+  tcgPlayerId: "575820",
+  setName: "Gold, Silver, to a New World...",
+  name: "Meganium",
+  cardNumber: "",
+  totalSetNumber: null,
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "100",
+  stage: "Stage 2",
+  attacks: ["[Grass][Grass][Grass][Grass] Soothing Scent (40)<br> The Defending Pok?mon is now Asleep."],
+  pokedexNumbers: [154],
+  artist: "Ken Sugimori",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/575820",
+  prices: { market: 18.14, primaryPrinting: "Holofoil" },
+  printingsAvailable: ["Holofoil"],
+};
+
+const MEGANIUM_BEP_102 = {
+  tcgPlayerId: "576020",
+  setName: "Base Expansion Pack",
+  name: "Meganium - 102/128",
+  cardNumber: "102/128",
+  totalSetNumber: null,
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "100",
+  stage: "Stage 2",
+  attacks: ["[Grass][Grass][Colorless][Colorless] Poisonpowder (40)<br> The Defending Pok?mon is now Poisoned."],
+  pokedexNumbers: [154],
+  artist: "Hajime Kusajima",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/576020",
+  prices: { market: null, primaryPrinting: "1st Edition Holofoil" },
+  printingsAvailable: ["1st Edition Holofoil", "Normal"],
+};
+
+// SV2a: Pokemon Card 151 prints its collector number as "No. XXX" — a
+// Pokedex-order homage — so for these cards the card number and the
+// Pokedex number are THE SAME VALUE by design. This is the card behind the
+// 2026-09-26 NUMBER_LABEL_PATTERN fix (a real Japanese Lapras, Master Ball
+// Pattern), and the reason Pokedex classification can only ever run after
+// retrieval has failed to match the number.
+const LAPRAS_SV2A_131 = {
+  tcgPlayerId: "517994",
+  setName: "SV2a: Pokemon Card 151",
+  name: "Lapras",
+  cardNumber: "131/165",
+  totalSetNumber: null,
+  rarity: "Common",
+  cardType: "Pokemon",
+  hp: "140",
+  stage: "Basic",
+  attacks: ["[Water][Colorless][Colorless] Hydro Pump (80+)"],
+  pokedexNumbers: [131],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/517994",
+  prices: { market: 21.88, primaryPrinting: "Normal" },
+  printingsAvailable: ["Normal"],
+};
+
+// The second real occurrence found alongside Lapras, same set, same format.
+const VICTREEBEL_SV2A_71 = {
+  tcgPlayerId: "517934",
+  setName: "SV2a: Pokemon Card 151",
+  name: "Victreebel",
+  cardNumber: "071/165",
+  totalSetNumber: null,
+  rarity: "Uncommon",
+  cardType: "Pokemon",
+  hp: "130",
+  stage: "Stage 2",
+  attacks: ["[Grass][Colorless] Acid Spray (60)"],
+  pokedexNumbers: [71],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/517934",
+  prices: { market: 1.24, primaryPrinting: "Normal" },
+  printingsAvailable: ["Normal"],
+};
+
+// RECONSTRUCTED, not captured: the two previously-logged Pokedex-number
+// scans (Japanese Azumarill "No. 184", Japanese Typhlosion "No.157") are
+// older than Vercel's 1h log retention, so these rows are built from what
+// docs/history.md records about them — the decisive documented fact being
+// that the real PPT candidate's own cardNumber field is EMPTY, which is why
+// neither was ever recoverable. Shape, not provenance, is what these two
+// exercise.
+const AZUMARILL_JP_NO_NUMBER = {
+  tcgPlayerId: "575835",
+  setName: "Gold, Silver, to a New World...",
+  name: "Azumarill",
+  cardNumber: "",
+  totalSetNumber: null,
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "80",
+  stage: "Stage 1",
+  attacks: ["[Water][Colorless] Rain Splash (20)"],
+  pokedexNumbers: [184],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/575835",
+  prices: { market: 12.5, primaryPrinting: "Holofoil" },
+  printingsAvailable: ["Holofoil"],
+};
+
+const TYPHLOSION_JP_NO_NUMBER = {
+  tcgPlayerId: "575822",
+  setName: "Gold, Silver, to a New World...",
+  name: "Typhlosion",
+  cardNumber: "",
+  totalSetNumber: null,
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "100",
+  stage: "Stage 2",
+  attacks: ["[Fire][Fire][Colorless] Flame Burst (50)"],
+  pokedexNumbers: [157],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/575822",
+  prices: { market: 39.99, primaryPrinting: "Holofoil" },
+  printingsAvailable: ["Holofoil"],
+};
+
 module.exports = {
   CHARIZARD_EX_125,
   CHARIZARD_EX_223,
@@ -202,6 +326,12 @@ module.exports = {
   ALAKAZAM_1,
   SKY_ALAKAZAM_2,
   SKY_ALAKAZAM_H1,
+  MEGANIUM_NEO_JP,
+  MEGANIUM_BEP_102,
+  LAPRAS_SV2A_131,
+  VICTREEBEL_SV2A_71,
+  AZUMARILL_JP_NO_NUMBER,
+  TYPHLOSION_JP_NO_NUMBER,
   LOGGED_FILLER,
   fillerRow,
   padTo,

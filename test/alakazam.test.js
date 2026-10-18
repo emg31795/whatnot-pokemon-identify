@@ -27,9 +27,16 @@ const IDENTIFY = path.join(__dirname, "..", "api", "identify.js");
 // HEAD had become the fixed version.
 const PRE_FIX_REF = "1960cd5";
 
-function loadPreFixModule(tmpName) {
+// Pinned commit immediately BEFORE the 2026-10-18 Pokedex-number fix, for
+// the same reason PRE_FIX_REF above is pinned: the two "test validity"
+// cases in the dex-number section replay against it and assert the old
+// behavior reproduces there, so that section cannot pass vacuously. A SHA,
+// never HEAD — these invert the moment the fix is committed.
+const DEX_PRE_FIX_REF = "eab9b6c";
+
+function loadPreFixModule(tmpName, ref = PRE_FIX_REF) {
   const tmp = path.join(os.tmpdir(), `${tmpName}-${process.pid}.js`);
-  const src = execFileSync("git", ["show", `${PRE_FIX_REF}:api/identify.js`], {
+  const src = execFileSync("git", ["show", `${ref}:api/identify.js`], {
     cwd: path.join(__dirname, ".."), maxBuffer: 64 * 1024 * 1024, encoding: "utf8",
   });
   fs.writeFileSync(tmp, src + "\nmodule.exports.lookupCardPPT = lookupCardPPT;\n");
@@ -1495,6 +1502,211 @@ async function main() {
       "Foo bar. Baz."
     );
     assert.strictEqual(M.stripBestGuessClause("Nothing to strip here."), "Nothing to strip here.");
+  });
+
+
+  // ======================================================================
+  // POKEDEX-NUMBER READS (2026-10-18, live Japanese Meganium scans
+  // 3e8a347f / 8fa04fec). A Japanese Neo-era card prints no collector
+  // number; its only number is the Pokedex "No. 154", which both models
+  // read into `cardNumber`, where normalizeNumber turned it into the bare
+  // promo number 154.
+  // ======================================================================
+  const MEGA_READ = {
+    found: true,
+    confidence: "High",
+    language: "Japanese",
+    stampType: "none",
+    isSlab: false,
+    cardName: "Meganium",
+    cardNumber: "No. 154",
+    hp: "100",
+    subtype: null,
+    setName: null,
+    attackName: "アロマスリープ",
+    attackNameEnglish: "Aroma Sleep",
+  };
+  // Page 1 FULL (30 rows) so the page-2 trigger is live, as in the real scan.
+  const MEGA_PAGE1 = F.padTo([F.MEGANIUM_BEP_102, F.MEGANIUM_NEO_JP], 30, "Meganium");
+  const MEGA_HAZARD_PAGE1 = [F.MEGANIUM_PROMO_154, F.MEGANIUM_NEO_JP];
+
+  await test("UNIT parsePokedexNumberRead: the Pokedex forms are recognized", () => {
+    assert.strictEqual(M.parsePokedexNumberRead("No. 154"), "154");
+    assert.strictEqual(M.parsePokedexNumberRead("No.154"), "154");
+    assert.strictEqual(M.parsePokedexNumberRead("no 154"), "154");
+    assert.strictEqual(M.parsePokedexNumberRead("№154"), "154");
+    assert.strictEqual(M.parsePokedexNumberRead("No. 0154"), "154");
+  });
+  await test("UNIT parsePokedexNumberRead: collector numbers are NOT touched", () => {
+    // A bare number stays a promo-style collector number, and "#52" is
+    // deliberately excluded (far more likely collector shorthand).
+    assert.strictEqual(M.parsePokedexNumberRead("154"), null);
+    assert.strictEqual(M.parsePokedexNumberRead("#52"), null);
+    assert.strictEqual(M.parsePokedexNumberRead("33/165"), null);
+    assert.strictEqual(M.parsePokedexNumberRead("No. 154/128"), null);
+    assert.strictEqual(M.parsePokedexNumberRead("SM91"), null);
+    assert.strictEqual(M.parsePokedexNumberRead(null), null);
+    assert.strictEqual(M.parsePokedexNumberRead(""), null);
+  });
+
+  await test("DEX: classification skips the combined number searches, not page 2", async () => {
+    // Page 1 and page 2 both run: the number must have its full chance
+    // before it can be reclassified (an SV2a "No. 131" card is matched by
+    // exactly this retrieval). Only the combined name+number searches,
+    // which look PPT up by a number that is not a collector number, are
+    // skipped.
+    const calls = installPptMock({ "Meganium": MEGA_PAGE1, "Meganium|offset=30": [F.MEGANIUM_NEO_JP] });
+    await M.lookupCardPPT({ ...MEGA_READ }, "dex-searches", null);
+    assert.deepStrictEqual(
+      calls,
+      ["Meganium", "Meganium|offset=30"],
+      `expected page1 + page2 only, got ${JSON.stringify(calls)}`
+    );
+    assert.ok(!calls.some((c) => /154/.test(c)), "no query may carry the Pokedex number");
+  });
+
+  await test("DEX TEST VALIDITY: the pre-fix module really did fire those searches", async () => {
+    const { mod: PRE, cleanup } = loadPreFixModule("dexprefix-searches", DEX_PRE_FIX_REF);
+    try {
+      const calls = installPptMock({ "Meganium": MEGA_PAGE1, "Meganium|offset=30": [F.MEGANIUM_NEO_JP] });
+      await PRE.lookupCardPPT({ ...MEGA_READ }, "dex-searches-pre", null);
+      assert.ok(calls.length > 1, `pre-fix should fan out, got ${JSON.stringify(calls)}`);
+      assert.ok(
+        calls.some((c) => /offset=30/.test(c)) || calls.some((c) => /154/.test(c)),
+        `pre-fix should page or search the number, got ${JSON.stringify(calls)}`
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  // Capture console output so a test can assert whether the
+  // [dex-number] classification line was emitted for a given scan.
+  async function captureLog(fn) {
+    const lines = [];
+    const real = console.log;
+    console.log = (...args) => { lines.push(args.map(String).join(" ")); };
+    try {
+      const out = await fn();
+      return { out, log: lines.join("\n") };
+    } finally {
+      console.log = real;
+    }
+  }
+
+  await test("DEX/SV2a: Lapras \"No. 131\" still matches 131/165, NOT reclassified", async () => {
+    // The 2026-09-26 NUMBER_LABEL_PATTERN fix. SV2a prints "No. XXX" as the
+    // real collector number, and 131 is ALSO Lapras's Pokedex number — so
+    // the dex test alone cannot tell these apart. Retrieval does: this card
+    // has a matching row, so classification must not fire.
+    const { out: r, log } = await captureLog(() => {
+      installPptMock({ "Lapras": [F.LAPRAS_SV2A_131] });
+      return M.lookupCardPPT(
+        { ...BASE_READ, cardName: "Lapras", cardNumber: "No. 131", hp: "140", language: "Japanese" },
+        "dex-sv2a-lapras", null
+      );
+    });
+    assert.ok(!/\[dex-number\]/.test(log), "must NOT be classified as a Pokedex read");
+    assert.ok(r.pricingLookup, "the SV2a Lapras must still price");
+    assert.match(String(r.tcgplayerUrl), /517994/);
+    assert.ok(!/Pokédex number/.test(String(r.ambiguousNote || "")), "no dex wording");
+  });
+
+  await test("DEX/SV2a: Victreebel \"No.071\" is unchanged", async () => {
+    const { out: r, log } = await captureLog(() => {
+      installPptMock({ "Victreebel": [F.VICTREEBEL_SV2A_71] });
+      return M.lookupCardPPT(
+        { ...BASE_READ, cardName: "Victreebel", cardNumber: "No.071", hp: "130", language: "Japanese" },
+        "dex-sv2a-victreebel", null
+      );
+    });
+    assert.ok(!/\[dex-number\]/.test(log), "must NOT be classified as a Pokedex read");
+    assert.ok(r.pricingLookup, "Victreebel must still price");
+    assert.match(String(r.tcgplayerUrl), /517934/);
+  });
+
+  await test("DEX: a pool row matching N keeps the collector-number reading", async () => {
+    // The flip side of the SV2a protection, stated as a deliberate choice:
+    // if ANY candidate's cardNumber matches the read, the read is treated
+    // as a collector number — even when that value also happens to be the
+    // species' Pokedex number. Nothing separates those two cases from the
+    // data alone, and SV2a is the case that must keep working.
+    const { log } = await captureLog(() => {
+      installPptMock({ "Meganium": [{ ...F.MEGANIUM_NEO_JP, cardNumber: "154" }] });
+      return M.lookupCardPPT({ ...MEGA_READ }, "dex-collision", null);
+    });
+    assert.ok(!/\[dex-number\]/.test(log), "a matching row wins over classification");
+  });
+
+  await test("DEX: Japanese Azumarill \"No. 184\" is classified (empty PPT cardNumber)", async () => {
+    const { out: r, log } = await captureLog(() => {
+      installPptMock({ "Azumarill": [F.AZUMARILL_JP_NO_NUMBER] });
+      return M.lookupCardPPT(
+        { ...BASE_READ, cardName: "Azumarill", cardNumber: "No. 184", hp: "80", language: "Japanese" },
+        "dex-azumarill", null
+      );
+    });
+    assert.ok(/\[dex-number\]/.test(log), "184 is Azumarill's dex number and nothing matched it");
+    assert.strictEqual(r.pricingLookup, null, "outcome is unchanged: still withheld");
+  });
+
+  await test("DEX: Japanese Typhlosion \"No.157\" is classified", async () => {
+    const { out: r, log } = await captureLog(() => {
+      installPptMock({ "Typhlosion": [F.TYPHLOSION_JP_NO_NUMBER] });
+      return M.lookupCardPPT(
+        { ...BASE_READ, cardName: "Typhlosion", cardNumber: "No.157", hp: "100", language: "Japanese" },
+        "dex-typhlosion", null
+      );
+    });
+    assert.ok(/\[dex-number\]/.test(log), "157 is Typhlosion's dex number and nothing matched it");
+    assert.strictEqual(r.pricingLookup, null);
+  });
+
+  await test("DEX: classification requires N to be the pool's own Pokedex number", async () => {
+    // A misread number that is NOT the species' dex number keeps the
+    // existing NO NUMBER MATCH behavior rather than being excused.
+    const { log } = await captureLog(() => {
+      installPptMock({ "Meganium": [F.MEGANIUM_BEP_102] });
+      return M.lookupCardPPT({ ...MEGA_READ, cardNumber: "No. 999" }, "dex-wrong-species", null);
+    });
+    assert.ok(!/\[dex-number\]/.test(log), "999 is nobody's Pokedex number here");
+  });
+
+  await test("DEX: the dex number is not a scoring signal and cannot clear the floor", async () => {
+    // hp is the ONLY corroborating signal in the real scan. If the dex
+    // number ever counted, this would reach 2 signals and get priced.
+    installPptMock({ "Meganium": MEGA_PAGE1, "Meganium|offset=30": [F.MEGANIUM_NEO_JP] });
+    const r = await M.lookupCardPPT({ ...MEGA_READ }, "dex-floor", null);
+    assert.strictEqual(r.pricingLookup, null, "one weak signal must still withhold the price");
+    assert.strictEqual(r.printingUndetermined, true);
+  });
+
+  await test("DEX: the panel text says Pokedex number, not 'wasn't legible'", async () => {
+    installPptMock({ "Meganium": MEGA_PAGE1, "Meganium|offset=30": [F.MEGANIUM_NEO_JP] });
+    const r = await M.lookupCardPPT({ ...MEGA_READ }, "dex-wording", null);
+    assert.ok(/Pokédex number/.test(r.ambiguousNote), `got: ${r.ambiguousNote}`);
+    assert.ok(/No\. 154/.test(r.ambiguousNote), `should quote the number it read: ${r.ambiguousNote}`);
+    assert.ok(!/wasn't legible/.test(r.ambiguousNote), `must not blame legibility: ${r.ambiguousNote}`);
+  });
+
+  await test("DEX: ambiguousNoteText keeps its two original states intact", () => {
+    assert.ok(/share an identical card number/.test(M.ambiguousNoteText(true)));
+    assert.ok(/wasn't legible this scan/.test(M.ambiguousNoteText(false)));
+    assert.ok(/wasn't legible this scan/.test(M.ambiguousNoteText(false, { cardNumber: null })));
+    assert.ok(/Pokédex number/.test(M.ambiguousNoteText(false, { pokedexNumberRead: "154" })));
+  });
+
+  await test("DEX: an ordinary slashed number is completely unaffected", async () => {
+    installPptMock(expeditionRoutes());
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardNumber: "033/165", setName: null, attackName: "Syncroblast" },
+      "dex-noop",
+      null
+    );
+    // Same behavior as the existing Expedition Alakazam coverage: the
+    // number matches 83500 and nothing about the dex path intervenes.
+    assert.ok(r.cardName, "still resolves a card");
+    assert.ok(!/Pokédex/.test(String(r.ambiguousNote || "")), "no dex wording on a normal read");
   });
 
   // ----------------------------------------------------------------------

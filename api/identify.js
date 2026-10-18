@@ -1351,6 +1351,76 @@ function logSlabLabelProbe(current, legacy, requestId) {
 // deliberately, so a "No. 131" read still correctly has prefix "" and
 // can match a plain, unprefixed candidate number, exactly as a bare
 // "131" read already does.
+// Classify a "No. N" read as a POKEDEX number rather than a card number.
+//
+// CRITICAL ORDERING (and the reason this is not done at the read's entry
+// point): "No. N" is a LEGITIMATE card number format. SV2a: Pokemon Card
+// 151 prints its collector number as "No. XXX" as a Pokedex-order homage —
+// Lapras "No. 131" really is 131/165, Victreebel "No.071" really is
+// 071/165 — and the 2026-09-26 NUMBER_LABEL_PATTERN fix exists precisely so
+// those reads match. On those cards the number EQUALS the Pokedex number by
+// design, so "N is the species' Pokedex number" can never distinguish the
+// two cases on its own. The only thing that does is retrieval: an SV2a card
+// has a candidate in the pool whose cardNumber matches N, and a Japanese
+// Neo-era card has none, because it carries no collector number at all
+// (PPT's row for it has an empty cardNumber field).
+//
+// So this runs ONLY after page 1 and page 2 have both failed to produce any
+// candidate matching N, and requires N to appear in the pool's own
+// pokedexNumbers. It is a last-resort reclassification, never a pre-filter.
+//
+// What it changes: the remaining number-based combined searches are skipped
+// (they search PPT for a number that is not a collector number — on the
+// real Meganium burst that was 2 of 10 searches, 30 credits each, returning
+// nothing but filler), and the floor stops blaming a number the models in
+// fact read correctly.
+//
+// What it must never change: the score. The dex number is NOT a scoring
+// signal and does NOT count toward the weak-signal floor's 2-signal bar,
+// because every printing of that Pokemon shares it — it identifies the
+// species, never the printing, so counting it would unlock pricing on
+// exactly the ties it cannot break (the real Meganium scan had a 7-way tie
+// that included the correct card). By construction the number has also
+// already contributed 0 points to every candidate here: nothing matched it.
+//
+// Scoped to the "No."/"No"/"№" forms with no "/total". A bare "#52" is NOT
+// treated as a Pokedex read — on a promo that is far more likely collector-
+// number shorthand, and the same NUMBER_LABEL_PATTERN fix depends on it.
+//
+// Known-unrecoverable cases this now handles honestly rather than
+// expensively: the Japanese Azumarill "No. 184" and Typhlosion "No.157"
+// scans already on record. 184 and 157 genuinely ARE those cards' printed
+// numbers (Neo-era Japanese numbering is Pokedex numbering), but PPT's rows
+// carry an empty cardNumber, so there was never a value to match. The
+// outcome for them is unchanged — still withheld — at fewer credits.
+const POKEDEX_NUMBER_READ_PATTERN = /^\s*(?:no\s*\.?|№)\s*0*(\d{1,4})\s*$/i;
+
+function parsePokedexNumberRead(raw) {
+  if (raw == null) return null;
+  const m = String(raw).trim().match(POKEDEX_NUMBER_READ_PATTERN);
+  return m ? String(Number(m[1])) : null;
+}
+
+function classifyPokedexNumberRead(read, candidates, numberStillMissing, requestId) {
+  if (!numberStillMissing) return null;
+  const dex = parsePokedexNumberRead(read && read.cardNumber);
+  if (!dex) return null;
+  const n = Number(dex);
+  const speciesMatch = (candidates || []).find(
+    (c) => Array.isArray(c && c.pokedexNumbers) && c.pokedexNumbers.some((p) => Number(p) === n)
+  );
+  if (!speciesMatch) return null;
+  console.log(
+    `[requestId=${requestId}]`,
+    `[dex-number] read=${JSON.stringify(String(read.cardNumber))} matched no cardNumber in the page1+2 pool` +
+      ` and ${dex} is the Pokedex number of the candidates themselves (e.g. ${speciesMatch.name})` +
+      ` — classifying it as a Pokedex number, not a collector number:` +
+      ` skipping the combined name+number searches, and treating cardNumber as absent for the floor` +
+      ` (never a scoring signal, never counts toward the 2-signal floor)`
+  );
+  return dex;
+}
+
 const NUMBER_LABEL_PATTERN = /^\s*(?:no\.?\s*|#\s*)?/i;
 
 function normalizeNumber(raw) {
@@ -2118,7 +2188,31 @@ function stripBestGuessClause(note) {
     .trim();
 }
 
-function ambiguousNoteText(numberWasLegible) {
+// ADDED (2026-10-18, Meganium): a dex-only read is a THIRD state next to
+// "legible" and "not legible". The number on the card was read correctly;
+// it simply isn't a collector number. Saying "wasn't legible" there blames
+// the scan for a card that carries no set number at all, and sends Eric
+// looking for a number that isn't printed on it.
+function capitalizeFirst(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+function numberAbsenceClause(read) {
+  return read && read.pokedexNumberRead
+    ? `this card shows only a Pokédex number ("No. ${read.pokedexNumberRead}"), not a set/collector number`
+    : "the card number wasn't legible this scan";
+}
+
+function ambiguousNoteText(numberWasLegible, read = null) {
+  // The dex state wins whenever it is set: read.cardNumber is still
+  // present on a dex-classified scan (so numberWasLegible is true), but
+  // what it holds is not a printing number, and "share an identical card
+  // number" would be the wrong explanation of the tie.
+  if (read && read.pokedexNumberRead) {
+    return `Multiple different printings of this card share identical HP, attack, and type, and ${numberAbsenceClause(
+      read
+    )} — so there is no number to tell them apart. This is our best guess only; verify the exact set/printing on the physical card before trusting this match or price.`;
+  }
   if (numberWasLegible) {
     return "Multiple different printings of this card share an identical card number, HP, attack, and type — there's nothing left in our data to tell them apart. This is our best guess only; verify the exact printing on the physical card before trusting this match or price.";
   }
@@ -2543,6 +2637,14 @@ function normalizePptCard(raw) {
     // why this is now a scoring signal.
     rarity: raw.rarity || null,
     setName: raw.setName || null,
+    // ADDED (2026-10-18, Pokedex-number classification): PPT carries the
+    // National Pokedex number(s) on every Pokemon row and this was already
+    // fetched on every lookup, just never copied across. Read ONLY by
+    // classifyPokedexNumberRead below, which uses it to tell "this read is
+    // the species' Pokedex number" from "this read is a card number we
+    // simply failed to retrieve". Deliberately NOT a scoring signal: every
+    // printing of a Pokemon shares it.
+    pokedexNumbers: Array.isArray(raw.pokedexNumbers) ? raw.pokedexNumbers : [],
     attackName: raw.attackName || extractFirstAttackName(raw.attacks) || null,
     // ADDED (2026-10-05): the full attack list, carried alongside the
     // unchanged single-attack `attackName` above so nothing on the
@@ -3365,7 +3467,14 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // printing before trusting this broadly.
   const stillMissingAfterPage2 =
     !!read.cardNumber && !candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
-  if (stillMissingAfterPage2) {
+  // See classifyPokedexNumberRead: a last-resort reclassification, only
+  // reachable once page 1 AND page 2 have both failed to match the number.
+  // `read.cardNumber` is deliberately left in place so the downstream
+  // legacy-number rescue still gets its chance; what the flag changes is
+  // the remaining number-based searches and the floor's wording.
+  const pokedexNumberRead = classifyPokedexNumberRead(read, candidates, stillMissingAfterPage2, requestId);
+  if (pokedexNumberRead) read = { ...read, pokedexNumberRead };
+  if (stillMissingAfterPage2 && !pokedexNumberRead) {
     // FIX (2026-09-27, Mewtwo/Nidoking Base Set 2): try the unpadded
     // number exactly as read first (unchanged from before), and ONLY if
     // that fails to surface an exact match, retry once with a
@@ -3941,7 +4050,36 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // When the rescue's number DID match, `numberMatchedForBest` is true and
   // this block was already a no-op, so this guard only ever affects the
   // numerator-disagreed case.
-  if (read.cardNumber && best.number && !setNameSearchRescued && !subFloorLegacyRescued) {
+  // "Treat cardNumber as absent for the floor logic" — the second half of
+  // the Pokedex classification. A dex-classified read is routed to the
+  // numberless floor below instead of this block, which matters for two
+  // reasons.
+  //
+  // First, honesty: this block's messages all explain the outcome in terms
+  // of a card number that "didn't match any printing", which is the wrong
+  // story for a card that prints no collector number at all.
+  //
+  // Second, and more important, it closes a latent hole. This gate also
+  // requires `best.number`, and the Japanese Neo-era rows at the heart of
+  // this whole case have an EMPTY cardNumber in PPT. So when one of them
+  // won, `read.cardNumber` was truthy (skipping the numberless branch) and
+  // `best.number` was falsy (skipping this one) — NO floor ran at all, and
+  // a one-weak-signal match was priced at Medium with no disclosure.
+  // Verified against the pre-fix module on a reconstructed Azumarill
+  // "No. 184" pool: Medium, priced, printingUndetermined false, both before
+  // and after — i.e. live on production today. On the real Meganium scans
+  // the tie happened to be won by "Meganium - 102/128", which does carry a
+  // number, so the floor fired; had array order favoured any of the three
+  // correct empty-number rows, the panel would have shown a price.
+  //
+  // Cost of this routing: a dex-classified scan no longer reaches the
+  // DOWNSTREAM legacy-number rescue, which lives inside this block. That is
+  // acceptable — on all five real Meganium scans the legacy model read the
+  // same Pokedex number, so there was nothing to rescue with, and losing
+  // the rescue can only ever withhold a price, never misprice one. The
+  // sub-floor legacy rescue is unaffected (it is not gated on cardNumber).
+  const numberAbsentForFloor = !read.cardNumber || !!read.pokedexNumberRead;
+  if (!numberAbsentForFloor && best.number && !setNameSearchRescued && !subFloorLegacyRescued) {
     const { match: numberMatchedForBest } = numbersMatch(read.cardNumber, best.number);
     if (!numberMatchedForBest) {
       const anyNumberMatch = candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
@@ -4120,7 +4258,9 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
               cardImageUrl: null,
               matchConfidence: "Low",
               ambiguousNote:
-                `Read the name "${read.cardName}" but the card number ("${read.cardNumber}") didn't match any printing in our database, and no other model's read helped narrow it down — the closest candidate on other details shares only ${corroboratingSignals === 0 ? "no other signal" : "one weak signal"}, not enough to trust a specific printing or price. Verify the exact printing on the physical card.`,
+                read.pokedexNumberRead
+                  ? `${capitalizeFirst(numberAbsenceClause(read))}, so there is no printing number to match, and the closest candidate on other details shares only ${corroboratingSignals === 0 ? "no other signal" : "one weak signal"}, not enough to trust a specific printing or price. Verify the exact set/printing on the physical card.`
+                  : `Read the name "${read.cardName}" but the card number ("${read.cardNumber}") didn't match any printing in our database, and no other model's read helped narrow it down — the closest candidate on other details shares only ${corroboratingSignals === 0 ? "no other signal" : "one weak signal"}, not enough to trust a specific printing or price. Verify the exact printing on the physical card.`,
               tcgplayerUrl: null,
               pricingLookup: null,
               printingUndetermined: true,
@@ -4136,12 +4276,14 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
           // present in whatever pool was searched) still applies to both
           // languages equally.
           ambiguousNote =
-            `No printing in our database has the exact card number that was read ("${read.cardNumber}") — this may be a set or promo PokemonPriceTracker doesn't track yet. Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact printing before trusting this price.`;
+            read.pokedexNumberRead
+              ? `${capitalizeFirst(numberAbsenceClause(read))}, so there is no printing number to match on. Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact set/printing before trusting this price.`
+              : `No printing in our database has the exact card number that was read ("${read.cardNumber}") — this may be a set or promo PokemonPriceTracker doesn't track yet. Showing the closest match found on other details (HP/attack/set) as a rough estimate only; verify the exact printing before trusting this price.`;
           console.log(`[requestId=${requestId}]`, `[lookup] NO NUMBER MATCH IN POOL: read number=${read.cardNumber}, language=${read.language}, best=${best.name} ${best.number} (matched on other signals only)`);
         }
       }
     }
-  } else if (!read.cardNumber && !setNameSearchRescued && !subFloorLegacyRescued) {
+  } else if (numberAbsentForFloor && !setNameSearchRescued && !subFloorLegacyRescued) {
     // EXCLUSION ADDED 2026-10-02 (Southern Islands Mew): a setName-search
     // rescue is deliberately exempt from this floor. The floor exists for
     // "we picked a candidate out of a broad name-search pool on one
@@ -4205,7 +4347,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         cardImageUrl: null,
         matchConfidence: "Low",
         ambiguousNote:
-          `The card number wasn't legible this scan, and the closest candidate on other details shares only ${corroboratingSignals === 0 ? "no other signal" : "one weak signal"}, not enough to trust a specific printing or price. Verify the exact printing on the physical card.`,
+          `${capitalizeFirst(numberAbsenceClause(read))}, and the closest candidate on other details shares only ${corroboratingSignals === 0 ? "no other signal" : "one weak signal"}, not enough to trust a specific printing or price. Verify the exact printing on the physical card.`,
         tcgplayerUrl: null,
         pricingLookup: null,
         printingUndetermined: true,
@@ -4277,7 +4419,7 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     matchConfidence = "Low";
     matchBasis = "tie";
     const shadowlessTie = isShadowlessVsPlainTie(tiedCandidates);
-    ambiguousNote = shadowlessTie ? shadowlessAmbiguousNoteText() : ambiguousNoteText(!!read.cardNumber);
+    ambiguousNote = shadowlessTie ? shadowlessAmbiguousNoteText() : ambiguousNoteText(!!read.cardNumber, read);
     console.log(
       `[requestId=${requestId}]`,
       `[lookup] AMBIGUOUS MATCH: ${tieCount} distinct candidates tied at score ${bestScore}${shadowlessTie ? " (Shadowless vs. non-Shadowless pair)" : ""}`
@@ -6332,6 +6474,8 @@ module.exports.buildWideZeroPaddedNumberVariant = buildWideZeroPaddedNumberVaria
 module.exports.stripBestGuessClause = stripBestGuessClause;
 module.exports.totalsContradict = totalsContradict;
 module.exports.numbersMatch = numbersMatch;
+module.exports.parsePokedexNumberRead = parsePokedexNumberRead;
+module.exports.ambiguousNoteText = ambiguousNoteText;
 module.exports.sameSiblingGroup = sameSiblingGroup;
 module.exports.candidateSiblingBaseName = candidateSiblingBaseName;
 module.exports.attackNameAppearsInCardText = attackNameAppearsInCardText;
