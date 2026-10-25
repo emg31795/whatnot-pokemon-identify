@@ -433,6 +433,35 @@ function candidateStampType(candidate) {
   return null;
 }
 
+// ADDED (2026-10-24, test #109): is this candidate an anniversary REPRINT of
+// an older card, carrying that card's original number?
+//
+// Two sets do this, both verified against PPT on 2026-10-24:
+//   - "Celebrations: Classic Collection" (setId 2931, 25 rows, all of them
+//     stored at the original number — Blastoise "2/102", Charizard "4/102",
+//     Umbreon Star "17/17", Shining Magikarp "66/64")
+//   - "ME: 30th Celebration Classic Collection" (numbering NN/102, already on
+//     record from the 2026-10-05 Pikachu case, docs/test-cases.md)
+// Both carry the literal rarity string "Classic Collection" (confirmed on
+// 250320 and 714372), which is the primary test here: a rarity is a fact
+// about the product in the catalog, not an inference from a logo a camera may
+// have missed. The set-name pattern is a second, independent route in case
+// PPT ever ships one of these rows with a different rarity.
+//
+// Deliberately NOT keyed on the word "Celebrations" alone — the 2021
+// Celebrations main set (005/025 etc.) uses its OWN numbering, does not
+// collide with any original, and is a perfectly normal card to match.
+const REPRINT_RARITY_PATTERN = /^\s*classic collection\s*$/i;
+const REPRINT_SET_PATTERN = /classic collection/i;
+
+function isAnniversaryReprintCandidate(candidate) {
+  if (!candidate) return false;
+  return (
+    REPRINT_RARITY_PATTERN.test(String(candidate.rarity || "")) ||
+    REPRINT_SET_PATTERN.test(String(candidate.setName || ""))
+  );
+}
+
 // ADDED 2026-10-09 (live Snorlax 33/95 — three real PPT rows share the number
 // 33/95 AND hp 100: the correct Call of Legends Rare (tcgPlayerId 89392,
 // $30.23) plus "Snorlax - 33/95 (Prerelease)" (213021, $499.99) and
@@ -1588,6 +1617,26 @@ function buildZeroPaddedNumberVariant(rawNumber) {
 // Scoped to a read total of fewer than three digits, so it never fires for
 // the modern/vintage sets the existing variant already covers and can never
 // change a query that works today. Returns null when it would duplicate.
+// ADDED (2026-10-24, test #109): is a card number WRITTEN unpadded, as
+// stored? Deliberately reads the raw digits rather than going through
+// normalizeNumber, which strips leading zeros precisely so that numbersMatch
+// can compare across PPT's two conventions — meaning
+// buildZeroPaddedNumberVariant("050/100") returns "050/100", a padded form
+// identical to its already-padded input. A non-null padded variant is
+// therefore NOT evidence that the input was unpadded, and using it as such
+// made the padded-retrieval search below fire on modern already-padded reads
+// (caught by the existing WIDE PADDING test, case (a), read "050/100").
+// Comparing the stored numerator's width to its total's is unambiguous:
+//   "2/102"   -> 1 < 3 -> true   (Celebrations: Classic Collection)
+//   "002/102" -> 3 = 3 -> false  (Base Set)
+//   "025/198" -> 3 = 3 -> false  (modern, already padded)
+//   "003/017" -> 3 = 3 -> false  (POP Series, the #106 wide form)
+function storedNumeratorIsUnpadded(rawNumber) {
+  const m = String(rawNumber == null ? "" : rawNumber).match(/(\d+)\s*\/\s*(\d+)/);
+  if (!m) return false;
+  return m[1].length < m[2].length;
+}
+
 function buildWideZeroPaddedNumberVariant(rawNumber) {
   const parsed = normalizeNumber(rawNumber);
   if (!parsed || !parsed.total) return null;
@@ -2586,11 +2635,52 @@ function extractFirstAttackName(attacks) {
 const ATTACK_NAME_MAX_LEN = 40;
 const ATTACK_ENTRY_BARE_JUNK = /^[\s\d.]*$/;
 
+// FIX (2026-10-24, live Base Set Blastoise 2/102 — test #109): PPT stores
+// attack text in a FOURTH shape this parser could not read — inline HTML
+// markup wrapping the attack NAME itself:
+//   "[WWW] <strong>Hydro Pump</strong> (40+)\r\n<br>Does 40 damage plus..."
+// The capture group `([^(\r\n<]+)` excludes "<" so it can cut the trailing
+// "<br>" description, which means a "<strong>" sitting between the [cost]
+// bracket and the name makes the whole regex fail to match. The entry then
+// hits the no-match branch and the FAIL-SAFE returns [] for the candidate —
+// so the attack-mismatch rule skips it entirely, since its guard requires a
+// non-empty parsed attack list.
+//
+// Measured over 274 real PPT rows (260 with attacks) captured 2026-10-24:
+// 85.8% carry some tag (almost all "<br>", which the parser already handles
+// correctly), 23.5% carry a non-"<br>" tag (em 134, strong 84, span 56, i 6,
+// b 4, font 2), and 4.6% — 12 rows — carry one in the NAME slot and so
+// silently lose the mismatch rule. ALL TWELVE are Celebrations: Classic
+// Collection rows (Blastoise, Venusaur, Cleffa, Umbreon Star, Mew ex,
+// Shining Magikarp, Donphan Prime, Team Magma's Groudon, Rocket's Zapdos,
+// ______'s Pikachu). That is the same set behind the mispricing this test
+// case exists for, which is why the two fixes ship together.
+//
+// Break tags become a NEWLINE rather than being deleted, and only then are
+// the remaining inline tags removed. Deleting "<br>" outright would splice a
+// name into its own description ("[W] Surf<br>Does 30 damage." -> "SurfDoes
+// 30 damage."), manufacturing a bogus name instead of cutting at the break;
+// turning it into "\n" preserves exactly the cut the old "<" exclusion made.
+//
+// Scoping is unchanged from the 2026-10-09 fix above: ONLY this function
+// changes. `extractFirstAttackName` stays byte-identical, so `candidate.
+// attackName`, scoreCandidate and every tie-break are untouched by
+// construction — a Classic Collection row still scores 0 for attackName and
+// still cannot climb toward HIGH_THRESHOLD on this signal.
+const ATTACK_BREAK_TAG_PATTERN = /<\s*\/?\s*(?:br|p|div|li|tr|td)\b[^>]*>/gi;
+const ATTACK_INLINE_TAG_PATTERN = /<[^>]*>/g;
+
+function stripAttackMarkup(entry) {
+  return String(entry)
+    .replace(ATTACK_BREAK_TAG_PATTERN, "\n")
+    .replace(ATTACK_INLINE_TAG_PATTERN, "");
+}
+
 function extractAttackNames(attacks) {
   if (!Array.isArray(attacks) || !attacks.length) return [];
   const names = [];
   for (const a of attacks) {
-    const entry = String(a == null ? "" : a);
+    const entry = stripAttackMarkup(a == null ? "" : a);
     const m = entry.match(/^\s*(?:\[[^\]]*\]\s*)+([^(\r\n<]+)/);
     if (!m) {
       if (ATTACK_ENTRY_BARE_JUNK.test(entry)) continue;
@@ -3530,6 +3620,153 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     }
   }
 
+  // FIX (2026-10-24, live Base Set Blastoise 2/102 — test #109): the
+  // retrieval gap that priced a $227.27 original as a $13.01 reprint at
+  // Match: High.
+  //
+  // PPT stores the same card number under TWO conventions depending on the
+  // set: Base Set and Base Set (Shadowless) store "002/102", while the
+  // Celebrations: Classic Collection reprint of that very card stores the
+  // original unpadded "2/102". Gemini read "2/102" — correct, that is what is
+  // printed on a Base Set card — and so:
+  //   - the reprint row matched the number EXACTLY: 20 points, tieCount 1,
+  //     and 20 >= HIGH_THRESHOLD makes it High on the number ALONE (its hp is
+  //     null, its set does not match, its subtypes are empty, and its attack
+  //     text is the <strong>-wrapped shape stripAttackMarkup now handles);
+  //   - `stillMissingAfterPage2` was therefore FALSE, so neither the page-2
+  //     fetch nor the combined name+number search above ever ran;
+  //   - both weak-signal floor branches are gated on the number NOT matching
+  //     the winner, so neither fired;
+  //   - tieCount was 1, so number-tie-ambiguous could not fire, and the
+  //     reprint shares no set with the originals, so the sibling cap could
+  //     not fire either.
+  // Every existing net keys on "the read number matched nothing in the pool".
+  // Here the number matched the WRONG STORAGE CONVENTION, which no net could
+  // see.
+  //
+  // The query that fixes it already existed and was simply never reached.
+  // Verified directly against PPT 2026-10-24:
+  //   search="Blastoise 2/102"     -> 1 row,  the $13.01 reprint only
+  //   search="Blastoise 002/102"   -> 2 rows, $227.27 and $896.06 originals
+  //   search="Blastoise" offset=30 -> 30 rows, originals NOT present
+  // so pagination alone could not have recovered this one.
+  //
+  // Trigger, deliberately narrow — the read's numerator is narrower than its
+  // own total (so a padded form exists at all), AND every candidate matching
+  // the read number stores it unpadded TOO. That second clause is what makes
+  // this both safe and cheap:
+  //   - if any matching row already carries the padded form, the set we need
+  //     was retrieved and this does not fire;
+  //   - a modern already-padded read ("025/198") is not stored unpadded, so
+  //     it can NEVER fire (note this must be decided on the raw digit widths
+  //     via storedNumeratorIsUnpadded — buildZeroPaddedNumberVariant alone
+  //     returns a non-null, identical form for such a read, see its comment);
+  //   - once the WIDE variant has rescued Rayquaza "3/17" the matching row
+  //     stores "003/017", which is not unpadded, so this adds no second
+  //     search on that path.
+  // Accepts only rows that actually match the read number, because PPT
+  // returns unrelated FILLER rather than an empty array for a multi-word
+  // query that matches nothing (test #63), and dedupes on tcgPlayerId so a
+  // row already in the pool cannot inflate tieCount.
+  //
+  // Purely additive: it only ever concats rows and re-scores. When it fires,
+  // the retrieved originals outscore the reprint (33 vs 20 on the real read)
+  // and the case lands on the sibling cap / number-tie disclosure that
+  // already exist — so the fix produces a two-row disclosure, never a
+  // confident pick of either original.
+  const paddedRetrievalVariant =
+    read.pokedexNumberRead || !storedNumeratorIsUnpadded(read.cardNumber)
+      ? null
+      : buildZeroPaddedNumberVariant(read.cardNumber);
+  if (paddedRetrievalVariant) {
+    const numberMatchedRows = candidates.filter((c) => numbersMatch(read.cardNumber, c.number).match);
+    const everyMatchStoredUnpadded =
+      numberMatchedRows.length > 0 && numberMatchedRows.every((c) => storedNumeratorIsUnpadded(c.number));
+    // SECOND GUARD, added after measuring the first one (2026-10-24): unpadded
+    // storage is NOT a Classic Collection peculiarity. Across 278 distinct
+    // real PPT rows, 62 (22.3%) store their number unpadded, spread over 31
+    // sets — XY - Fates Collide "25/124", XY - Evolutions "2/108", Rising
+    // Rivals "38/111", World Championship Decks, EX Dragon Frontiers and so
+    // on. On all of those the padded form simply does not exist, so firing on
+    // "stored unpadded" alone would spend one extra search (3 units / 30
+    // credits) on a query that can only come back empty — and the open
+    // minute-limit pressure from #106 makes that a real cost on a rescan
+    // burst, not a rounding error.
+    //
+    // What distinguishes the Blastoise class is not the padding, it is the
+    // COLLISION: two different products share one number under two
+    // conventions. Two independent catalog-side tells for that, either of
+    // which is enough:
+    //   - a matching row is an anniversary reprint (rarity "Classic
+    //     Collection"), which is exactly the product class that reprints
+    //     vintage cards at their original numbers; this one needs no read
+    //     setName at all, so it still fires when the set was not read;
+    //   - the read's setName positively CONFLICTS with every matching row's
+    //     set, i.e. the only rows carrying this number are in a set the card
+    //     itself says it is not from. Containment counts as agreement
+    //     ("Evolutions" vs "XY - Evolutions"), so a merely terser read never
+    //     triggers a search.
+    // Both are facts about the catalog and the read's own set text — never a
+    // stamp read. Still purely additive, and still at most ONE extra search.
+    const anyMatchedIsReprint = numberMatchedRows.some(isAnniversaryReprintCandidate);
+    const readSetForPadding = normalizeSetNameForMatch(read.setName);
+    const matchedSetsConflictWithRead =
+      !!readSetForPadding &&
+      numberMatchedRows.every((c) => {
+        const candSet = normalizeSetNameForMatch(c.setName);
+        if (!candSet) return false;
+        return (
+          candSet !== readSetForPadding &&
+          !candSet.includes(readSetForPadding) &&
+          !readSetForPadding.includes(candSet)
+        );
+      });
+    if (everyMatchStoredUnpadded && (anyMatchedIsReprint || matchedSetsConflictWithRead)) {
+      const paddedQuery = `${searchCardName} ${paddedRetrievalVariant}`;
+      console.log(
+        `[requestId=${requestId}]`,
+        `[padded-number] read=${read.cardNumber} matched only rows that store it unpadded ` +
+          `(reprintRow=${anyMatchedIsReprint}, setConflict=${matchedSetsConflictWithRead}) ` +
+          `(${numberMatchedRows.map((c) => `${c.number} [${c.setName}]`).join(", ")}) — ` +
+          `the padded form "${paddedRetrievalVariant}" is carried by nothing in the pool, so trying search= "${paddedQuery}"`
+      );
+      const paddedResult = await fetchPokemonPriceTracker(paddedQuery, { language: read.language });
+      if (paddedResult && paddedResult.error === "rate-limited") {
+        return { error: "rate-limited", retryAfter: paddedResult.retryAfter, isDailyLimit: paddedResult.isDailyLimit };
+      }
+      const paddedList = paddedResult
+        ? Array.isArray(paddedResult.data)
+          ? paddedResult.data
+          : Array.isArray(paddedResult)
+          ? paddedResult
+          : []
+        : [];
+      console.log(`[requestId=${requestId}]`, "[padded-number] raw candidate count=", paddedList.length);
+      const accepted = paddedList
+        .filter((c) => normalizeNameForMatch(c.name).includes(wantedName))
+        .filter((c) => !filtered.some((e) => String(e.tcgPlayerId) === String(c.tcgPlayerId)))
+        .filter((c) => numbersMatch(read.cardNumber, normalizePptCard(c).number).match);
+      if (accepted.length > 0) {
+        filtered = filtered.concat(accepted);
+        candidates = filtered.map(normalizePptCard);
+        console.log(
+          `[requestId=${requestId}]`,
+          `[padded-number] PADDED-FORM ROWS RECOVERED: ${accepted
+            .map((c) => `${c.name} ${c.cardNumber} [${c.setName}] (tcgPlayerId=${c.tcgPlayerId}, market=${c.prices?.market ?? "null"})`)
+            .join(" | ")} — re-scoring, total candidates=`,
+          candidates.length
+        );
+        ({ best, bestScore, tieCount, bestDetail, tiedCandidates } = pickBestCandidate(
+          candidates,
+          read,
+          `[lookup:padded][requestId=${requestId}]`
+        ));
+      } else {
+        console.log(`[requestId=${requestId}]`, "[padded-number] nothing new matched the read number — keeping prior best");
+      }
+    }
+  }
+
   // ADDED 2026-10-02 (Southern Islands Mew 01/18, $624 — see
   // docs/test-cases.md): OPTIONS 1 + 2. Ten consecutive scans failed on a
   // $624 card because its PPT record was NEVER RETRIEVED, not mis-scored.
@@ -3956,6 +4193,15 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // product uncertainty. Set alongside each path below; returned in the
   // response. No frontend change ships with this.
   let matchBasis = "score-only";
+
+  // ADDED (2026-10-24, test #109): set by the anniversary-reprint block when
+  // the reprint is the only row that was ever retrieved, so there is no
+  // second candidate to disclose and the price must be withheld without a
+  // `siblingAmbiguity` payload. Consumed at the SINGLE point where
+  // pricingLookup is nulled (see test #107 — keeping that one place is what
+  // stops the "best guess" wording and the stale top-level link from drifting
+  // apart again).
+  let reprintPriceWithheld = false;
 
   // ADDED (2026-10-05): orthogonal to matchBasis — matchBasis says HOW
   // this candidate was chosen, this says a positive signal CONTRADICTS
@@ -4858,6 +5104,89 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     }
   }
 
+  // ADDED 2026-10-24 (live Base Set Blastoise 2/102 — test #109): the
+  // ANNIVERSARY REPRINT disclosure, the catalog-side backstop for the class
+  // the padded-number retrieval above exists to fix.
+  //
+  // Celebrations: Classic Collection and ME: 30th Celebration Classic
+  // Collection reprint vintage cards AT THEIR ORIGINAL NUMBERS — all 25 rows
+  // of setId 2931 do, verified 2026-10-24 — and PPT stores those reprints
+  // unpadded while storing the originals padded. When the padded retrieval
+  // recovers the originals they outscore the reprint and the existing sibling
+  // cap / number-tie disclosure take over, which is the normal path. This
+  // block covers the case where the originals are NOT recoverable — the
+  // padded search returned nothing, the set is stored under a third
+  // convention, or PPT is simply missing the row — and a reprint would
+  // otherwise be the confident winner of a number it shares with a far more
+  // valuable original. Measured gap on the real scans: $13.01 shown for a
+  // $227.27 card (Charizard is worse, $139.17 against $954.65 / $2,172.24).
+  //
+  // Keyed ENTIRELY on the catalog, never on a vision stamp read. The rarity
+  // field on both reprint sets is the literal string "Classic Collection"
+  // (confirmed on 250320 and 714372), which is a fact about the product, not
+  // an inference from a 25th Anniversary logo someone's camera may or may not
+  // have caught. The standing rule is that a stamp read may disambiguate or
+  // disclose but must never silently pick the pricier card; this picks
+  // nothing and prices nothing.
+  //
+  // The read's setName must name a DIFFERENT set, and the containment test is
+  // a SUPPRESSION: a read of "Celebrations" against "Celebrations: Classic
+  // Collection" is plausibly the same family (the 2026-10-05 Pikachu case),
+  // so it is left alone. This is not the forbidden loosening of the `set`
+  // scoring signal — containment here can only ever STOP a disclosure, never
+  // help a wrong candidate win.
+  if (
+    !siblingAmbiguity &&
+    best &&
+    read.setName &&
+    isAnniversaryReprintCandidate(best)
+  ) {
+    const readSet = normalizeSetNameForMatch(read.setName);
+    const winnerSet = normalizeSetNameForMatch(best.setName);
+    const sameFamily =
+      !readSet || !winnerSet || readSet === winnerSet || readSet.includes(winnerSet) || winnerSet.includes(readSet);
+    if (!sameFamily) {
+      const reprintGroup = distinctByDedupKey(
+        candidates.filter((c) => numberPointsAtCandidate(read.cardNumber, c) || String(c.tcgPlayerId) === String(best.tcgPlayerId))
+      ).filter((c, i, arr) => arr.findIndex((o) => String(o.tcgPlayerId) === String(c.tcgPlayerId)) === i);
+      const prompt =
+        "This number belongs to both the original and a 25th Anniversary reprint; check for the anniversary logo.";
+      if (reprintGroup.length >= 2) {
+        siblingAmbiguity = await buildAmbiguityDisclosure(reprintGroup, read, requestId, {
+          prompt,
+          reason: `the number that was read ("${read.cardNumber}") is printed on both the original card and its anniversary reprint`,
+          label: "anniversary-reprint",
+        });
+        const reprintNote =
+          `The best match is an anniversary REPRINT (${best.setName}), but the card was read as "${read.setName}". ` +
+          `The reprint carries the original's card number, so the number alone cannot tell them apart. ` +
+          `Each possibility is shown below with its own price and bid. ${prompt}`;
+        ambiguousNote = ambiguousNote ? `${ambiguousNote} ${reprintNote}` : reprintNote;
+      } else {
+        // Only the reprint was ever retrieved, so there is no second row to
+        // show. Naming one card and withholding its price is the honest
+        // outcome — a one-row "disclosure" would be a guess with extra steps.
+        const reprintNote =
+          `The closest match in our catalog is an anniversary REPRINT (${best.setName}), but the card was read as "${read.setName}". ` +
+          `The reprint carries the original's card number, and the original was not found in our catalog this scan, ` +
+          `so we can't tell which one this is or price it. ${prompt}`;
+        ambiguousNote = ambiguousNote ? `${ambiguousNote} ${reprintNote}` : reprintNote;
+        reprintPriceWithheld = true;
+      }
+      matchConfidence = "Low";
+      matchBasis = "anniversary-reprint-ambiguous";
+      console.log(
+        `[requestId=${requestId}]`,
+        `[anniversary-reprint] REPRINT WINNER DISCLOSED: read setName="${read.setName}" number=${read.cardNumber} ` +
+          `winner=${best.name} ${best.number} [${best.setName}] rarity="${best.rarity}" ` +
+          `(tcgPlayerId=${best.tcgPlayerId}, market=${best.prices?.market ?? "null"}) — ` +
+          `disclosedRows=${reprintGroup.length} ${reprintGroup
+            .map((c) => `${c.number} [${c.setName}] market=${c.prices?.market ?? "null"}`)
+            .join(" | ")} — capped to Low, no single price`
+      );
+    }
+  }
+
   // NOTE (2026-08-27): the "read a specific number that matches nothing in
   // the pool at all" check (originally added for the Hitmontop/Crimson
   // Haze case) now runs FIRST, above, before the tie-break check — see the
@@ -4988,9 +5317,16 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // second literal: every other field (cardName, setName, image,
   // matchConfidence, matchBasis, ambiguousNote, attackMismatch) is already
   // correct for this case and must not drift from the normal shape.
-  if (siblingAmbiguity) {
+  // CHANGED (2026-10-24, test #109): also covers the anniversary-reprint case
+  // where only the reprint was retrieved, so there is nothing to disclose but
+  // the price must still be withheld. Routed through this same block on
+  // purpose — it is the one place pricingLookup is nulled, and everything that
+  // has to happen alongside it (drop the top-level link, strip the "best
+  // guess" clause) is already here and correct for both cases.
+  if (siblingAmbiguity || reprintPriceWithheld) {
     lookupResult.pricingLookup = null;
-    lookupResult.siblingAmbiguity = siblingAmbiguity;
+    if (siblingAmbiguity) lookupResult.siblingAmbiguity = siblingAmbiguity;
+    if (reprintPriceWithheld) lookupResult.printingUndetermined = true;
     // ADDED (2026-10-18, test #107): the header must not link ONE of the
     // candidates it just said it cannot choose between. Found in e2e: a
     // Rayquaza tie disclosed both POP Series 1 and Blister Exclusives in the
@@ -6470,6 +6806,12 @@ module.exports.__cacheDisabledForTests = !getCache;
 module.exports.SIBLING_CAP_LEGACY_TOTAL_WAIT_MS = SIBLING_CAP_LEGACY_TOTAL_WAIT_MS;
 module.exports.SIBLING_GRADED_MAX_LOOKUPS = SIBLING_GRADED_MAX_LOOKUPS;
 module.exports.buildZeroPaddedNumberVariant = buildZeroPaddedNumberVariant;
+module.exports.storedNumeratorIsUnpadded = storedNumeratorIsUnpadded;
+module.exports.isAnniversaryReprintCandidate = isAnniversaryReprintCandidate;
+module.exports.stripAttackMarkup = stripAttackMarkup;
+// Exported so the suite can PIN the scoring path: the 2026-10-24 markup fix
+// is scoped to extractAttackNames, and this one must stay byte-identical.
+module.exports.extractFirstAttackName = extractFirstAttackName;
 module.exports.buildWideZeroPaddedNumberVariant = buildWideZeroPaddedNumberVariant;
 module.exports.stripBestGuessClause = stripBestGuessClause;
 module.exports.totalsContradict = totalsContradict;

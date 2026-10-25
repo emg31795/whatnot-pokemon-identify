@@ -1709,6 +1709,342 @@ async function main() {
     assert.ok(!/Pokédex/.test(String(r.ambiguousNote || "")), "no dex wording on a normal read");
   });
 
+  // ======================================================================
+  // 23. BLASTOISE 2/102 — anniversary-reprint padding trap (2026-10-24, #109)
+  // ======================================================================
+  // Real scan: requestId 71c04729-ddce-42c6-8949-89e020cf7d13, production
+  // dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV. Gemini read Blastoise "2/102" hp 100
+  // Stage 2 "Base Set" "Hydro Pump" correctly, and the panel showed
+  // Celebrations: Classic Collection Holofoil $12.89 at Match: High.
+  // bestScore was 20 — the number signal ALONE — because the reprint row has
+  // hp null, a non-matching set, empty subtypes and a <strong>-wrapped attack.
+  const BLASTOISE_READ = {
+    found: true,
+    confidence: "High",
+    cardName: "Blastoise",
+    language: "English",
+    stampType: "1st Edition",
+    hp: "100",
+    subtype: "Stage 2",
+    setName: "Base Set",
+    attackName: "Hydro Pump",
+    attackNameEnglish: null,
+    cardNumber: "2/102",
+  };
+
+  // Page 1 of the real scan: 30 rows of Blastoise filler with the reprint in
+  // it and NO original, exactly as logged ("raw candidate count= 30").
+  const BLASTOISE_PAGE1 = F.padTo([F.CC_BLASTOISE_2], 30, "Blastoise");
+
+  function blastoiseRoutes(extra = {}) {
+    return {
+      Blastoise: BLASTOISE_PAGE1,
+      // Verified against PPT 2026-10-24: page 2 does NOT contain the
+      // originals either (it bottoms out at 004/165 Expedition).
+      "Blastoise|offset=30": F.padTo([], 30, "BlastoiseP2"),
+      "Blastoise 002/102": [F.BASE_BLASTOISE_2, F.BASE_BLASTOISE_2_SHADOWLESS],
+      ...extra,
+    };
+  }
+
+  await test("#109 storedNumeratorIsUnpadded reads the RAW digit widths", () => {
+    assert.strictEqual(M.storedNumeratorIsUnpadded("2/102"), true);
+    assert.strictEqual(M.storedNumeratorIsUnpadded("15/102"), true);
+    assert.strictEqual(M.storedNumeratorIsUnpadded("002/102"), false);
+    // The three that must never trigger a padded search:
+    assert.strictEqual(M.storedNumeratorIsUnpadded("025/198"), false, "modern already-padded");
+    assert.strictEqual(M.storedNumeratorIsUnpadded("050/100"), false, "equal widths");
+    assert.strictEqual(M.storedNumeratorIsUnpadded("003/017"), false, "the #106 wide form");
+    assert.strictEqual(M.storedNumeratorIsUnpadded(null), false);
+    assert.strictEqual(M.storedNumeratorIsUnpadded("XY95"), false, "no slash at all");
+  });
+
+  await test("#109 buildZeroPaddedNumberVariant alone is NOT evidence of padding", () => {
+    // The trap storedNumeratorIsUnpadded exists for: normalizeNumber strips
+    // leading zeros, so an already-padded read yields a non-null, IDENTICAL
+    // padded form. Using truthiness here is what fired a search on "050/100".
+    assert.strictEqual(M.buildZeroPaddedNumberVariant("050/100"), "050/100");
+    assert.strictEqual(M.buildZeroPaddedNumberVariant("025/198"), "025/198");
+    assert.strictEqual(M.buildZeroPaddedNumberVariant("2/102"), "002/102");
+  });
+
+  await test("#109 isAnniversaryReprintCandidate keys on the catalog, not a stamp read", () => {
+    assert.strictEqual(M.isAnniversaryReprintCandidate(F.CC_BLASTOISE_2), true, "rarity 'Classic Collection'");
+    assert.strictEqual(M.isAnniversaryReprintCandidate(F.ME30_CHARIZARD_4), true, "ME: 30th CC");
+    assert.strictEqual(M.isAnniversaryReprintCandidate(F.BASE_BLASTOISE_2), false);
+    assert.strictEqual(M.isAnniversaryReprintCandidate(F.BASE_BLASTOISE_2_SHADOWLESS), false);
+    assert.strictEqual(M.isAnniversaryReprintCandidate(null), false);
+    // The 2021 Celebrations MAIN set uses its own numbering and collides with
+    // nothing, so it must NOT be treated as a reprint.
+    assert.strictEqual(
+      M.isAnniversaryReprintCandidate({ setName: "Celebrations", rarity: "Holo Rare" }),
+      false,
+      "Celebrations main set is an ordinary card"
+    );
+  });
+
+  await test("#109 stripAttackMarkup recovers the <strong>-wrapped name", () => {
+    assert.deepStrictEqual(M.extractAttackNames(F.CC_BLASTOISE_2.attacks), ["Hydro Pump"]);
+    assert.deepStrictEqual(M.extractAttackNames(F.CC_VENUSAUR_15.attacks), ["Solar Beam"]);
+    // <br> must become a BREAK, not vanish — deleting it would splice the
+    // name into its own description.
+    assert.deepStrictEqual(M.extractAttackNames(["[W] Surf<br>Does 30 damage."]), ["Surf"]);
+    // Both existing fail-safes still return [] for the whole candidate.
+    assert.deepStrictEqual(M.extractAttackNames(["<b>Tail Rap -- 20x</b>"]), [], "no leading [cost]");
+    assert.deepStrictEqual(M.extractAttackNames(F.CC_CHARIZARD_4.attacks), [], "parenthesised cost");
+    // And the " - " separator fix from 2026-10-09 is untouched.
+    assert.deepStrictEqual(
+      M.extractAttackNames(["[3] Layabout - Remove all damage counters from Snorlax."]),
+      ["Layabout"]
+    );
+  });
+
+  await test("#109 extractFirstAttackName (the SCORING path) stays byte-identical", () => {
+    // The markup fix is scoped to extractAttackNames so scoring cannot move.
+    // Measured over 271 distinct real PPT rows: 43 extractAttackNames results
+    // changed, ALL of them [] -> a parsed list, and extractFirstAttackName
+    // changed on ZERO. This pins the Classic Collection row specifically.
+    assert.strictEqual(M.extractFirstAttackName(F.CC_BLASTOISE_2.attacks), "");
+    assert.strictEqual(M.extractFirstAttackName(F.BASE_BLASTOISE_2.attacks), "Hydro Pump");
+    assert.strictEqual(M.extractFirstAttackName(F.ALAKAZAM_33.attacks), "Syncroblast");
+  });
+
+  await test("#109 REPLAY 71c04729: the $13.01 reprint is never priced confidently", async () => {
+    const calls = installPptMock(blastoiseRoutes());
+    const r = await M.lookupCardPPT(BLASTOISE_READ, "blastoise-109", null);
+    assert.strictEqual(calls.includes("Blastoise 002/102"), true, `padded search ran: ${calls.join(",")}`);
+    assert.strictEqual(r.matchConfidence, "Low", "never High on a number-only reprint match");
+    assert.strictEqual(r.pricingLookup, null, "no single price");
+    assert.strictEqual(r.tcgplayerUrl, null, "no implied pick in the header link");
+    assert.ok(r.siblingAmbiguity, "a disclosure payload is returned");
+    const ids = r.siblingAmbiguity.candidates.map((c) => String(c.tcgPlayerId)).sort();
+    assert.deepStrictEqual(ids, ["106997", "42360"], `discloses both originals, got ${ids.join(",")}`);
+    // The reprint must not be presented as one of the real possibilities.
+    assert.strictEqual(ids.includes("250319"), false, "the reprint is not disclosed as a candidate");
+    assert.ok(!/best guess/i.test(String(r.ambiguousNote || "")), "no stale best-guess clause");
+  });
+
+  await test("#109 TEST VALIDITY: the old code really did price it at High", async () => {
+    const { mod: OLD, cleanup } = loadPreFixModule("pre-109", "836ff33");
+    try {
+      installPptMock(blastoiseRoutes());
+      const r = await OLD.lookupCardPPT(BLASTOISE_READ, "blastoise-prefix", null);
+      assert.strictEqual(r.matchConfidence, "High", "the reported bug: High confidence");
+      assert.strictEqual(String(r.pricingLookup.tcgPlayerId), "250319", "on the $13.01 reprint");
+      assert.strictEqual(r.setName, "Celebrations: Classic Collection");
+    } finally {
+      cleanup();
+    }
+  });
+
+  await test("#109 padded search does NOT fire when the pool already has the padded form", async () => {
+    const calls = installPptMock({
+      Blastoise: F.padTo([F.CC_BLASTOISE_2, F.BASE_BLASTOISE_2], 30, "Blastoise"),
+      "Blastoise|offset=30": F.padTo([], 30, "BlastoiseP2"),
+    });
+    await M.lookupCardPPT(BLASTOISE_READ, "blastoise-already", null);
+    assert.strictEqual(
+      calls.some((c) => c.includes("002/102")),
+      false,
+      `no padded search needed: ${calls.join(",")}`
+    );
+  });
+
+  await test("#109 padded search costs exactly ONE extra PPT call when it fires", async () => {
+    const calls = installPptMock(blastoiseRoutes());
+    await M.lookupCardPPT(BLASTOISE_READ, "blastoise-cost", null);
+    assert.strictEqual(
+      calls.filter((c) => c === "Blastoise 002/102").length,
+      1,
+      `exactly one padded search: ${calls.join(",")}`
+    );
+    // The number matched in the pool, so the page-2 fetch and the
+    // combined-search loop must still be skipped entirely.
+    assert.strictEqual(calls.some((c) => c.includes("offset=30")), false, "no page-2 fetch");
+    assert.strictEqual(calls.includes("Blastoise 2/102"), false, "no unpadded combined search");
+    assert.strictEqual(calls.length, 2, `2 calls total (name search + padded): ${calls.join(",")}`);
+  });
+
+  await test("#109 padded search does NOT fire on an ordinary unpadded set", async () => {
+    // 62 of 278 real rows store their number unpadded across 31 sets (XY -
+    // Evolutions "2/108", XY - Fates Collide "25/124", Rising Rivals
+    // "38/111"...). On those there is no padded twin to find, so firing would
+    // burn 30 credits on an empty query — the #106 minute-limit concern.
+    const EVO = {
+      tcgPlayerId: "800001", setName: "XY - Evolutions", name: "Blastoise", cardNumber: "2/108",
+      rarity: "Holo Rare", cardType: "Pokemon", hp: "150", stage: "Stage 2",
+      attacks: ["[WWW] Deluge (90)"], prices: { market: 4.0, primaryPrinting: "Holofoil" },
+      printingsAvailable: ["Holofoil"], tcgPlayerUrl: "https://www.tcgplayer.com/product/800001",
+    };
+    const calls = installPptMock({
+      Blastoise: F.padTo([EVO], 30, "Blastoise"),
+      "Blastoise|offset=30": F.padTo([], 30, "BlastoiseP2"),
+    });
+    const r = await M.lookupCardPPT(
+      { ...BLASTOISE_READ, cardNumber: "2/108", hp: "150", setName: "Evolutions", attackName: "Deluge" },
+      "evo-109",
+      null
+    );
+    assert.strictEqual(
+      calls.some((c) => c.includes("002/108")),
+      false,
+      `a terser set read is agreement, not conflict: ${calls.join(",")}`
+    );
+    assert.ok(r.pricingLookup, "and the card is priced normally");
+  });
+
+  await test("#109 padded search needs no setName read when the row is a reprint", async () => {
+    // The reprint tell is catalog-side, so it still fires when the set was
+    // never read — which is the case on every Haiku read and many primaries.
+    const calls = installPptMock(blastoiseRoutes());
+    await M.lookupCardPPT({ ...BLASTOISE_READ, setName: null }, "blastoise-nullset-padded", null);
+    assert.strictEqual(calls.includes("Blastoise 002/102"), true, `fired on rarity alone: ${calls.join(",")}`);
+  });
+
+  await test("#109 padded search adds NOTHING to the Rayquaza 003/017 path", async () => {
+    // After the #106 wide variant rescues "3/17" the matching row stores
+    // "003/017", which is not unpadded, so this must not add a 6th search.
+    const calls = installPptMock({
+      Rayquaza: F.padTo([], 30, "Rayquaza"),
+      "Rayquaza|offset=30": F.padTo([], 30, "RayquazaP2"),
+      "Rayquaza 003/017": [RAY_POP1, RAY_BLISTER],
+    });
+    await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Rayquaza", cardNumber: "3/17", hp: "80", setName: null, attackName: "Fly" },
+      "ray-109",
+      null
+    );
+    assert.strictEqual(
+      calls.filter((c) => c.startsWith("Rayquaza ")).length,
+      3,
+      `still exactly 3/17, 03/17, 003/017: ${calls.filter((c) => c.startsWith("Rayquaza ")).join(",")}`
+    );
+  });
+
+  await test("#109 Charizard 4/102: the padded search reaches the $954.65 original", async () => {
+    const calls = installPptMock({
+      Charizard: F.padTo([F.CC_CHARIZARD_4, F.ME30_CHARIZARD_4], 30, "Charizard"),
+      "Charizard|offset=30": F.padTo([], 30, "CharizardP2"),
+      "Charizard 004/102": [
+        F.BASE_CHARIZARD_4_SHADOWLESS,
+        F.BASE_CHARIZARD_4,
+        F.CHARIZARD_4_METAL,
+        F.CHARIZARD_4_BLACK_DOT,
+        F.CHARIZARD_4_JUMBO,
+      ],
+    });
+    const r = await M.lookupCardPPT(
+      {
+        ...BLASTOISE_READ,
+        cardName: "Charizard",
+        cardNumber: "4/102",
+        hp: "120",
+        attackName: "Fire Spin",
+        stampType: "none",
+      },
+      "charizard-109",
+      null
+    );
+    assert.strictEqual(calls.includes("Charizard 004/102"), true, `padded search ran: ${calls.join(",")}`);
+    assert.notStrictEqual(r.setName, "Celebrations: Classic Collection", "not the $139.17 reprint");
+    assert.notStrictEqual(r.setName, "ME: 30th Celebration Classic Collection", "not the $164.23 reprint");
+    assert.strictEqual(r.pricingLookup, null, "a $954.65/$2172.24 pair is disclosed, never guessed");
+    assert.ok(r.siblingAmbiguity, "disclosure payload present");
+    const ids = r.siblingAmbiguity.candidates.map((c) => String(c.tcgPlayerId));
+    assert.ok(ids.includes("42382") && ids.includes("106999"), `both originals disclosed, got ${ids.join(",")}`);
+  });
+
+  await test("#109 Venusaur 15/102: the padded search reaches the $156.02 original", async () => {
+    const calls = installPptMock({
+      Venusaur: F.padTo([F.CC_VENUSAUR_15], 30, "Venusaur"),
+      "Venusaur|offset=30": F.padTo([], 30, "VenusaurP2"),
+      "Venusaur 015/102": [F.BASE_VENUSAUR_15_SHADOWLESS, F.BASE_VENUSAUR_15],
+    });
+    const r = await M.lookupCardPPT(
+      {
+        ...BLASTOISE_READ,
+        cardName: "Venusaur",
+        cardNumber: "15/102",
+        hp: "100",
+        attackName: "Solar Beam",
+        stampType: "none",
+      },
+      "venusaur-109",
+      null
+    );
+    assert.strictEqual(calls.includes("Venusaur 015/102"), true, `padded search ran: ${calls.join(",")}`);
+    assert.notStrictEqual(r.setName, "Celebrations: Classic Collection", "not the $9.60 reprint");
+    assert.strictEqual(r.pricingLookup, null, "disclosed, not guessed");
+  });
+
+  // --- the catalog-side backstop, for when the originals are unreachable ---
+
+  await test("#109 REPRINT DISCLOSURE: fires when the originals cannot be retrieved", async () => {
+    // Padded search returns PPT's real no-match behavior: unrelated filler,
+    // never an empty array (test #63). So nothing is recovered and the
+    // reprint is still the winner — which must not be priced.
+    const calls = installPptMock({
+      Blastoise: BLASTOISE_PAGE1,
+      "Blastoise|offset=30": F.padTo([], 30, "BlastoiseP2"),
+    });
+    const r = await M.lookupCardPPT(BLASTOISE_READ, "blastoise-backstop", null);
+    assert.strictEqual(calls.includes("Blastoise 002/102"), true, "it still tried");
+    assert.strictEqual(r.matchConfidence, "Low");
+    assert.strictEqual(r.matchBasis, "anniversary-reprint-ambiguous");
+    assert.strictEqual(r.pricingLookup, null, "the $13.01 price is withheld");
+    assert.strictEqual(r.printingUndetermined, true);
+    assert.strictEqual(r.tcgplayerUrl, null);
+    assert.ok(
+      /25th Anniversary reprint; check for the anniversary logo/.test(String(r.ambiguousNote)),
+      `prompt present: ${r.ambiguousNote}`
+    );
+    assert.ok(/REPRINT/.test(String(r.ambiguousNote)), "names the problem explicitly");
+  });
+
+  await test("#109 REPRINT DISCLOSURE: suppressed when the read names the same family", async () => {
+    // A read of "Celebrations" against "Celebrations: Classic Collection" is
+    // plausibly the same card (the 2026-10-05 Pikachu class), so the reprint
+    // is a legitimate match and must be left alone.
+    installPptMock({
+      Blastoise: BLASTOISE_PAGE1,
+      "Blastoise|offset=30": F.padTo([], 30, "BlastoiseP2"),
+    });
+    const r = await M.lookupCardPPT({ ...BLASTOISE_READ, setName: "Celebrations" }, "blastoise-family", null);
+    assert.notStrictEqual(r.matchBasis, "anniversary-reprint-ambiguous");
+    assert.ok(r.pricingLookup, "a genuine Celebrations read keeps its price");
+  });
+
+  await test("#109 REPRINT DISCLOSURE: never fires on a null setName read", async () => {
+    // No read set name is no evidence of a conflict. It must not fire on the
+    // absence of a signal.
+    installPptMock({
+      Blastoise: BLASTOISE_PAGE1,
+      "Blastoise|offset=30": F.padTo([], 30, "BlastoiseP2"),
+    });
+    const r = await M.lookupCardPPT({ ...BLASTOISE_READ, setName: null }, "blastoise-nullset", null);
+    assert.notStrictEqual(r.matchBasis, "anniversary-reprint-ambiguous");
+  });
+
+  await test("#109 REPRINT DISCLOSURE is keyed on the catalog, NOT the stamp read", async () => {
+    // Same pool, same set conflict, three different stampType reads — the
+    // outcome must be identical, because a vision stamp read may never be
+    // what decides this (the 2026-08-26 auto-flip rule).
+    const seen = [];
+    for (const stampType of ["none", "1st Edition", "other"]) {
+      installPptMock({
+        Blastoise: BLASTOISE_PAGE1,
+        "Blastoise|offset=30": F.padTo([], 30, "BlastoiseP2"),
+      });
+      const r = await M.lookupCardPPT({ ...BLASTOISE_READ, stampType }, `blastoise-stamp-${stampType}`, null);
+      seen.push(`${r.matchBasis}/${r.matchConfidence}/${r.pricingLookup === null}`);
+    }
+    assert.deepStrictEqual(
+      seen,
+      ["anniversary-reprint-ambiguous/Low/true", "anniversary-reprint-ambiguous/Low/true", "anniversary-reprint-ambiguous/Low/true"],
+      `identical regardless of stamp read, got ${seen.join(" | ")}`
+    );
+  });
+
   // ----------------------------------------------------------------------
   console.log(`\n${pass} pass, ${failures.length} fail`);
   for (const [name, e] of failures) {

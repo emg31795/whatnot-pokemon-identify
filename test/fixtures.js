@@ -316,6 +316,248 @@ const TYPHLOSION_JP_NO_NUMBER = {
   printingsAvailable: ["Holofoil"],
 };
 
+// --------------------------------------------------------------------------
+// Blastoise 2/102 — the anniversary-reprint padding trap (test #109).
+// --------------------------------------------------------------------------
+// Every row below is REAL data captured from PPT on 2026-10-24 via
+//   search="Blastoise 2/102"   -> CC_BLASTOISE_2 only
+//   search="Blastoise 002/102" -> BASE_BLASTOISE_2 + BASE_BLASTOISE_2_SHADOWLESS
+//   search="Charizard 4/102"   -> CC_CHARIZARD_4 + ME30_CHARIZARD_4 only
+//   search="Charizard 004/102" -> the four originals/oddities below
+//   search="Venusaur 15/102"   -> CC_VENUSAUR_15 only
+//   search="Venusaur 015/102"  -> BASE_VENUSAUR_15 + BASE_VENUSAUR_15_SHADOWLESS
+// The split is the whole bug: PPT stores the reprint at the ORIGINAL unpadded
+// number and the originals zero-padded to three digits, so a correct read of
+// "2/102" matches the $13.01 reprint exactly and never reaches the $227.27
+// original. Attack text is preserved byte-for-byte, including the
+// <strong>-wrapped name that made extractAttackNames return [].
+
+const CC_BLASTOISE_2 = {
+  tcgPlayerId: "250319",
+  setName: "Celebrations: Classic Collection",
+  name: "Blastoise",
+  cardNumber: "2/102",
+  totalSetNumber: null,
+  rarity: "Classic Collection",
+  cardType: "Pokemon",
+  hp: null,
+  stage: null,
+  attacks: [
+    "[WWW] <strong>Hydro Pump</strong> (40+)\r\n<br>Does 40 damage plus 10 more damage for each W Energy attached to Blastoise but not used to pay for this attack’s Energy cost. Extra W Energy after the 2nd doesn’t count.",
+  ],
+  pokemonType: "Water",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/250319",
+  prices: { market: 13.01, primaryPrinting: "Holofoil", listings: 296 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const BASE_BLASTOISE_2 = {
+  tcgPlayerId: "42360",
+  setName: "Base Set",
+  name: "Blastoise",
+  cardNumber: "002/102",
+  totalSetNumber: null,
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "100",
+  stage: "Stage 2",
+  attacks: [
+    "[WWW] Hydro Pump (40+)\r\n<br>Does 40 damage plus 10 more damage for each Water Energy attached to Blastoise but not used to pay for this attack's Energy cost.",
+  ],
+  pokemonType: "Water",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/42360",
+  prices: { market: 227.27, primaryPrinting: "Holofoil", listings: 195 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const BASE_BLASTOISE_2_SHADOWLESS = {
+  tcgPlayerId: "106997",
+  setName: "Base Set (Shadowless)",
+  name: "Blastoise",
+  cardNumber: "002/102",
+  totalSetNumber: null,
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "100",
+  stage: "Stage 2",
+  attacks: [
+    "[WWW] Hydro Pump (40+)\r\n<br>Does 40 damage plus 10 more damage for each Water Energy attached to Blastoise but not used to pay for this attack's Energy cost.",
+  ],
+  pokemonType: "Water",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/106997",
+  prices: { market: 896.06, primaryPrinting: "Unlimited Holofoil", listings: 33 },
+  printingsAvailable: ["Unlimited Holofoil", "1st Edition Holofoil"],
+};
+
+// Charizard's reprint pair — BOTH anniversary sets carry 4/102 AND hp 120,
+// which is why a Charizard read ties between two reprints while Blastoise
+// (no ME-30th twin) came through as a clean, confident single winner.
+const CC_CHARIZARD_4 = {
+  tcgPlayerId: "250320",
+  setName: "Celebrations: Classic Collection",
+  name: "Charizard",
+  cardNumber: "4/102",
+  rarity: "Classic Collection",
+  cardType: "Pokemon",
+  hp: "120",
+  stage: "Stage 2",
+  // Note the PARENTHESISED energy cost — not the "[cost]" shape — so
+  // extractAttackNames returns [] for this row with or without the markup fix.
+  attacks: ["(RRRR) Fire Spin (100)\r\n<br>Discard 2 Energy cards attached to Charizard in order to use this attack."],
+  pokemonType: "Fire",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/250320",
+  prices: { market: 139.17, primaryPrinting: "Holofoil", listings: 181 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const ME30_CHARIZARD_4 = {
+  tcgPlayerId: "714372",
+  setName: "ME: 30th Celebration Classic Collection",
+  name: "Charizard",
+  cardNumber: "4/102",
+  rarity: "Classic Collection",
+  cardType: "Pokemon",
+  hp: "120",
+  stage: "Stage 2",
+  attacks: [
+    "(RRRR) Fire Spin (100)\r\n<br>Discard 2 Energy cards attached to Charizard in order to use this attack.",
+    "Spits fire that is hot enough to melt boulders.",
+  ],
+  pokemonType: "Fire",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/714372",
+  prices: { market: 164.23, primaryPrinting: "Holofoil", listings: 59 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const BASE_CHARIZARD_4 = {
+  tcgPlayerId: "42382",
+  setName: "Base Set",
+  name: "Charizard",
+  cardNumber: "004/102",
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "120",
+  stage: "Stage 2",
+  attacks: ["[RRRR] Fire Spin (100)\r\n<br>Discard 2 Energy cards attached to Charizard in order to use this attack."],
+  pokemonType: "Fire",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/42382",
+  prices: { market: 954.65, primaryPrinting: "Holofoil", listings: 133 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const BASE_CHARIZARD_4_SHADOWLESS = {
+  tcgPlayerId: "106999",
+  setName: "Base Set (Shadowless)",
+  name: "Charizard",
+  cardNumber: "004/102",
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "120",
+  stage: "Stage 2",
+  attacks: ["[RRRR] Fire Spin (100)\r\n<br>Discard 2 Energy cards attached to Charizard in order to use this attack."],
+  pokemonType: "Fire",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/106999",
+  prices: { market: 2172.24, primaryPrinting: "Unlimited Holofoil", listings: 25 },
+  printingsAvailable: ["Unlimited Holofoil", "1st Edition Holofoil"],
+};
+
+// The real "Charizard 004/102" page also carries these three. They are here
+// so the padded-retrieval test runs against the messy pool PPT really returns,
+// not a tidied one: an oversized Jumbo (ODDITY_PATTERN), a metal novelty, and
+// an error-variant row with no hp and no market at all.
+const CHARIZARD_4_JUMBO = {
+  tcgPlayerId: "179079",
+  setName: "Jumbo Cards",
+  name: "Charizard - 4/102 (CoroCoro Promo)",
+  cardNumber: "004/102",
+  rarity: "Promo",
+  cardType: "Pokemon",
+  hp: "120",
+  stage: "Stage 2",
+  attacks: ["[RRRR] Fire Spin (100)"],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/179079",
+  prices: { market: 350, primaryPrinting: "Holofoil", listings: 0 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const CHARIZARD_4_METAL = {
+  tcgPlayerId: "252517",
+  setName: "Miscellaneous Cards & Products",
+  name: "Charizard (Celebrations Metal Card)",
+  cardNumber: "004/102",
+  rarity: "Promo",
+  cardType: "Pokemon",
+  hp: "120",
+  stage: "Stage 2",
+  attacks: ["[RRRR] Fire Spin (100)"],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/252517",
+  prices: { market: 313.39, primaryPrinting: "Holofoil", listings: 80 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const CHARIZARD_4_BLACK_DOT = {
+  tcgPlayerId: "657516",
+  setName: "Base Set",
+  name: "Charizard (Black Dot Error)",
+  cardNumber: "004/102",
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: null,
+  stage: null,
+  attacks: [],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/657516",
+  prices: { market: null, primaryPrinting: "Holofoil", listings: 6 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const CC_VENUSAUR_15 = {
+  tcgPlayerId: "250321",
+  setName: "Celebrations: Classic Collection",
+  name: "Venusaur",
+  cardNumber: "15/102",
+  rarity: "Classic Collection",
+  cardType: "Pokemon",
+  hp: null,
+  stage: null,
+  attacks: ["[GGGG] <strong>Solar Beam</strong> (60)"],
+  pokemonType: "Grass",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/250321",
+  prices: { market: 9.6, primaryPrinting: "Holofoil", listings: 252 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const BASE_VENUSAUR_15 = {
+  tcgPlayerId: "42355",
+  setName: "Base Set",
+  name: "Venusaur",
+  cardNumber: "015/102",
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "100",
+  stage: "Stage 2",
+  attacks: ["[GGGG] Solar Beam (60)"],
+  pokemonType: "Grass",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/42355",
+  prices: { market: 156.02, primaryPrinting: "Holofoil", listings: 216 },
+  printingsAvailable: ["Holofoil"],
+};
+
+const BASE_VENUSAUR_15_SHADOWLESS = {
+  tcgPlayerId: "107010",
+  setName: "Base Set (Shadowless)",
+  name: "Venusaur",
+  cardNumber: "015/102",
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "100",
+  stage: "Stage 2",
+  attacks: ["[GGGG] Solar Beam (60)"],
+  pokemonType: "Grass",
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/107010",
+  prices: { market: 981.25, primaryPrinting: "1st Edition Holofoil", listings: 38 },
+  printingsAvailable: ["Unlimited Holofoil", "1st Edition Holofoil"],
+};
+
 module.exports = {
   CHARIZARD_EX_125,
   CHARIZARD_EX_223,
@@ -332,6 +574,19 @@ module.exports = {
   VICTREEBEL_SV2A_71,
   AZUMARILL_JP_NO_NUMBER,
   TYPHLOSION_JP_NO_NUMBER,
+  CC_BLASTOISE_2,
+  BASE_BLASTOISE_2,
+  BASE_BLASTOISE_2_SHADOWLESS,
+  CC_CHARIZARD_4,
+  ME30_CHARIZARD_4,
+  BASE_CHARIZARD_4,
+  BASE_CHARIZARD_4_SHADOWLESS,
+  CHARIZARD_4_JUMBO,
+  CHARIZARD_4_METAL,
+  CHARIZARD_4_BLACK_DOT,
+  CC_VENUSAUR_15,
+  BASE_VENUSAUR_15,
+  BASE_VENUSAUR_15_SHADOWLESS,
   LOGGED_FILLER,
   fillerRow,
   padTo,
