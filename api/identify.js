@@ -6802,7 +6802,23 @@ async function handler(req, res) {
     }
 
     const slabBase = {
-      ...(baseLookup && baseLookup.found ? baseLookup : slabIdentity || { found: true, cardName: read.cardName }),
+      // FIX (2026-10-24, #111 preview e2e): this used to read
+      //   baseLookup && baseLookup.found ? baseLookup : slabIdentity || {...}
+      // which was correct only while the label path required
+      // `found === false` — under that gate, `baseLookup.found` being true
+      // guaranteed `slabIdentity` was null, so the two could never compete.
+      // Widening the trigger to "no usable identification" broke that
+      // invariant: the real Pichu slab identified 607842 from its label, ran
+      // the graded lookup and logged GRADED BID $52.83 — and then this line
+      // spread the base lookup's WITHHOLD over all of it, so the response
+      // still said Low, no price, no image. Every log line said the fix
+      // worked; only the HTTP body said otherwise.
+      //
+      // `slabIdentity` is only ever non-null when the base lookup produced no
+      // usable identification, so preferring it cannot override a successful
+      // base match. With slabIdentity null this is byte-for-byte the old
+      // expression.
+      ...(slabIdentity || (baseLookup && baseLookup.found ? baseLookup : { found: true, cardName: read.cardName })),
       cardLanguage: read.language,
       confidence: read.confidence,
       isSlab: true,

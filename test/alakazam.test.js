@@ -2355,6 +2355,24 @@ async function main() {
     assert.ok(!/if \(baseFailed && legacyReadPromise\)/.test(src), "the found-only gate is replaced");
   });
 
+  await test("#111 the slab response prefers the label identity over a withholding base", () => {
+    // Caught in preview e2e, and nothing else in this suite would have: the
+    // label path identified 607842 and logged GRADED BID $52.83, then the
+    // response spread `baseLookup` over it because `baseLookup.found` was
+    // true. Every log line said the fix worked; the HTTP body said Low, no
+    // price, no image. The old expression was only safe while the trigger
+    // required found===false, which made the two mutually exclusive.
+    const src = fs.readFileSync(IDENTIFY, "utf8");
+    assert.ok(
+      /\.\.\.\(slabIdentity \|\| \(baseLookup && baseLookup\.found \? baseLookup : \{ found: true, cardName: read\.cardName \}\)\)/.test(src),
+      "slabIdentity must win the spread when it exists"
+    );
+    assert.ok(
+      !/\.\.\.\(baseLookup && baseLookup\.found \? baseLookup : slabIdentity/.test(src),
+      "the old base-first spread must be gone"
+    );
+  });
+
   await test("#111 a NON-slab weak-signal withhold is completely unaffected", async () => {
     // Meganium: the #108 dex case. No grader/grade, so canFetchGraded is
     // false and nothing about the slab path can touch it.
