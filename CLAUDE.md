@@ -196,40 +196,38 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV`** (2026-10-18, the
-  Pokédex-number fix, test #108), aliased to
-  `whatnot-pokemon-identify.vercel.app`. Preview of the same build:
-  `dpl_9tJCbdVenieuPKeyFFWY7SNMDJtx`.
-- **`sourceHash 2fe9412de7fb829ba1918048a65f1a32bbee7e3d`** == `shasum
-  api/identify.js` on disk, byte-exact on both deployments (CLI deploy from
-  disk). Built from commit `6247b40`. `GET /api/identify` reports
+- Deployment **`dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`** (2026-10-24, the Blastoise
+  anniversary-reprint fixes, test #109), aliased to
+  `whatnot-pokemon-identify.vercel.app`.
+- **`sourceHash 5723ac8d14360a76f5b42b8602a305615a1155e0`** == `shasum
+  api/identify.js` on disk at commit `87bc426`. `GET /api/identify` reports
   **`slabLabelProbe: "on"`**. The alias served the new hash on the first
-  check again (contrast the ~15s lag on 2026-10-16 — check twice before
-  concluding a deploy failed).
-- E2E verified on production 2026-10-18, three scans, **zero runtime
-  errors**: **Pikachu XY95** High / `score-only` / 114004, linked, 1634ms
-  (`c9fd1a6f`); **Rayquaza 003/017** Low / `number-tie-ambiguous`, no single
-  price, `tcgplayerUrl: null`, both rows (POP Series 1 `88624`, Blister
-  Exclusives `691978`) carrying their own links, no "best guess" clause,
-  2158ms (`158aa726`); **Alakazam 33/165** High / `score-only` / 83500,
-  2295ms (`cfbd47bf`). No `[dex-number]` line on any of them, which is the
-  correct negative — none is a Pokédex read.
-- **The dex path itself is NOT e2e-verified on production.** It needs a
-  Japanese Neo-era frame, which no saved payload has; it rests on 122 local
-  tests and mocked replays over real captured PPT rows. **Watch for
-  `[dex-number]` on organic traffic** — it has never fired outside tests.
+  check (checked twice).
+- E2E verified on production 2026-10-24, four scans, **zero runtime errors**:
+  **Base Set Blastoise 42360** Low / `sibling-ambiguous` / price **withheld**,
+  three rows disclosed (42360 $227.27, 106997 $896.06, 250319 $13.01),
+  1664ms; **Celebrations Blastoise 250319** same three-row disclosure
+  including itself, 1706ms; **Pikachu XY95** High / `score-only` / 114004,
+  linked, 1320ms; **Alakazam 33** 83500, linked, 1871ms.
+  E2E payloads were the real TCGplayer product scans (`imageCdnUrl`), not
+  livestream frames — a cleaner read than reality, and the 200x275 Alakazam
+  thumbnail misreads its number, which is why its confidence varies per run.
 - **`extension/content.js` and `content.css` last changed in the 2026-10-17
-  builds, so if the extension has not been reloaded in
-  `chrome://extensions` since then**, the sibling/tie rows (with set names)
-  and the per-row graded medians will not render. #108 is backend-only.
-- **No real slab has been scanned end-to-end through Phase 2-lite.** The
-  graded bid path HAS fired on organic traffic.
-- Earlier production: `dpl_3f4sgBW1BVdLjA4mvFk383thicTg` (2026-10-17,
+  builds** — #109 and #110 are backend-only and need no reload, but if the
+  extension has not been reloaded since 2026-10-17 the sibling/tie rows (with
+  set names) and per-row graded medians still will not render.
+- **No real slab has been scanned end-to-end through Phase 2-lite**, and
+  #109's Pichu investigation found it is **unreachable** on a weak-signal
+  withhold (see the open item below). The graded bid path HAS fired on
+  organic traffic.
+- **BUILT, NOT DEPLOYED: #110** (`882b400`, `sourceHash b170c6e8…`), the
+  sibling-cap reason wording. Preview `dpl_HxM8eitpYEE7wgQcaWH9AmsnEJFK`,
+  146 local tests, verified on a real image. Awaiting production approval.
+- Earlier production: `dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV` (2026-10-18,
+  `2fe9412d…`, `6247b40`); `dpl_3f4sgBW1BVdLjA4mvFk383thicTg` (2026-10-17,
   `9f08298e…`, `0601fcc`); `dpl_Eih1EtRbrtHgktna9QiRhq5D4259` (2026-10-17,
   `b170a4e3…`, `90b7d23`); `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg` (2026-10-16,
-  `c8f57029…`, `a939d95`); `dpl_ExYjyy4Uo6YDw82b3x4hdmneC1TR` (2026-10-15,
-  `9738bb38…`, `ba5f009`); `dpl_FBVMZBgEP4YVoKabMNmpfPa2zeHj` (2026-10-14,
-  `34774dc6…`, `531aac4`).
+  `c8f57029…`, `a939d95`).
 - Project `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team `leasedraftai`
   (`team_DZEpR5n7heCyZsNFjxZmxUP1`). **Not git-linked** — no build-on-push.
   GitHub: `https://github.com/emg31795/whatnot-pokemon-identify`.
@@ -507,10 +505,11 @@ sane bid for that card.
 
 ## Open items
 
-**BUILT AND PREVIEW-VERIFIED 2026-10-24, AWAITING PRODUCTION APPROVAL (#109)
-— Base Set Blastoise 2/102 priced as a $13 Celebrations reprint.** Commits
-`11c04df` + `87bc426`, `sourceHash 5723ac8d…`, preview
-`dpl_FHMLHJrcfkJZjF9W9Jf9Lz9vuQpE`, 142 local tests (122 before). Root cause
+**DEPLOYED TO PRODUCTION 2026-10-24 (#109) — Base Set Blastoise 2/102 was
+priced as a $13 Celebrations reprint.** Commits `11c04df` + `87bc426`,
+production `dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`, `sourceHash 5723ac8d…`
+byte-exact with disk, 142 local tests (122 before), production e2e 4/4 with
+zero runtime errors. Root cause
 is the padding-convention trap above: a correct read of "2/102" matched the
 reprint EXACTLY, so every existing net — page-2, combined search, both
 weak-signal floors, number-tie, sibling cap — was keyed on a condition that
@@ -525,13 +524,35 @@ three printings ($227.27 / $896.06 / $13.01) at Low with no single price.
 **No `extension/` change** — reuses the existing `siblingAmbiguity` and
 `printingUndetermined` shapes. Full write-up: `docs/test-cases.md` #109.
 
-**OPEN — the sibling cap's `reason` string can contradict itself (#109, NOT
-fixed).** Real e2e text: *the two AI models read different card numbers
-("2/102" vs "2/102")*. Both models read the same number; the cap fired
-`ambiguous-disagreement` because that number points at BOTH siblings, not
-because the models disagreed. The decision is right, the explanation is false
-as written — same class as #107's stale "best guess" clause. Needs a separate
-wording branch for "one number, two printings" vs "two models, two numbers".
+**FIXED, AWAITING PRODUCTION APPROVAL (#110)** — the sibling cap's `reason`
+string contradicted itself (*"the two AI models read different card numbers
+("2/102" vs "2/102")"*). `numberShared` now splits the
+`ambiguous-shared-number` case from a genuine `ambiguous-disagreement`, the
+lead clause stops claiming the number tells the printings apart, and the row
+count is real rather than a hardcoded "Both printings" (#109 can disclose
+three). Wording only — a replay through `4296deb` pins identical confidence,
+price and disclosed ids. Commit `882b400`, preview
+`dpl_HxM8eitpYEE7wgQcaWH9AmsnEJFK`, 146 local tests.
+
+**OPEN — Phase 2-lite slab-label rescue is UNREACHABLE on a weak-signal
+withhold (#111 investigation, 2026-10-24, NOT fixed).** `baseFailed =
+!baseLookup || !baseLookup.found`, but the weak-signal floors return
+`found: true` (with `pricingLookup: null`, `setName: null`,
+`cardImageUrl: null`), so `lookupCardFromSlabLabel` never runs for a slab
+that produced a junk above-floor match. Confirmed live on a Japanese PSA 9
+Pichu (cert 115602100): a clean 73-char label was read by the probe, no
+`SLAB LABEL PARSED` line ever appeared, and the correct card (**607842 "Neo
+Premium File 2", NM $42.02, PSA 9 median $139.79 → bid $52.83**) was sitting
+in the pool tied at score 6. Two further blockers behind it: the label's
+"#172" is a **Pokédex** number and 607842's PPT `cardNumber` is an **empty
+string**, so the label-number filter would decline it (the slab path has no
+`classifyPokedexNumberRead`); and the label's "REVERSE FOIL" printing is not
+in that row's `printingsAvailable` (`["Holofoil"]` only). Full write-up:
+`investigations/2026-10-24-pichu-slab/findings.md`.
+
+**First live firings on organic traffic, 2026-10-24:** `[dex-number]` (#108,
+on the Pichu "no. 172" read) and a real `[slab-label-probe]` label
+(`legacyLabelTextLen=73`). Both had been listed as never-yet-observed.
 
 **DEPLOYED TO PRODUCTION 2026-10-18 (#108) — the Japanese Meganium
 Pokédex-number fix.** Commit `6247b40`, production

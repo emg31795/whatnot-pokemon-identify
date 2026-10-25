@@ -13086,3 +13086,102 @@ false as written**, and an explanation that names a disagreement that did not
 happen is the same class of defect as #107's stale "best guess" clause. Needs
 its own wording branch for "one number, two printings" as distinct from "two
 models, two numbers". Pre-existing, independent of this change.
+
+---
+
+## #109 production deploy — 2026-10-24
+
+Deployed `11c04df` + `87bc426` to production as
+**`dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`**, aliased to
+`whatnot-pokemon-identify.vercel.app`.
+**`sourceHash 5723ac8d14360a76f5b42b8602a305615a1155e0`** == `shasum
+api/identify.js` on disk, byte-exact (CLI deploy from disk). The alias served
+the new hash on the first check; checked twice.
+
+Production e2e, four scans, **zero runtime errors**:
+
+| scanned image | matched | Match | basis | price |
+|---|---|---|---|---|
+| Base Set Blastoise 42360 | Base Set | Low | `sibling-ambiguous` | **withheld**, 3 rows, 1664ms |
+| Celebrations Blastoise 250319 | Base Set | Low | `sibling-ambiguous` | **withheld**, 3 rows incl. itself, 1706ms |
+| Pikachu XY95 114004 | XY Promos | High | `score-only` | 114004, linked, 1320ms |
+| Alakazam 33 83500 | Expedition | Low | `score-only` | 83500, linked, 1871ms |
+
+Both Blastoise scans disclose **$227.27 / $896.06 / $13.01**, each row with
+its own `pricingLookup` and `tcgplayerUrl`, top-level `tcgplayerUrl: null`,
+anniversary-logo prompt. The only error group in the window predates the
+deploy and is on `dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV`.
+
+---
+
+## #110 — 2026-10-24 — The sibling cap claimed a model disagreement that never happened
+
+**Found by the #109 preview e2e**, not by a report. A real disclosure read:
+
+> the two AI models read different card numbers ("2/102" vs "2/102")
+
+The same value, printed twice.
+
+### Cause
+
+`modelsDisagree` is `!!legacySibling` — true whenever the legacy number
+points at *some* pool sibling, **including when it points at the winner as
+well**. That is exactly what happens when two printings carry one number:
+Base Set and Base Set (Shadowless) are both `002/102`, so
+`numberPointsAtCandidate` is true for each, `legacyPointsAtBest` and
+`legacySibling` are both truthy, `corroborated` is false, and the cap lands
+on `ambiguous-disagreement`. The live log confirms it:
+`legacyPointsAtBest=true legacyPointsAtSibling=Blastoise 002/102`.
+
+The **decision** was right — one number, two printings, so neither can be
+chosen. The **explanation** named a disagreement that did not occur. Same
+class as #107's stale "best guess" clause: a withheld price is only honest if
+the stated reason is the real one.
+
+### Fix
+
+`numberShared = legacyPointsAtBest && !!legacySibling` splits a new
+`ambiguous-shared-number` decision out of `ambiguous-disagreement`, and three
+strings become conditional:
+
+- **reason** → *"this card number ("2/102") belongs to more than one of these
+  printings, so it cannot tell them apart"*
+- **lead clause** drops *"told apart ONLY by the card number"*, which is
+  backwards when the number is the thing they share
+- **"Both printings are shown"** becomes a real count — #109's folded-in
+  reprint can make this three rows, and the hardcoded two was already wrong
+  in the live e2e output
+
+The log line is now `SIBLING CAP (<decision>)` rather than `SIBLING
+DISAGREEMENT CAP`, so a shared-number case no longer logs the word
+"disagreement" either.
+
+### Verified
+
+**146 local tests** (142 before). A replay through `4296deb` asserts identical
+`matchConfidence`, `matchBasis`, `pricingLookup` and disclosed ids before and
+after — wording only, no outcome moves — **and** that the old note really did
+print `("2/102" vs "2/102")`, so the test cannot pass vacuously. A genuine
+disagreement (Expedition `033/165` vs `001/165`) keeps its original wording.
+
+Preview `dpl_HxM8eitpYEE7wgQcaWH9AmsnEJFK`, `sourceHash b170c6e8…` byte-exact
+with disk, verified on the real Base Set Blastoise image:
+
+> This set prints this card in more than one version, and this card number
+> ("2/102") belongs to more than one of these printings, so it cannot tell
+> them apart. All 3 are shown below with their own price and bid. This number
+> belongs to both the original and a 25th Anniversary reprint; check for the
+> anniversary logo.
+
+`sibling-ambiguous`, Low, price withheld, no same-value pair anywhere.
+XY95 unchanged at High / `score-only` / 114004.
+
+### Noted, not fixed
+
+The Shadowless boilerplate that precedes this note still ends *"Both
+printings' prices are available in the dropdown below — pick whichever matches
+the physical card before trusting this price."* There is no dropdown when
+`pricingLookup` is null. It is the same defect class and the same one-line
+shape as `stripBestGuessClause` at the single nulling point, but it is a
+distinct clause with its own history (it is correct whenever a price IS
+shown), so it was left alone rather than folded into a wording-only change.
