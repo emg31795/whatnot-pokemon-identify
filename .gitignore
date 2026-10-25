@@ -6,3 +6,8 @@ node_modules/
 .DS_Store
 .vercel
 .env*
+
+# Investigation corpora: raw runtime logs and captured PPT pools.
+# Kept on disk so later measurements have a real corpus (scratch dirs get
+# wiped between sessions), deliberately NOT committed.
+investigations/
