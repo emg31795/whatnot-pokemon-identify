@@ -5006,6 +5006,24 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
 
       const corroborated = legacyPointsAtBest && !legacySibling;
       const modelsDisagree = !!legacySibling;
+      // FIX (2026-10-24, test #110): `modelsDisagree` is true whenever the
+      // legacy number points at SOME sibling — including when it points at the
+      // winner as well, which happens the moment two printings carry the same
+      // number. Both models then read the SAME number and agreed perfectly;
+      // what is ambiguous is the number itself, not the reads. Caught in the
+      // #109 preview e2e, where a real disclosure told Eric
+      //     the two AI models read different card numbers ("2/102" vs "2/102")
+      // — the two values printed identically, because Base Set and Base Set
+      // (Shadowless) are both "002/102" and `numberPointsAtCandidate` is true
+      // for each. The DECISION is right (one number, two printings, so neither
+      // can be chosen); the EXPLANATION named a disagreement that did not
+      // happen. Same class of defect as #107's stale "best guess" clause: a
+      // withheld price is only honest if the stated reason is the real one.
+      //
+      // Splits the label and the wording only. Every branch still reaches the
+      // same `ambiguous` outcome, so no scan changes confidence, price or
+      // which candidates are disclosed.
+      const numberShared = legacyPointsAtBest && !!legacySibling;
       // FIX 2 (2026-10-18): `stands-cheaper` now also requires the PRIMARY
       // read's number to point at the winner. Live case 7eb57832: a Flareon
       // read as "4/105" matched nothing in the pool, scoring fell through
@@ -5018,6 +5036,8 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
       // the $337.50 printing. Now that case discloses both instead.
       const decision = corroborated
         ? "corroborated"
+        : numberShared
+        ? "ambiguous-shared-number"
         : modelsDisagree
         ? "ambiguous-disagreement"
         : winnerIsCheapest && primaryPointsAtBest
@@ -5062,7 +5082,9 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
           requestId,
           {
             prompt: siblingGroupHasReprint ? REPRINT_DISAMBIGUATION_HINT : SIBLING_DISAMBIGUATION_HINT,
-            reason: legacySibling
+            reason: numberShared
+              ? `this card number ("${legacyNumber}") belongs to more than one of these printings, so it cannot tell them apart`
+              : legacySibling
               ? `the two AI models read different card numbers ("${read.cardNumber || "unreadable"}" vs "${legacyNumber}"), each pointing at a different one of these printings`
               : `only one AI model produced a usable card number ("${read.cardNumber || "unreadable"}"), and the printing it picked is the more valuable one here`,
             label: "sibling-cap",
@@ -5071,13 +5093,21 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         const group = siblingAmbiguity.candidates;
         matchConfidence = "Low";
         matchBasis = "sibling-ambiguous";
-        const siblingNote =
-          `This set prints this card in more than one version, told apart ONLY by the card number — and ${siblingAmbiguity.reason}. ` +
-          `Both printings are shown below with their own price and bid. ${siblingAmbiguity.prompt}`;
+        // The lead clause is conditional for the same reason the reason string
+        // is: "told apart ONLY by the card number" is exactly backwards when
+        // the number is the thing they SHARE. Row count comes from the group,
+        // since a folded-in reprint (#109) can make this three rows, not two —
+        // the hardcoded "Both printings" was already wrong in the live e2e.
+        const siblingRowsPhrase = group.length === 2 ? "Both printings are" : `All ${group.length} are`;
+        const siblingNote = numberShared
+          ? `This set prints this card in more than one version, and ${siblingAmbiguity.reason}. ` +
+            `${siblingRowsPhrase} shown below with their own price and bid. ${siblingAmbiguity.prompt}`
+          : `This set prints this card in more than one version, told apart ONLY by the card number — and ${siblingAmbiguity.reason}. ` +
+            `${siblingRowsPhrase} shown below with their own price and bid. ${siblingAmbiguity.prompt}`;
         ambiguousNote = ambiguousNote ? `${ambiguousNote} ${siblingNote}` : siblingNote;
         console.log(
           `[requestId=${requestId}]`,
-          `[lookup] SIBLING DISAGREEMENT CAP (${decision}): ${group.map((c) => `${c.name} ${c.number} (${c.rarity || "?"}, tcgPlayerId=${c.tcgPlayerId})`).join(" | ")} — capped to Low, no single price`
+          `[lookup] SIBLING CAP (${decision}): ${group.map((c) => `${c.name} ${c.number} (${c.rarity || "?"}, tcgPlayerId=${c.tcgPlayerId})`).join(" | ")} — capped to Low, no single price`
         );
       }
     }

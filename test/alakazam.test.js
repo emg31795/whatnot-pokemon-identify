@@ -1732,6 +1732,10 @@ async function main() {
     cardNumber: "2/102",
   };
 
+  // The legacy model's read from the same scan: identical on every field but
+  // stampType, which is what makes "the models disagreed" false here (#110).
+  const BLASTOISE_LEGACY = { ...BLASTOISE_READ, stampType: "none" };
+
   // Page 1 of the real scan: 30 rows of Blastoise filler with the reprint in
   // it and NO original, exactly as logged ("raw candidate count= 30").
   const BLASTOISE_PAGE1 = F.padTo([F.CC_BLASTOISE_2], 30, "Blastoise");
@@ -2087,6 +2091,90 @@ async function main() {
       ["anniversary-reprint-ambiguous/Low/true", "anniversary-reprint-ambiguous/Low/true", "anniversary-reprint-ambiguous/Low/true"],
       `identical regardless of stamp read, got ${seen.join(" | ")}`
     );
+  });
+
+  // ======================================================================
+  // 24. SIBLING-CAP REASON WORDING (2026-10-24, #110)
+  // ======================================================================
+  // Found in the #109 preview e2e: a real disclosure told Eric "the two AI
+  // models read different card numbers ("2/102" vs "2/102")" — the same value
+  // twice. Both models agreed; what is ambiguous is the NUMBER, which Base Set
+  // and Base Set (Shadowless) both carry as "002/102". The decision was right,
+  // the explanation was false. Behaviour must not move: same Low, same
+  // withheld price, same disclosed rows — only the words change.
+
+  await test("#110 shared number: says the number belongs to more than one printing", async () => {
+    // A real legacy read of the SAME number is what reaches the sibling cap;
+    // with no legacy read the scan falls through to the number-tie path.
+    installPptMock(blastoiseRoutes());
+    const r = await M.lookupCardPPT(BLASTOISE_READ, "wording-shared", Promise.resolve(BLASTOISE_LEGACY));
+    const note = String(r.ambiguousNote);
+    assert.ok(
+      /belongs to more than one of these printings/.test(note),
+      `states the real reason: ${note}`
+    );
+    assert.ok(
+      !/models read different card numbers/.test(note),
+      `never claims a disagreement that did not happen: ${note}`
+    );
+    // The lead clause must not say the number tells them apart when it is the
+    // thing they share.
+    assert.ok(!/told apart ONLY by the card number/.test(note), `lead clause corrected: ${note}`);
+    // And the same value must never be printed as if it were two values.
+    const pair = note.match(/\("([^"]+)" vs "([^"]+)"\)/);
+    assert.strictEqual(pair, null, `no "X vs Y" pair at all here: ${pair && pair[0]}`);
+  });
+
+  await test("#110 the row count matches the rows actually disclosed", async () => {
+    installPptMock(blastoiseRoutes());
+    const r = await M.lookupCardPPT(BLASTOISE_READ, "wording-count", Promise.resolve(BLASTOISE_LEGACY));
+    assert.strictEqual(r.siblingAmbiguity.candidates.length, 3, "three rows after #109");
+    assert.ok(/All 3 are shown below/.test(String(r.ambiguousNote)), `counts them: ${r.ambiguousNote}`);
+    assert.ok(!/Both printings are shown/.test(String(r.ambiguousNote)), "not the hardcoded two");
+  });
+
+  await test("#110 a GENUINE disagreement still says the models disagreed", async () => {
+    // The Expedition pair: 83500 "033/165" and 83497 "001/165" are real
+    // siblings with DIFFERENT numbers, so a legacy read of "001/165" against a
+    // primary "033/165" is a true model disagreement and must keep its wording.
+    installPptMock(expeditionRoutes());
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardNumber: "033/165", setName: null, attackName: "Syncroblast" },
+      "wording-disagree",
+      Promise.resolve({ found: true, cardNumber: "001/165", cardName: "Alakazam" })
+    );
+    if (r.matchBasis === "sibling-ambiguous") {
+      const note = String(r.ambiguousNote);
+      assert.ok(/models read different card numbers/.test(note), `kept for a real disagreement: ${note}`);
+      assert.ok(/"033\/165" vs "001\/165"/.test(note), `names both distinct values: ${note}`);
+    }
+  });
+
+  await test("#110 wording change moves no outcome", async () => {
+    // Same pool, same read, through the pre-#110 commit: confidence, price and
+    // the disclosed ids must be identical. Only the prose differs.
+    const { mod: OLD, cleanup } = loadPreFixModule("pre-110", "4296deb");
+    try {
+      installPptMock(blastoiseRoutes());
+      const before = await OLD.lookupCardPPT(BLASTOISE_READ, "wording-before", Promise.resolve(BLASTOISE_LEGACY));
+      installPptMock(blastoiseRoutes());
+      const after = await M.lookupCardPPT(BLASTOISE_READ, "wording-after", Promise.resolve(BLASTOISE_LEGACY));
+      assert.strictEqual(after.matchConfidence, before.matchConfidence, "same confidence");
+      assert.strictEqual(after.matchBasis, before.matchBasis, "same basis");
+      assert.strictEqual(after.pricingLookup, before.pricingLookup, "both withheld");
+      assert.deepStrictEqual(
+        after.siblingAmbiguity.candidates.map((c) => String(c.tcgPlayerId)).sort(),
+        before.siblingAmbiguity.candidates.map((c) => String(c.tcgPlayerId)).sort(),
+        "same rows disclosed"
+      );
+      // And the old wording really did carry the defect, so this is not vacuous.
+      assert.ok(
+        /models read different card numbers \("2\/102" vs "2\/102"\)/.test(String(before.ambiguousNote)),
+        `the old note printed the same number twice: ${before.ambiguousNote}`
+      );
+    } finally {
+      cleanup();
+    }
   });
 
   // ----------------------------------------------------------------------
