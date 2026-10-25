@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>WNPK panel — all states</title>
+<style>
+  body { margin:0; background:#17181a; color:#e8eaed; font-family:-apple-system,system-ui,sans-serif; }
+  h1 { font-size:15px; margin:14px 16px 4px; font-weight:600; }
+  .sheet { display:flex; flex-wrap:wrap; gap:14px; padding:10px 16px 20px; align-items:flex-start; }
+  .cell { background:#000; border:1px solid #2a2d31; border-radius:8px; overflow:hidden; }
+  .cap { font-size:11px; color:#9aa0a6; padding:6px 8px; border-bottom:1px solid #2a2d31; background:#1f2023; }
+  iframe { display:block; border:0; width:420px; height:760px; background:#17181a; }
+</style>
+</head>
+<body>
+<h1 id="h"></h1>
+<div class="sheet" id="sheet"></div>
+<script src="panel-states.js"></script>
+<script>
+  const q = new URLSearchParams(location.search);
+  document.getElementById("h").textContent = "Panel states — " + (q.get("tag") || "current");
+  const sheet = document.getElementById("sheet");
+  Object.entries(window.WNPK_STATES).forEach(([k, v]) => {
+    const cell = document.createElement("div");
+    cell.className = "cell";
+    const cap = document.createElement("div");
+    cap.className = "cap";
+    cap.textContent = k;
+    const f = document.createElement("iframe");
+    f.src = "panel-harness.html?state=" + k;
+    cell.appendChild(cap); cell.appendChild(f); sheet.appendChild(cell);
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>WNPK panel harness</title>
+<!--
+  Panel harness (#113). Renders the REAL panel, by loading the real
+  extension/content.css and extension/content.js and driving the render
+  functions content.js already exposes on window.__wnpkTest. Nothing about the
+  panel is re-implemented here, so a screenshot from this page is the panel as
+  it actually renders.
+
+  Usage:  tools/panel-harness.html?state=<key>   one state, panel only
+          tools/panel-harness.html               index of every state
+  `chrome` is stubbed below because a content script expects it; the stub
+  stores nothing and talks to nothing.
+-->
+<style>
+  body { margin: 0; background: #202124; color: #e8eaed; font-family: -apple-system, system-ui, sans-serif; }
+  #stage { padding: 24px; }
+  #label { font-size: 13px; color: #9aa0a6; margin: 0 0 12px; }
+  a { color: #8ab4f8; }
+  ul { font-size: 14px; line-height: 1.8; }
+  /* The panel is position:fixed in the real page; pin it predictably here so
+     screenshots are stable and the whole panel is in frame. */
+  #wnpk-root { position: static !important; margin: 0 !important; }
+</style>
+</head>
+<body>
+<div id="stage"><div id="label"></div></div>
+
+<script>
+  // Minimal chrome stub — storage returns empty, messaging is inert.
+  window.chrome = {
+    storage: {
+      sync: { get: async () => ({}), set: async () => {} },
+      local: { get: async () => ({}), set: async () => {} },
+    },
+    runtime: { sendMessage: () => {}, onMessage: { addListener: () => {} }, lastError: null },
+  };
+</script>
+<script>
+  // Cache-busting: the harness is edited and re-screenshotted in the same
+  // session, and a stale content.js silently shows the OLD panel.
+  const V = "?v=" + Date.now();
+  document.write('<script src="panel-states.js' + V + '"><\/script>');
+  document.write('<link rel="stylesheet" href="../extension/content.css' + V + '" />');
+  document.write('<script src="../extension/content.js' + V + '"><\/script>');
+</script>
+<script>
+(function () {
+  const params = new URLSearchParams(location.search);
+  const key = params.get("state");
+  const stage = document.getElementById("stage");
+  const label = document.getElementById("label");
+  const states = window.WNPK_STATES;
+
+  if (!key) {
+    const root = document.getElementById("wnpk-root");
+    if (root) root.remove();
+    label.textContent = "Panel harness — pick a state";
+    const ul = document.createElement("ul");
+    Object.entries(states).forEach(([k, v]) => {
+      const li = document.createElement("li");
+      li.innerHTML = '<a href="?state=' + k + '">' + k + "</a> — " + v.label;
+      ul.appendChild(li);
+    });
+    stage.appendChild(ul);
+    return;
+  }
+
+  const state = states[key];
+  if (!state) { label.textContent = "Unknown state: " + key; return; }
+  label.textContent = key + " — " + state.label;
+
+  const root = document.getElementById("wnpk-root");
+  stage.appendChild(root);
+
+  const T = window.__wnpkTest;
+  T.renderResult(state.identify);
+
+  // The price section arrives from the separate /api/price call in real use.
+  if (state.price) T.renderPriceSection(state.price, state.identify);
+
+  // Disclosure rows are filled by fetchAndRenderSiblingPrices in real use;
+  // fill them here the same way, straight into the row's price cell.
+  if (state.siblingPrices) {
+    Object.entries(state.siblingPrices).forEach(([id, p]) => {
+      const cell = root.querySelector("#wnpk-sib-price-" + id);
+      if (!cell) return;
+      // Same markup fillSiblingRow produces in the real panel.
+      const bid = p.bid == null
+        ? '<span class="wnpk-row-bid wnpk-bid-none">Bid —</span>'
+        : p.bid <= 0
+        ? '<span class="wnpk-row-bid wnpk-bid-skip">Bid Skip</span>'
+        : '<span class="wnpk-row-bid">Bid $' + p.bid.toFixed(2) + "</span>";
+      cell.innerHTML = '<span class="wnpk-row-nm">$' + p.nm.toFixed(2) + "</span>" + bid;
+    });
+  }
+
+  // Footer cost line, as recordScanCost would leave it.
+  const cost = root.querySelector("#wnpk-cost");
+  if (cost && state.identify.usage) {
+    cost.textContent = "This scan: $" + state.identify.usage.estCostUsd.toFixed(4) + " · Total: $0.0412";
+  }
+  document.body.dataset.ready = "1";
+})();
+</script>
+</body>
+</html>

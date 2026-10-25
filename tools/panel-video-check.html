@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>Panel vs video</title>
+<style>
+  /* Approximates a Whatnot live page: a centred video column with the panel
+     fixed to the right edge, to check the panel never overlaps the video at
+     common window widths. */
+  body { margin:0; background:#101114; color:#e8eaed; font-family:-apple-system,system-ui,sans-serif; }
+  #page { display:flex; justify-content:center; padding-top:48px; }
+  #video { width:720px; height:405px; background:#2b6cb0; border-radius:6px; display:block; }
+  #meta { position:fixed; top:8px; left:12px; font-size:13px; color:#9aa0a6; }
+</style></head>
+<body>
+<div id="meta"></div>
+<div id="page"><video id="video" width="720" height="405" poster=""></video></div>
+<script>
+  window.chrome = { storage:{ sync:{get:async()=>({}),set:async()=>{}}, local:{get:async()=>({}),set:async()=>{}} },
+                    runtime:{ sendMessage:()=>{}, onMessage:{addListener:()=>{}}, lastError:null } };
+</script>
+<script>
+  const V = "?v=" + Date.now();
+  document.write('<script src="panel-states.js' + V + '"><\/script>');
+  document.write('<link rel="stylesheet" href="../extension/content.css' + V + '" />');
+  document.write('<script src="../extension/content.js' + V + '"><\/script>');
+</script>
+<script>
+(function(){
+  window.__wnpkTest.renderResult(window.WNPK_STATES["priced-raw"].identify);
+  window.__wnpkTest.renderPriceSection(window.WNPK_STATES["priced-raw"].price, window.WNPK_STATES["priced-raw"].identify);
+  function report(){
+    const p = document.getElementById("wnpk-root").getBoundingClientRect();
+    const v = document.getElementById("video").getBoundingClientRect();
+    const overlap = p.left < v.right && p.right > v.left;
+    document.getElementById("meta").textContent =
+      "window " + window.innerWidth + "px · panel " + Math.round(p.width) + "px at left " +
+      Math.round(p.left) + " · video right edge " + Math.round(v.right) +
+      " · gap " + Math.round(p.left - v.right) + "px · OVERLAP: " + (overlap ? "YES" : "no");
+    document.body.dataset.overlap = overlap ? "yes" : "no";
+    document.body.dataset.gap = Math.round(p.left - v.right);
+  }
+  setTimeout(report, 150);
+  window.addEventListener("resize", report);
+})();
+</script>
+</body></html>

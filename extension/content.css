@@ -7,7 +7,9 @@
   position: fixed;
   bottom: 16px;
   right: 16px;
-  width: 260px;
+  width: 340px; /* #113: default; user-resizable, persisted as panelWidth */
+  min-width: 280px;
+  max-width: 560px;
   /* Cap the panel's total height to the viewport and lay its children out
      as a column so the title bar, controls, and the Identify Card button
      always stay visible — only #wnpk-body (the part that grows/shrinks
@@ -524,4 +526,245 @@
   margin-top: 7px;
   font-size: 12px;
   font-weight: 600;
+}
+
+/* =====================================================================
+   #113 — UI/UX pass: readability, hierarchy, warning disclosure
+   =====================================================================
+   The panel grew one feature at a time and ended up as a 260px column of
+   10–11px text where a price, a bid and a 60-word caveat all competed at
+   the same weight. Nothing here removes information: the long warning
+   text is intact behind a "Why?" disclosure, and the condition table is
+   one tap away instead of five permanent rows.
+
+   Baseline: body text is 13px minimum at 1.4 line-height. */
+
+#wnpk-root {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* Drag handle on the left edge (the panel is anchored right). */
+#wnpk-resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  background: transparent;
+}
+#wnpk-resize:hover { background: rgba(255, 141, 26, 0.35); }
+
+/* ---- header ---- */
+#wnpk-root .wnpk-card-name { font-size: 17px; line-height: 1.25; margin-bottom: 1px; }
+#wnpk-root .wnpk-set-name { font-size: 13px; color: #b9bcc2; margin-bottom: 6px; }
+
+#wnpk-root .wnpk-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+#wnpk-root .wnpk-badge {
+  font-size: 11px;
+  line-height: 1.3;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #33363b;
+  color: #d7d9dd;
+  white-space: nowrap;
+}
+
+/* ---- the number the panel exists to show ---- */
+#wnpk-root .wnpk-price-block {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 2px 0 2px;
+}
+#wnpk-root .wnpk-price-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9aa0a6;
+}
+#wnpk-root .wnpk-price-value {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+#wnpk-root .wnpk-bid {
+  font-size: 15px;
+  font-weight: 600;
+  color: #ffb063;
+  white-space: nowrap;
+  padding-bottom: 3px;
+  font-variant-numeric: tabular-nums;
+}
+#wnpk-root .wnpk-bid b { color: #ff8d1a; }
+#wnpk-root .wnpk-bid-skip { color: #ff7a7a; }
+#wnpk-root .wnpk-bid-none { color: #9aa0a6; }
+#wnpk-root .wnpk-price-sub { font-size: 12px; color: #9aa0a6; margin-bottom: 6px; }
+#wnpk-root .wnpk-caption { font-size: 12px; color: #9aa0a6; margin: 2px 0 6px; }
+
+/* ---- confidence chips ---- */
+#wnpk-root .wnpk-chips { display: flex; gap: 6px; margin: 8px 0 6px; }
+#wnpk-root .wnpk-chip {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #2b2e33;
+  color: #c8cbd0;
+}
+#wnpk-root .wnpk-chip b { color: #fff; font-weight: 600; }
+#wnpk-root .wnpk-chip-high b { color: #7ee2a8; }
+#wnpk-root .wnpk-chip-medium b { color: #ffd166; }
+#wnpk-root .wnpk-chip-low b { color: #ff9b9b; }
+
+/* ---- warnings: headline always, detail on demand ---- */
+#wnpk-root .wnpk-warn {
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  border-left: 3px solid #5c6066;
+  background: #26282c;
+}
+#wnpk-root .wnpk-warn-check {
+  border-left-color: #ff8d1a;
+  background: #2e2519;
+}
+#wnpk-root .wnpk-warn-info {
+  border-left-color: #5a8dd6;
+  background: #22262e;
+}
+#wnpk-root .wnpk-warn-head {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: #f1f3f4;
+}
+#wnpk-root .wnpk-warn-icon { flex: 0 0 auto; }
+#wnpk-root .wnpk-warn-check .wnpk-warn-icon { color: #ffae5c; }
+#wnpk-root .wnpk-warn-info .wnpk-warn-icon { color: #8ab4f8; }
+
+#wnpk-root .wnpk-why { margin-top: 5px; }
+#wnpk-root .wnpk-why > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #9fc2f0;
+  list-style: none;
+  display: inline-block;
+  padding: 1px 0;
+}
+#wnpk-root .wnpk-why > summary::-webkit-details-marker { display: none; }
+#wnpk-root .wnpk-why > summary::before { content: "▸ "; }
+#wnpk-root .wnpk-why[open] > summary::before { content: "▾ "; }
+#wnpk-root .wnpk-why > summary:hover { color: #c3d9f7; }
+#wnpk-root .wnpk-why-body {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #c3c6cb;
+  margin-top: 5px;
+  padding-left: 2px;
+}
+
+/* ---- disclosure rows ---- */
+#wnpk-root .wnpk-rows-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9aa0a6;
+  margin: 10px 0 5px;
+}
+#wnpk-root .wnpk-rows { display: flex; flex-direction: column; gap: 5px; }
+#wnpk-root .wnpk-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #2a2d31;
+  border: 1px solid #34383d;
+}
+#wnpk-root a.wnpk-row-link { text-decoration: none; color: inherit; }
+#wnpk-root a.wnpk-row-link:hover { background: #32363b; border-color: #4a4f56; }
+#wnpk-root .wnpk-row-main { min-width: 0; }
+#wnpk-root .wnpk-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f1f3f4;
+  line-height: 1.3;
+}
+#wnpk-root .wnpk-row-set { font-size: 12px; color: #b9bcc2; line-height: 1.3; }
+#wnpk-root .wnpk-row-meta { font-size: 11px; color: #8c9197; line-height: 1.3; }
+#wnpk-root .wnpk-row-price { text-align: right; white-space: nowrap; flex: 0 0 auto; }
+#wnpk-root .wnpk-row-nm {
+  display: block;
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+#wnpk-root .wnpk-row-bid {
+  display: block;
+  font-size: 12px;
+  color: #ffb063;
+  font-variant-numeric: tabular-nums;
+}
+#wnpk-root .wnpk-row-thin { font-size: 12px; color: #9aa0a6; }
+#wnpk-root .wnpk-rows-hint {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #c3c6cb;
+  margin: 8px 0 2px;
+  padding-left: 9px;
+  border-left: 2px solid #4a4f56;
+}
+
+/* ---- condition table, collapsed ---- */
+#wnpk-root .wnpk-cond-details { margin: 8px 0 2px; }
+#wnpk-root .wnpk-cond-details > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #9fc2f0;
+  list-style: none;
+  padding: 2px 0;
+}
+#wnpk-root .wnpk-cond-details > summary::-webkit-details-marker { display: none; }
+#wnpk-root .wnpk-cond-details > summary::before { content: "▸ "; }
+#wnpk-root .wnpk-cond-details[open] > summary::before { content: "▾ "; }
+#wnpk-root .wnpk-cond-row { font-size: 13px; padding: 3px 0; }
+
+/* ---- footer: present, not prominent ---- */
+#wnpk-root #wnpk-cost { font-size: 10.5px; color: #80858b; }
+#wnpk-root #wnpk-flag-btn { font-size: 10.5px; }
+#wnpk-root .wnpk-link { font-size: 12.5px; }
+
+/* The grade ladder reuses the condition rows, so it inherits 13px too. */
+#wnpk-root .wnpk-more-grades > summary { font-size: 12px; color: #9fc2f0; cursor: pointer; }
+
+/* Grade ladder (#113): collapsed by default — other grades are context and
+   must not compete with the graded value and bid above them. */
+#wnpk-root .wnpk-ladder { margin: 6px 0 2px; }
+#wnpk-root .wnpk-ladder > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #9fc2f0;
+  list-style: none;
+  padding: 2px 0;
+}
+#wnpk-root .wnpk-ladder > summary::-webkit-details-marker { display: none; }
+#wnpk-root .wnpk-ladder > summary::before { content: "▸ "; }
+#wnpk-root .wnpk-ladder[open] > summary::before { content: "▾ "; }
+#wnpk-root .wnpk-grade-self {
+  font-weight: 700;
+  color: #fff;
+  background: #33363b;
+  border-radius: 4px;
+  padding-left: 6px;
+  padding-right: 6px;
+  margin: 0 -6px;
 }

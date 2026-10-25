@@ -85,6 +85,7 @@
       <button id="wnpk-flag-btn" title="Flag this scan for later debugging (logged server-side, not shown anywhere)" disabled>🚩 Flag</button>
     </div>
     <button id="wnpk-identify-btn">Identify Card</button>
+    <div id="wnpk-resize" title="Drag to resize"></div>
   `;
   document.documentElement.appendChild(root);
 
@@ -199,6 +200,110 @@
   // next page load/reload, so it stays wherever the user last put it
   // instead of resetting to bottom-right every stream.
   initDraggable();
+  initResizable();
+  loadPanelWidth();
+
+  // PANEL WIDTH (#113)
+  // -------------------------------------------------------------------
+  // The panel was a fixed 260px, which is why every explanation in it read
+  // as a wall: a 40-word sentence is ~10 lines at that width. Default is
+  // now 340px, the user can drag the left edge, and the choice is
+  // remembered. Clamped so a mis-drag can never make the panel unusable or
+  // wider than the viewport.
+  const PANEL_MIN_WIDTH = 280;
+  const PANEL_MAX_WIDTH = 560;
+  const PANEL_DEFAULT_WIDTH = 340;
+
+  function clampWidth(w) {
+    const cap = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, window.innerWidth - 40));
+    return Math.min(Math.max(Math.round(w), PANEL_MIN_WIDTH), cap);
+  }
+
+  function applyPanelWidth(w) {
+    root.style.width = clampWidth(w) + "px";
+  }
+
+  // The DEFAULT width has to fit beside the stream, not just look good in
+  // isolation. A flat 340px panel overlapped a centred 720px video by 76px
+  // at a 1280px window, so the default is "340 unless the space right of
+  // the video is smaller", floored at PANEL_MIN_WIDTH. A width the user has
+  // actually chosen is never second-guessed — this only picks the FIRST
+  // width, and the drag handle overrides it permanently.
+  //
+  // Measured in tools/panel-video-check.html against a centred 720x405
+  // video, which is an APPROXIMATION of the Whatnot layout, not the real
+  // thing:
+  //     1920px window -> panel 340px, 244px clear of the video
+  //     1440px window -> panel 328px,  16px clear
+  //     1280px window -> panel 280px,  16px OVERLAP
+  // At 1280 the space right of a centred 720px video is only 264px, which
+  // is below the 280px minimum — i.e. at that width there is no room for a
+  // readable panel beside the video at all, and the honest options are to
+  // overlap slightly or to be unreadable. It overlaps, and the panel stays
+  // draggable so it can be moved. Worth re-measuring against the real page
+  // if 1280 turns out to be a width Eric actually streams at.
+  function defaultWidthForViewport() {
+    try {
+      const video = findVideo();
+      if (video) {
+        const r = video.getBoundingClientRect();
+        if (r.width > 0) {
+          const GUTTER = 16;
+          const available = window.innerWidth - r.right - GUTTER * 2;
+          if (available > 0 && available < PANEL_DEFAULT_WIDTH) return clampWidth(available);
+        }
+      }
+    } catch (e) {
+      /* no video on the page yet — fall through to the plain default */
+    }
+    return PANEL_DEFAULT_WIDTH;
+  }
+
+  async function loadPanelWidth() {
+    try {
+      const { panelWidth } = await chrome.storage.sync.get("panelWidth");
+      applyPanelWidth(panelWidth || defaultWidthForViewport());
+    } catch (e) {
+      applyPanelWidth(defaultWidthForViewport());
+    }
+  }
+
+  function savePanelWidth(w) {
+    try {
+      chrome.storage.sync.set({ panelWidth: clampWidth(w) });
+    } catch (e) {
+      /* width is a convenience, never worth throwing over */
+    }
+  }
+
+  function initResizable() {
+    const handle = $("#wnpk-resize");
+    if (!handle) return;
+    let startX = 0;
+    let startWidth = 0;
+    let resizing = false;
+
+    handle.addEventListener("mousedown", (e) => {
+      resizing = true;
+      startX = e.clientX;
+      startWidth = root.getBoundingClientRect().width;
+      document.body.style.userSelect = "none";
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    window.addEventListener("mousemove", (e) => {
+      if (!resizing) return;
+      // The handle is on the LEFT edge and the panel is anchored right, so
+      // dragging left must make it wider.
+      applyPanelWidth(startWidth + (startX - e.clientX));
+    });
+    window.addEventListener("mouseup", () => {
+      if (!resizing) return;
+      resizing = false;
+      document.body.style.userSelect = "";
+      savePanelWidth(root.getBoundingClientRect().width);
+    });
+  }
 
   function initDraggable() {
     const bar = $("#wnpk-bar");
@@ -767,11 +872,17 @@
     const cell = $(`#wnpk-sib-price-${tcgPlayerId}`);
     if (!cell) return;
     if (errorText || nmPrice == null) {
-      cell.textContent = errorText || "no price";
+      cell.innerHTML = `<span class="wnpk-row-thin">${escapeHtml(errorText || "no price")}</span>`;
       return;
     }
-    const bidText = nmBid == null ? "Bid: —" : nmBid <= 0 ? "Bid: Skip" : `Bid: $${nmBid.toFixed(2)}`;
-    cell.textContent = `NM $${nmPrice.toFixed(2)} · ${bidText}`;
+    // Same two-line shape as the graded cell in siblingPriceCellHtml.
+    const bid =
+      nmBid == null
+        ? `<span class="wnpk-row-bid wnpk-bid-none">Bid —</span>`
+        : nmBid <= 0
+        ? `<span class="wnpk-row-bid wnpk-bid-skip">Bid Skip</span>`
+        : `<span class="wnpk-row-bid">Bid $${nmBid.toFixed(2)}</span>`;
+    cell.innerHTML = `<span class="wnpk-row-nm">$${nmPrice.toFixed(2)}</span>${bid}`;
   }
 
   // HOISTED 2026-09-10 (identify/pricing decoupling) from inner functions
@@ -1002,9 +1113,17 @@
         ? `<span class="wnpk-listing-count">· sold count unavailable</span>`
         : `<span class="wnpk-listing-count">· ${sold} sold/3mo</span>`;
 
-    return `<div class="wnpk-warning">⚠ Another printing of this card is worth much more — <strong>${escapeHtml(
-      best.v.label
-    )}</strong>: NM $${best.nm.toFixed(2)} ${bidHtml} ${soldHtml}<br>Check the card against the PRINT VARIANT options below and switch if that's the one you're holding.</div>`;
+    // #113: same headline + "Why?" shape as every other warning. The
+    // headline carries the one fact that changes a bid (which printing, and
+    // what it is worth); the instructions move into the disclosure.
+    return `<div class="wnpk-warn wnpk-warn-check">
+        <div class="wnpk-warn-head"><span class="wnpk-warn-icon">⚠</span><span>${escapeHtml(
+          best.v.label
+        )} is worth far more — NM $${best.nm.toFixed(2)}</span></div>
+        <details class="wnpk-why"><summary>Why?</summary><div class="wnpk-why-body">Another printing of this card prices much higher than the one detected: <strong>${escapeHtml(
+          best.v.label
+        )}</strong> at NM $${best.nm.toFixed(2)} ${bidHtml} ${soldHtml}. Check the card against the PRINT VARIANT options below and switch if that's the one you're holding.</div></details>
+      </div>`;
   }
 
   // The market-price line spells out the edition/finish inline (not just
@@ -1201,7 +1320,7 @@
     const pricingWarnings = `
       ${
         priceData.noPriceNote
-          ? `<div class="wnpk-warning">⚠ ${escapeHtml(priceData.noPriceNote)}</div>`
+          ? warningsHtml([WARN("check", "No live price for this printing", priceData.noPriceNote)])
           : ""
       }
       ${
@@ -1209,7 +1328,12 @@
         // ambiguous-match/stamp warnings in the header above — it means NO
         // price is being shown, not "the price might be off."
         priceData.pricingError
-          ? `<div class="wnpk-warning wnpk-price-error">🛑 NO LIVE PRICE: ${escapeHtml(priceData.pricingError)}</div>`
+          ? `<div class="wnpk-warn wnpk-warn-check wnpk-price-error">
+              <div class="wnpk-warn-head"><span class="wnpk-warn-icon">🛑</span><span>No live price available</span></div>
+              <details class="wnpk-why"><summary>Why?</summary><div class="wnpk-why-body">${escapeHtml(
+                priceData.pricingError
+              )}</div></details>
+            </div>`
           : ""
       }
     `;
@@ -1244,20 +1368,16 @@
         priceData.priceVariantUsed,
         identifyData && identifyData.matchConfidence
       )}</div>
-      <div class="wnpk-market-price" id="wnpk-market-price">
-        ${
-          initialVariant
-            ? marketPriceLine(initialVariant, priceData.listingCount)
-            : marketPriceLine({ basePrice: priceData.marketPrice }, priceData.listingCount)
-        }
-      </div>
+      <div id="wnpk-market-price">${marketPriceBlock(initialVariant, priceData)}</div>
       <div id="wnpk-sell-through">${sellThroughBadgeHtml(
         initialVariant ? initialVariant.sellThrough : priceData.sellThrough,
         initialVariant ? initialVariant.conditionsBreakEven : priceData.conditionsBreakEven
       )}</div>
       ${variantPicker}
-      <div class="wnpk-cond-label" id="wnpk-cond-label">CONDITION PRICES</div>
-      <div class="wnpk-cond-list" id="wnpk-cond-list">${conditionRowsHtml(priceData.conditionPrices, priceData.conditionsSuggestedBid)}</div>
+      ${conditionDetailsHtml(
+        initialVariant ? initialVariant.conditions : priceData.conditionPrices,
+        initialVariant ? initialVariant.conditionsSuggestedBid : priceData.conditionsSuggestedBid
+      )}
     `;
 
     // FIX (2026-09-17, see setNameForVariantKey above): keep the header's
@@ -1274,14 +1394,18 @@
       select.addEventListener("change", () => {
         const variant = priceData.priceVariants[select.value];
         if (!variant) return;
-        $("#wnpk-market-price").innerHTML = marketPriceLine(variant, priceData.listingCount);
+        $("#wnpk-market-price").innerHTML = marketPriceBlock(variant, priceData);
         $("#wnpk-alt-printing").innerHTML = alternatePrintingAlertHtml(
           priceData.priceVariants,
           select.value,
           identifyData && identifyData.matchConfidence
         );
         $("#wnpk-sell-through").innerHTML = sellThroughBadgeHtml(variant.sellThrough, variant.conditionsBreakEven);
-        $("#wnpk-cond-list").innerHTML = conditionRowsHtml(variant.conditions, variant.conditionsSuggestedBid);
+        const condWrap = $("#wnpk-cond-details");
+        if (condWrap) {
+          const wasOpen = condWrap.open;
+          condWrap.outerHTML = conditionDetailsHtml(variant.conditions, variant.conditionsSuggestedBid, wasOpen);
+        }
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
         if (setNameEl && identifyData) {
@@ -1289,6 +1413,189 @@
         }
       });
     }
+  }
+
+  // NM is the number people actually bid against, so it is the headline and
+  // the rest of the condition table is one tap away rather than five rows
+  // of permanent furniture.
+  function marketPriceBlock(variant, priceData) {
+    const base = variant && variant.basePrice != null ? variant.basePrice : priceData.marketPrice;
+    const bids = variant ? variant.conditionsSuggestedBid : priceData.conditionsSuggestedBid;
+    const nmBid = bids ? bids.NM : undefined;
+    const listing =
+      priceData.listingCount != null
+        ? `${priceData.listingCount} listing${priceData.listingCount === 1 ? "" : "s"}`
+        : "";
+    const label = variant && variant.label ? `NM · ${variant.label}` : "NM market";
+    return bigPriceHtml({ priceLabel: label, price: base, bid: nmBid, sub: listing ? escapeHtml(listing) : "" });
+  }
+
+  function conditionDetailsHtml(conditions, suggestedBid, open) {
+    const rows = conditionRowsHtml(conditions, suggestedBid);
+    return `<details class="wnpk-cond-details" id="wnpk-cond-details"${open ? " open" : ""}>
+        <summary>All conditions &amp; bids</summary>
+        <div class="wnpk-cond-list" id="wnpk-cond-list">${rows}</div>
+      </details>`;
+  }
+
+  // The one number the panel exists to show, plus the bid derived from it.
+  // Previously both were a single 14px sentence competing with every other
+  // line; here they are the visual anchor and everything else defers.
+  function bigPriceHtml({ priceLabel, price, bid, sub }) {
+    const bidHtml =
+      bid === undefined
+        ? ""
+        : bid == null
+        ? `<div class="wnpk-bid wnpk-bid-none">Bid —</div>`
+        : bid <= 0
+        ? `<div class="wnpk-bid wnpk-bid-skip">Bid Skip</div>`
+        : `<div class="wnpk-bid">Bid <b>$${bid.toFixed(2)}</b></div>`;
+    return `<div class="wnpk-price-block">
+        <div class="wnpk-price-main">
+          <div class="wnpk-price-label">${escapeHtml(priceLabel || "Market")}</div>
+          <div class="wnpk-price-value">${price != null ? "$" + price.toFixed(2) : "—"}</div>
+        </div>
+        ${bidHtml}
+      </div>${sub ? `<div class="wnpk-price-sub">${sub}</div>` : ""}`;
+  }
+
+  // One wrapping row of small badges instead of a stack of full-width
+  // divs, each of which used to cost a line of a ~260px panel.
+  function badgeRowHtml(data) {
+    const b = [];
+    if (data.printEdition) b.push(`<span class="wnpk-badge" id="wnpk-edition-badge">${escapeHtml(data.printEdition)}</span>`);
+    // "none" is the schema DEFAULT (returned whenever the stamp area is
+    // unclear or absent), so it is not a finding and is not shown. "other"
+    // IS shown: it means a stamp was seen but not named.
+    if (data.stampType && data.stampType !== "none" && data.stampType !== "1st Edition") {
+      b.push(`<span class="wnpk-badge">${escapeHtml(data.stampType)} stamp</span>`);
+    }
+    return b.length ? `<div class="wnpk-badges">${b.join("")}</div>` : "";
+  }
+
+  // ===================================================================
+  // WARNING MODEL (#113)
+  // ===================================================================
+  // Every warning the panel can show used to be a wall of prose in a
+  // ~260px column: on the Blastoise reprint state that was a 20-line
+  // paragraph standing between the card name and any price. The text
+  // itself is good and deliberately written -- several of these sentences
+  // exist because a specific wrong answer once cost real money -- so none
+  // of it is deleted. It moves behind a "Why?" disclosure, with a short
+  // plain headline in front of it.
+  //
+  // Severity is deliberately only two levels. "check" means do not bid on
+  // what is shown without looking at the card again; "info" means the
+  // panel is telling you something useful that does not change the
+  // decision. Anything that withholds or qualifies a PRICE is "check".
+  const WARN = (severity, headline, detail) => ({ severity, headline, detail });
+
+  // matchBasis -> headline, for the cases where the basis alone says what
+  // happened. Kept as data rather than branches so a new basis from the
+  // backend shows up as a missing headline in one place.
+  const BASIS_HEADLINES = {
+    "sibling-ambiguous": "Two printings of this card — we can't tell which",
+    "number-tie-ambiguous": "This number belongs to more than one product",
+    "anniversary-reprint-ambiguous": "Could be the original or an anniversary reprint",
+    "weak-number": "The card number didn't match — matched on other details",
+    "legacy-number-rescue": "Card number was misread — a second AI read fixed it",
+    "name-rescued-by-number": "Name was unclear — matched on the number",
+    "setname-search": "Matched using the set name, not the number",
+    "setname-narrowed": "Matched using the set name, not the number",
+    "slab-label": "Identified from the slab label, not the card",
+  };
+
+  // Builds the ordered warning list for a result. Returns [] for a clean
+  // scan, which is the common case and should look clean.
+  function buildWarnings(data) {
+    const out = [];
+
+    if (data.visionProvider === "haiku-fallback") {
+      out.push(
+        WARN(
+          "info",
+          "Fallback AI read this card",
+          "The primary vision model was unavailable for this scan, so Claude Haiku 4.5 read the card instead. The result is still a real read — judge it the same way, but know it came from the backup."
+        )
+      );
+    }
+
+    // The price-withholding cases. Each one means NO single price is
+    // shown, so each is "check".
+    if (data.siblingAmbiguity) {
+      const n = (data.siblingAmbiguity.candidates || []).length;
+      const headline =
+        data.matchBasis === "anniversary-reprint-ambiguous"
+          ? "Could be the original or an anniversary reprint"
+          : data.matchBasis === "number-tie-ambiguous"
+          ? `This number belongs to ${n} different products`
+          : `${n} printings of this card — we can't tell which`;
+      out.push(
+        WARN("check", headline + " — no single price", stripPromptFromNote(data.ambiguousNote, data.siblingAmbiguity.prompt))
+      );
+    } else if (data.printingUndetermined) {
+      out.push(
+        WARN(
+          "check",
+          "Couldn't pin the exact printing — price withheld",
+          data.ambiguousNote ||
+            "The scan didn't produce enough to identify one specific printing, so no price is shown."
+        )
+      );
+    } else if (data.ambiguousNote) {
+      const headline = BASIS_HEADLINES[data.matchBasis] || "This match has a caveat";
+      out.push(WARN("check", headline, data.ambiguousNote));
+    } else if (data.matchConfidence === "Low") {
+      out.push(
+        WARN(
+          "check",
+          "Low-confidence match — check it's the right card",
+          "Nothing specific went wrong, but the evidence for this particular card is weak. Verify it before relying on the price."
+        )
+      );
+    }
+
+    if (data.attackMismatch) {
+      out.push(
+        WARN(
+          "check",
+          "The attack we read isn't on this printing",
+          "A confidently-read attack name does not appear on the matched card's attack list. That is a positive contradiction, not just missing evidence — treat the match as unconfirmed."
+        )
+      );
+    }
+
+    if (data.stampNote) out.push(WARN("info", "This card looks stamped", data.stampNote));
+
+    return out;
+  }
+
+  function warningsHtml(warnings) {
+    if (!warnings || !warnings.length) return "";
+    return warnings
+      .map((w) => {
+        const icon = w.severity === "check" ? "⚠" : "ⓘ";
+        const detail = w.detail
+          ? `<details class="wnpk-why"><summary>Why?</summary><div class="wnpk-why-body">${escapeHtml(
+              w.detail
+            )}</div></details>`
+          : "";
+        return `<div class="wnpk-warn wnpk-warn-${w.severity}">
+            <div class="wnpk-warn-head"><span class="wnpk-warn-icon">${icon}</span><span>${escapeHtml(
+          w.headline
+        )}</span></div>${detail}
+          </div>`;
+      })
+      .join("");
+  }
+
+  // The disclosure hint is appended to `ambiguousNote` by the backend AND
+  // rendered under the rows, so it appeared twice on every disclosure
+  // state. The rows are where it belongs (it describes what to compare),
+  // so strip it from the collapsed detail text.
+  function stripPromptFromNote(note, prompt) {
+    if (!note || !prompt) return note;
+    return String(note).split(prompt).join("").replace(/\s{2,}/g, " ").trim();
   }
 
   function renderResult(data) {
@@ -1325,30 +1632,7 @@
           ? `<img class="wnpk-card-img" src="${data.cardImageUrl}" />`
           : ""
       }
-      <div class="wnpk-confidence-row">
-        <span>Read: ${escapeHtml(data.confidence || "—")}</span>
-        <span>Match: ${escapeHtml(data.matchConfidence || "—")}</span>
-      </div>
-      ${
-        data.printEdition
-          ? `<div class="wnpk-lang-badge" id="wnpk-edition-badge" style="margin-bottom:6px;">${escapeHtml(
-              data.printEdition
-            )}</div>`
-          : ""
-      }
-      ${
-        // FIX (2026-10-09): "none" is the schema's DEFAULT stampType value —
-        // the prompt tells the model to return it whenever the stamp area is
-        // unclear, out of frame or simply absent, i.e. on the overwhelming
-        // majority of ordinary cards. api/identify.js forwards read.stampType
-        // verbatim, so this rendered a literal "none stamp" badge on nearly
-        // every scan, which reads as a real finding about the card instead of
-        // the absence of one. "other" is still shown deliberately: it means
-        // the model SAW a stamp it could not name, which is worth surfacing.
-        data.stampType && data.stampType !== "none" && data.stampType !== "1st Edition"
-          ? `<div class="wnpk-lang-badge" style="margin-bottom:6px;">${escapeHtml(data.stampType)} stamp</div>`
-          : ""
-      }
+      ${badgeRowHtml(data)}
     `;
     // MOVED 2026-09-13 (UI decluttering): the confidence-disclosure
     // warnings (generic Low-confidence, ambiguousNote, stampNote) used to
@@ -1360,23 +1644,18 @@
     // order (below the price/condition section, still at full visibility)
     // rather than removed or de-emphasized. See the three render branches
     // below for where this now gets inserted.
-    const confidenceWarnings = `
-      ${
-        data.matchConfidence === "Low" && !data.ambiguousNote
-          ? `<div class="wnpk-warning">⚠ Low-confidence match — verify this is really the right card before relying on the price.</div>`
-          : ""
-      }
-      ${
-        data.ambiguousNote
-          ? `<div class="wnpk-warning">⚠ ${escapeHtml(data.ambiguousNote)}</div>`
-          : ""
-      }
-      ${
-        data.stampNote
-          ? `<div class="wnpk-warning">⚠ ${escapeHtml(data.stampNote)}</div>`
-          : ""
-      }
-    `;
+    const warnings = buildWarnings(data);
+    const confidenceWarnings = warningsHtml(warnings);
+    // Read/Match belong BELOW the number they qualify, not above it: they
+    // describe how much to trust the price, which is meaningless before
+    // you have seen the price.
+    const confidenceChips = `
+      <div class="wnpk-chips">
+        <span class="wnpk-chip">Read <b>${escapeHtml(data.confidence || "—")}</b></span>
+        <span class="wnpk-chip wnpk-chip-${String(data.matchConfidence || "").toLowerCase()}">Match <b>${escapeHtml(
+      data.matchConfidence || "—"
+    )}</b></span>
+      </div>`;
     // CHANGED 2026-09-10 (identify/pricing decoupling): `noPriceNote` and
     // `pricingError` used to render right here, but both now come back
     // from the separate /api/price call (see fetchAndRenderPricing /
@@ -1463,15 +1742,27 @@
             .map((r) => row(r, false))
             .join("")}</div></details>`
         : "";
-      return `${sameHtml ? `<div class="wnpk-cond-list">${sameHtml}</div>` : ""}${othersHtml}`;
+      // #113: the whole ladder collapses. These grades are CONTEXT ONLY and
+      // never feed the bid, so they should not compete with the figure that
+      // does. The scanned grade's own row is summarised on the closed
+      // summary line so the useful part survives the collapse.
+      const inner = `${sameHtml ? `<div class="wnpk-cond-list">${sameHtml}</div>` : ""}${othersHtml}`;
+      if (!inner) return "";
+      const count = same.length + others.length + (selfRow ? 1 : 0);
+      return `<details class="wnpk-ladder">
+          <summary>Other grades <span class="wnpk-estimate-note">(${count})</span></summary>
+          ${inner}
+        </details>`;
     }
 
     // STATE 3 — priced.
     if (data.isSlab && data.gradedPrice != null) {
       const bid = data.gradedSuggestedBid;
-      const headline =
-        `Graded value: $${data.gradedPrice.toFixed(2)}` +
-        (bid != null ? ` · Bid: ${bid > 0 ? "$" + bid.toFixed(2) : "Skip"}` : "");
+      const headline = bigPriceHtml({
+        priceLabel: `${data.grader || "Graded"} ${data.grade || ""}`.trim() + " value",
+        price: data.gradedPrice,
+        bid: bid,
+      });
 
       const caption = `${data.gradedSampleCount} sale${data.gradedSampleCount === 1 ? "" : "s"} · last ${
         data.gradedSellThrough && data.gradedSellThrough.windowDays ? data.gradedSellThrough.windowDays : 90
@@ -1480,23 +1771,36 @@
       const gradedCaveats = `
         ${
           data.gradedOutlierAffected
-            ? `<div class="wnpk-warning">⚠ Sales at this grade include at least one outlier price. The figure above is the median, which resists that, but spot-check the comps before bidding near it.</div>`
+            ? warningsHtml([
+                WARN(
+                  "info",
+                  "Some sales at this grade are outliers",
+                  "Sales at this grade include at least one outlier price. The figure above is the median, which resists that, but spot-check the comps before bidding near it."
+                ),
+              ])
             : ""
         }
         ${
           data.gradedLowConfidence
-            ? `<div class="wnpk-warning">⚠ Recent sales at this grade are sparse enough that our data source rates its own price estimate low-confidence. The median above is real but thinly supported.</div>`
+            ? warningsHtml([
+                WARN(
+                  "info",
+                  "Few recent sales — thinly supported",
+                  "Recent sales at this grade are sparse enough that our data source rates its own price estimate low-confidence. The median above is real but thinly supported."
+                ),
+              ])
             : ""
         }
       `;
 
       $("#wnpk-body").innerHTML = `
         ${header}
-        ${confidenceWarnings}
-        <div class="wnpk-market-price">${headline}</div>
-        <div id="wnpk-sell-through">${sellThroughBadgeHtml(data.gradedSellThrough, null)}</div>
         ${slabBadge}
-        <div class="wnpk-cond-label"><span class="wnpk-estimate-note">${escapeHtml(caption)}</span></div>
+        ${headline}
+        <div id="wnpk-sell-through">${sellThroughBadgeHtml(data.gradedSellThrough, null)}</div>
+        <div class="wnpk-caption">${escapeHtml(caption)}</div>
+        ${confidenceChips}
+        ${confidenceWarnings}
         ${gradedCaveats}
         ${gradeLadderHtml(data.nearbyGradedPrices, data.grader, data.grade, data.gradedPrice)}
         ${slabRefSection}
@@ -1508,27 +1812,38 @@
     // STATES 1 and 2 — no graded price.
     if (data.isSlab && data.gradedPriceUnavailable) {
       const notIdentified = !data.slabCardIdentified;
-      const thinMsg = notIdentified
-        ? `⚠ Couldn't identify the card in this slab${
-            data.grader ? " (" + escapeHtml(data.grader) + (data.grade ? " " + escapeHtml(data.grade) : "") + ")" : ""
-          }. The label was read, but the card behind it couldn't be matched in our catalog — so no price of any kind is shown. Nothing here is a valuation.`
+      const thinWarning = notIdentified
+        ? WARN(
+            "check",
+            "Couldn't identify the card in this slab",
+            `The label was read${
+              data.grader ? " (" + data.grader + (data.grade ? " " + data.grade : "") + ")" : ""
+            }, but the card behind it couldn't be matched in our catalog — so no price of any kind is shown. Nothing here is a valuation.`
+          )
         : data.gradedThin
-        ? `⚠ Not enough recent graded sales for ${escapeHtml(data.grader || "this grader")} ${escapeHtml(
-            data.grade || ""
-          )}${
-            data.gradedSampleCount != null
-              ? ` — only ${data.gradedSampleCount} sale${data.gradedSampleCount === 1 ? "" : "s"} recently`
-              : ""
-          }. No graded price or bid is shown, because one or two sales cannot tell you what this slab is worth.`
-        : `⚠ This card was identified, but we couldn't find graded sales for ${escapeHtml(
-            data.grader || "that grader"
-          )} ${escapeHtml(data.grade || "")}. No graded price or bid is shown.`;
+        ? WARN(
+            "check",
+            `Only ${data.gradedSampleCount != null ? data.gradedSampleCount : "a few"} recent sale${
+              data.gradedSampleCount === 1 ? "" : "s"
+            } at this grade`,
+            `Not enough recent graded sales for ${data.grader || "this grader"} ${
+              data.grade || ""
+            } to price it. One or two sales cannot tell you what this slab is worth, so no graded price or bid is shown.`
+          )
+        : WARN(
+            "check",
+            "No graded sales found at this grade",
+            `This card was identified, but we couldn't find graded sales for ${data.grader || "that grader"} ${
+              data.grade || ""
+            }. No graded price or bid is shown.`
+          );
 
       $("#wnpk-body").innerHTML = `
         ${header}
-        <div class="wnpk-warning">${thinMsg}</div>
-        ${confidenceWarnings}
         ${slabBadge}
+        ${confidenceChips}
+        ${warningsHtml([thinWarning])}
+        ${confidenceWarnings}
         ${notIdentified ? "" : gradeLadderHtml(data.nearbyGradedPrices, data.grader, data.grade, null)}
         ${notIdentified ? "" : slabRefSection}
         ${footer}
@@ -1576,8 +1891,9 @@
       : `<div class="wnpk-cond-label">Printing undetermined — price withheld, see warning above.</div>`;
     $("#wnpk-body").innerHTML = `
       ${header}
-      ${confidenceWarnings}
       ${priceSectionHtml}
+      ${confidenceChips}
+      ${confidenceWarnings}
       ${footer}
     `;
   }
@@ -1591,52 +1907,49 @@
   function siblingPriceCellHtml(c) {
     const g = c.graded;
     if (g && g.gradedPrice != null) {
-      const label = `${g.grader || ""} ${g.grade || ""}`.trim();
       // `gradedSuggestedBid`, not `suggestedBid` — computeGradedBidForBucket
       // prefixes every field it returns. A local test caught this reading the
       // wrong name and silently showing "Bid: —" on every graded row.
       const bid =
         g.gradedSuggestedBid == null
-          ? "Bid: —"
+          ? `<span class="wnpk-row-bid wnpk-bid-none">Bid —</span>`
           : g.gradedSuggestedBid <= 0
-          ? "Bid: Skip"
-          : `Bid: $${Number(g.gradedSuggestedBid).toFixed(2)}`;
-      return `${escapeHtml(label)} $${Number(g.gradedPrice).toFixed(2)} · ${escapeHtml(bid)}`;
+          ? `<span class="wnpk-row-bid wnpk-bid-skip">Bid Skip</span>`
+          : `<span class="wnpk-row-bid">Bid $${g.gradedSuggestedBid.toFixed(2)}</span>`;
+      return `<span class="wnpk-row-nm">$${g.gradedPrice.toFixed(2)}</span>${bid}`;
     }
-    if (g && g.gradedThin) {
-      const label = `${g.grader || ""} ${g.grade || ""}`.trim();
-      return `${escapeHtml(label)} — too few sales to price`;
+    if (g && g.gradedPriceUnavailable) {
+      return `<span class="wnpk-row-thin">too few sales</span>`;
     }
-    return "Loading price…";
+    return `<span class="wnpk-row-thin">…</span>`;
   }
 
-  // ADDED 2026-10-15 (test #102). Deliberately NOT price-ranked: rows arrive
-  // in the backend's card-number order so the panel never implies the
-  // expensive printing is the likely answer.
-  //
-  // CHANGED 2026-10-18: the row now shows the SET as well. The sibling cap
-  // discloses printings inside one set, where the set adds nothing — but the
-  // exact-number tie path discloses different PRODUCTS that share a number
-  // (Rayquaza 003/017 POP Series 1 vs Blister Exclusives), and there the set
-  // is the only field that tells them apart.
   function siblingRowsHtml(siblingAmbiguity) {
-    const rows = (siblingAmbiguity.candidates || [])
-      .map(
-        (c) => `
-        <div class="wnpk-sib-row">
-          <div class="wnpk-sib-name">${escapeHtml(c.name)} <span class="wnpk-sib-meta">${escapeHtml(
-          c.number || "?"
-        )}${c.setName ? ` · ${escapeHtml(c.setName)}` : ""}${
-          c.rarity ? ` · ${escapeHtml(c.rarity)}` : ""
-        }</span></div>
-          <div class="wnpk-sib-price" id="wnpk-sib-price-${escapeHtml(c.tcgPlayerId)}">${siblingPriceCellHtml(c)}</div>
-        </div>`
-      )
+    const cands = siblingAmbiguity.candidates || [];
+    const rows = cands
+      .map((c) => {
+        const meta = [c.number || "?", c.rarity].filter(Boolean).join(" · ");
+        const inner = `
+          <div class="wnpk-row-main">
+            <div class="wnpk-row-name">${escapeHtml(c.name)}</div>
+            <div class="wnpk-row-set">${escapeHtml(c.setName || "")}</div>
+            <div class="wnpk-row-meta">${escapeHtml(meta)}</div>
+          </div>
+          <div class="wnpk-row-price" id="wnpk-sib-price-${escapeHtml(c.tcgPlayerId)}">${siblingPriceCellHtml(c)}</div>`;
+        // Each row links to its own product page: the whole point of a
+        // disclosure is that the user checks, and the top-level link is
+        // deliberately null on these states so it cannot imply a pick.
+        return c.tcgplayerUrl
+          ? `<a class="wnpk-row wnpk-row-link" target="_blank" rel="noopener" href="${c.tcgplayerUrl}">${inner}</a>`
+          : `<div class="wnpk-row">${inner}</div>`;
+      })
       .join("");
+    // The hint renders here and ONLY here. The backend also appends it to
+    // ambiguousNote, where buildWarnings/stripPromptFromNote removes it.
     return `
-      <div class="wnpk-cond-label">Two printings of this card — can't tell which from the scan</div>
-      ${rows}
-      <div class="wnpk-sib-prompt">${escapeHtml(siblingAmbiguity.prompt)}</div>`;
+      <div class="wnpk-rows-label">${cands.length} possible printings — pick the one you're holding</div>
+      <div class="wnpk-rows">${rows}</div>
+      <div class="wnpk-rows-hint">${escapeHtml(siblingAmbiguity.prompt || "")}</div>`;
   }
 
   function escapeHtml(str) {
