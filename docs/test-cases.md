@@ -13518,3 +13518,49 @@ matching one.
 original-vs-reprint disclosure still firing with all three rows, a genuine
 "Celebrations" Blastoise read keeping its price, and `numbersMatch` pinned
 unchanged.
+
+
+---
+
+## #111 + #112 production deploy — 2026-10-25
+
+`09f7a90` deployed as **`dpl_7FoFB9NLBQzo4en9eJtJFdYzEKZv`**,
+**`sourceHash 02ff9590e046403c352978ed5701d926f29129b9`** == `shasum
+api/identify.js` on disk, byte-exact, **checked twice** on the alias.
+
+Production e2e, **6/6**:
+
+| scanned | matched | Match | basis | result |
+|---|---|---|---|---|
+| **PSA 9 Pichu slab** | Neo Premium File 2 | Medium | `slab-label` | **607842, graded $139.79 (n=9) → bid $52.83 Stagnant**, 1818ms |
+| **Shining Celebi** | M6a: MEGA Expansion 30th Celebration | High | `score-only` | 717001 priced, 1421ms |
+| Base Set Blastoise | Base Set | Low | `sibling-ambiguous` | withheld, 3 rows, 1564ms |
+| Celebrations Blastoise | Base Set | Low | `sibling-ambiguous` | withheld, 3 rows, 1471ms |
+| Pikachu XY95 | XY Promos | High | `score-only` | 114004, 1345ms |
+| Alakazam 33 | Expedition | Medium | `legacy-number-rescue` | 83500, 1893ms |
+
+All local commits pushed; `origin/main == 5e71dfe` at the time of the deploy,
+0 ahead / 0 behind.
+
+### The e2e burst starved a live scan — #106's open item, now measured
+
+The six scans ran back to back and exhausted PPT's 60-unit minute budget.
+Three 429 groups landed in a **12-second window**, `01:00:55`–`01:01:07`:
+
+```
+429 Minute rate limit exceeded ... required=3 available=1  name= Alakazam 010/147
+429 Minute rate limit exceeded ... required=3 available=0  name= Alakazam
+429 Rate limit exceeded (60 calls/min) retryAfter=24       name= Eevee
+```
+
+**The Eevee was not one of the e2e scans.** It was organic traffic — a real
+scan that failed because of the test burst. The app behaved correctly
+throughout: `found: false`, `rateLimited: true`, `retryAfter: 25`, a plain
+user-facing message and **no bogus price**; the Alakazam retried cleanly 40s
+later and the e2e finished 6/6.
+
+This is the first direct measurement of the risk #106 flagged, and it
+upgrades the standing rule from caution to evidence: **space out e2e scans,
+and never run a burst while a stream may be live.** It also strengthens the
+case for #106's option 3 (client-side debouncing of repeat scans), which is
+the only one of the three options that would also cut the Gemini spend.
