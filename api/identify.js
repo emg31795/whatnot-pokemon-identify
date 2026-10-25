@@ -148,6 +148,14 @@ const LEGACY_NUMBER_RESCUE_TIMEOUT_MS = 500;
 // non-holo, but the same code now covers modern ex/SIR and V/alt-art twins,
 // where the tell is the artwork and the finish rather than holo-vs-not.
 const SIBLING_DISAMBIGUATION_HINT = "Check the finish and artwork to tell these apart.";
+// ADDED (2026-10-24, test #109): the tell when an anniversary reprint is one
+// of the disclosed rows. It replaces the finish/artwork hint rather than
+// joining it, because the reprint's artwork is a FAITHFUL copy of the
+// original's — found in preview e2e, where a scan of a genuine Celebrations
+// Blastoise was told to "check the finish and artwork", the one thing that
+// cannot separate a Classic Collection reprint from the card it reprints.
+const REPRINT_DISAMBIGUATION_HINT =
+  "This number belongs to both the original and a 25th Anniversary reprint; check for the anniversary logo.";
 
 // Total budget for waiting on the legacy shadow read inside the
 // sibling-disagreement cap, measured from the moment the cap starts.
@@ -460,6 +468,25 @@ function isAnniversaryReprintCandidate(candidate) {
     REPRINT_RARITY_PATTERN.test(String(candidate.rarity || "")) ||
     REPRINT_SET_PATTERN.test(String(candidate.setName || ""))
   );
+}
+
+// ADDED (2026-10-24, test #109): fold any anniversary-reprint rows sharing the
+// read number into a disclosure group, deduped on tcgPlayerId.
+//
+// Found in preview e2e, and it is the whole point of disclosing at all: a scan
+// of a GENUINE Celebrations: Classic Collection Blastoise returned a two-row
+// disclosure of Base Set and Base Set (Shadowless) — the padded retrieval had
+// pulled in the originals, they outscored the reprint 33 to 20, and the card
+// actually in front of the camera was left out of its own answer. Withholding
+// the price was right; omitting the real candidate was not. A disclosure has
+// to name every printing the number could belong to, or it is just a
+// differently-shaped guess.
+function appendReprintRows(group, reprintRows) {
+  const out = group.slice();
+  for (const row of reprintRows || []) {
+    if (!out.some((o) => String(o.tcgPlayerId) === String(row.tcgPlayerId))) out.push(row);
+  }
+  return out;
 }
 
 // ADDED 2026-10-09 (live Snorlax 33/95 — three real PPT rows share the number
@@ -4835,6 +4862,15 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     }
   }
 
+  // ADDED (2026-10-24, test #109): every anniversary-reprint row in the pool
+  // that the read number also points at. Folded into whichever disclosure
+  // fires below, so a genuine reprint is never left out of the answer when
+  // the padded retrieval has put its originals alongside it. Computed here,
+  // once, after every rescue has finished changing `candidates`.
+  const reprintRowsForNumber = read.cardNumber
+    ? candidates.filter((c) => isAnniversaryReprintCandidate(c) && numberPointsAtCandidate(read.cardNumber, c))
+    : [];
+
   // -------------------------------------------------------------------------
   // SIBLING-DISAGREEMENT CAP (2026-10-15, test #102)
   // -------------------------------------------------------------------------
@@ -5018,12 +5054,14 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
         // Ordered by card number ascending — deterministic, and never
         // price-ranked, so the panel cannot imply the expensive one is the
         // likely answer.
+        const siblingGroup = appendReprintRows([best, ...poolSiblings], reprintRowsForNumber);
+        const siblingGroupHasReprint = siblingGroup.length > 1 + poolSiblings.length;
         siblingAmbiguity = await buildAmbiguityDisclosure(
-          [best, ...poolSiblings],
+          siblingGroup,
           read,
           requestId,
           {
-            prompt: SIBLING_DISAMBIGUATION_HINT,
+            prompt: siblingGroupHasReprint ? REPRINT_DISAMBIGUATION_HINT : SIBLING_DISAMBIGUATION_HINT,
             reason: legacySibling
               ? `the two AI models read different card numbers ("${read.cardNumber || "unreadable"}" vs "${legacyNumber}"), each pointing at a different one of these printings`
               : `only one AI model produced a usable card number ("${read.cardNumber || "unreadable"}"), and the printing it picked is the more valuable one here`,
@@ -5084,20 +5122,24 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
       (c, i, arr) => arr.findIndex((o) => String(o.tcgPlayerId) === String(c.tcgPlayerId)) === i
     );
     if (distinctTied.length >= 2) {
-      siblingAmbiguity = await buildAmbiguityDisclosure(distinctTied, read, requestId, {
-        prompt: "Check the set symbol, or the pack or box it came from, to tell these apart.",
-        reason: `the card number that was read ("${read.cardNumber}") belongs to ${distinctTied.length} different products, and nothing else on the card separates them`,
+      const tieGroup = appendReprintRows(distinctTied, reprintRowsForNumber);
+      siblingAmbiguity = await buildAmbiguityDisclosure(tieGroup, read, requestId, {
+        prompt:
+          tieGroup.length > distinctTied.length
+            ? REPRINT_DISAMBIGUATION_HINT
+            : "Check the set symbol, or the pack or box it came from, to tell these apart.",
+        reason: `the card number that was read ("${read.cardNumber}") belongs to ${tieGroup.length} different products, and nothing else on the card separates them`,
         label: "number-tie",
       });
       matchConfidence = "Low";
       matchBasis = "number-tie-ambiguous";
       const tieNote =
-        `The card number ("${read.cardNumber}") is used by ${distinctTied.length} different products, so the number cannot tell them apart. ` +
+        `The card number ("${read.cardNumber}") is used by ${tieGroup.length} different products, so the number cannot tell them apart. ` +
         `All of them are shown below with their own price and bid. ${siblingAmbiguity.prompt}`;
       ambiguousNote = ambiguousNote ? `${ambiguousNote} ${tieNote}` : tieNote;
       console.log(
         `[requestId=${requestId}]`,
-        `[lookup] EXACT-NUMBER TIE DISCLOSED: read=${read.cardNumber} -> ${distinctTied
+        `[lookup] EXACT-NUMBER TIE DISCLOSED: read=${read.cardNumber} -> ${tieGroup
           .map((c) => `${c.name} ${c.number} [${c.setName}] (tcgPlayerId=${c.tcgPlayerId}, market=${c.prices?.market ?? "null"})`)
           .join(" | ")} — capped to Low, no single price`
       );
@@ -6809,6 +6851,8 @@ module.exports.buildZeroPaddedNumberVariant = buildZeroPaddedNumberVariant;
 module.exports.storedNumeratorIsUnpadded = storedNumeratorIsUnpadded;
 module.exports.isAnniversaryReprintCandidate = isAnniversaryReprintCandidate;
 module.exports.stripAttackMarkup = stripAttackMarkup;
+module.exports.REPRINT_DISAMBIGUATION_HINT = REPRINT_DISAMBIGUATION_HINT;
+module.exports.appendReprintRows = appendReprintRows;
 // Exported so the suite can PIN the scoring path: the 2026-10-24 markup fix
 // is scoped to extractAttackNames, and this one must stay byte-identical.
 module.exports.extractFirstAttackName = extractFirstAttackName;

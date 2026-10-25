@@ -1818,10 +1818,24 @@ async function main() {
     assert.strictEqual(r.tcgplayerUrl, null, "no implied pick in the header link");
     assert.ok(r.siblingAmbiguity, "a disclosure payload is returned");
     const ids = r.siblingAmbiguity.candidates.map((c) => String(c.tcgPlayerId)).sort();
-    assert.deepStrictEqual(ids, ["106997", "42360"], `discloses both originals, got ${ids.join(",")}`);
-    // The reprint must not be presented as one of the real possibilities.
-    assert.strictEqual(ids.includes("250319"), false, "the reprint is not disclosed as a candidate");
+    // All THREE printings this number can belong to, the reprint included —
+    // see appendReprintRows for the e2e finding that forced this. Leaving the
+    // reprint out would have been a differently-shaped guess.
+    assert.deepStrictEqual(
+      ids,
+      ["106997", "250319", "42360"],
+      `discloses both originals AND the reprint, got ${ids.join(",")}`
+    );
+    // The tell must be the anniversary logo, never "the finish and artwork" —
+    // a Classic Collection reprint copies the original's artwork faithfully.
+    assert.strictEqual(r.siblingAmbiguity.prompt, M.REPRINT_DISAMBIGUATION_HINT);
+    assert.ok(/anniversary logo/.test(String(r.ambiguousNote)), `note carries the tell: ${r.ambiguousNote}`);
     assert.ok(!/best guess/i.test(String(r.ambiguousNote || "")), "no stale best-guess clause");
+    // Every disclosed row still carries its own price handle and link.
+    for (const c of r.siblingAmbiguity.candidates) {
+      assert.ok(c.pricingLookup && c.pricingLookup.tcgPlayerId, `row ${c.tcgPlayerId} is priceable`);
+      assert.ok(c.tcgplayerUrl, `row ${c.tcgPlayerId} has its own link`);
+    }
   });
 
   await test("#109 TEST VALIDITY: the old code really did price it at High", async () => {
@@ -1863,6 +1877,36 @@ async function main() {
     assert.strictEqual(calls.some((c) => c.includes("offset=30")), false, "no page-2 fetch");
     assert.strictEqual(calls.includes("Blastoise 2/102"), false, "no unpadded combined search");
     assert.strictEqual(calls.length, 2, `2 calls total (name search + padded): ${calls.join(",")}`);
+  });
+
+  await test("#109 a GENUINE reprint scan is never left out of its own answer", async () => {
+    // Found in preview e2e: scanning a real Celebrations: Classic Collection
+    // Blastoise reads the Base Set artwork and set text (they are the same
+    // artwork), so the padded retrieval pulls in the originals and they
+    // outscore the reprint 33 to 20. Withholding the price is right; dropping
+    // the card actually in front of the camera from the disclosure is not.
+    installPptMock(blastoiseRoutes());
+    const r = await M.lookupCardPPT(BLASTOISE_READ, "blastoise-genuine-reprint", null);
+    const ids = r.siblingAmbiguity.candidates.map((c) => String(c.tcgPlayerId));
+    assert.ok(ids.includes("250319"), `the reprint is one of the answers, got ${ids.join(",")}`);
+    assert.strictEqual(r.pricingLookup, null, "and still no single price");
+    assert.strictEqual(
+      r.siblingAmbiguity.prompt,
+      M.REPRINT_DISAMBIGUATION_HINT,
+      "told to look for the logo, not the artwork"
+    );
+  });
+
+  await test("#109 appendReprintRows dedupes and preserves the original group", () => {
+    const g = [F.BASE_BLASTOISE_2, F.BASE_BLASTOISE_2_SHADOWLESS];
+    assert.strictEqual(M.appendReprintRows(g, []).length, 2, "no reprint, unchanged");
+    assert.strictEqual(M.appendReprintRows(g, [F.CC_BLASTOISE_2]).length, 3);
+    assert.strictEqual(
+      M.appendReprintRows([F.CC_BLASTOISE_2], [F.CC_BLASTOISE_2]).length,
+      1,
+      "already in the group, not duplicated"
+    );
+    assert.strictEqual(M.appendReprintRows(g, null).length, 2, "null-safe");
   });
 
   await test("#109 padded search does NOT fire on an ordinary unpadded set", async () => {
