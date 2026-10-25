@@ -244,9 +244,14 @@
   margin-bottom: 6px;
 }
 
+/* REPLACED (#113 follow-up): this was `max-width: 100%`, which on the
+   widened 340px panel produced a ~450px-tall card image and pushed the
+   price, chips and warnings below the fold. The image is now the
+   .wnpk-thumb below; this class is kept only so an older cached render
+   cannot produce a full-bleed image. */
 .wnpk-card-img {
   display: block;
-  max-width: 100%;
+  width: 96px;
   border-radius: 6px;
   margin: 6px 0;
 }
@@ -772,3 +777,62 @@
   padding-right: 6px;
   margin: 0 -6px;
 }
+
+/* =====================================================================
+   #113 follow-up — header as thumbnail + content, image on demand
+   ===================================================================== */
+
+#wnpk-root .wnpk-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+#wnpk-root .wnpk-head-main { min-width: 0; flex: 1 1 auto; }
+
+#wnpk-root .wnpk-thumb {
+  flex: 0 0 auto;
+  width: 96px;
+  padding: 0;
+  border: 1px solid #3a3e44;
+  border-radius: 6px;
+  background: #0f1012;
+  cursor: zoom-in;
+  overflow: hidden;
+  line-height: 0;
+}
+#wnpk-root .wnpk-thumb:hover { border-color: #ff8d1a; }
+#wnpk-root .wnpk-thumb img {
+  display: block;
+  width: 100%;
+  height: auto; /* aspect preserved */
+}
+
+/* At the 280px floor a 96px thumbnail leaves too little for a 26px price,
+   so the thumbnail shrinks rather than the number. Panel width is an inline
+   style, not a viewport size, so this is toggled from applyPanelWidth
+   rather than by a media query. */
+#wnpk-root.wnpk-narrow .wnpk-thumb { width: 72px; }
+#wnpk-root.wnpk-narrow .wnpk-price-value { font-size: 22px; }
+
+/* Click-to-enlarge overlay, scoped inside the panel. */
+#wnpk-root #wnpk-preview {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 9, 11, 0.94);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px;
+  cursor: zoom-out;
+  z-index: 5;
+}
+#wnpk-root #wnpk-preview img {
+  max-width: 100%;
+  max-height: calc(100% - 28px);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+}
+#wnpk-root .wnpk-preview-hint { font-size: 11.5px; color: #9aa0a6; }

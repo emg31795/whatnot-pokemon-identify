@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><title>Panel heights</title>
+<style>body{margin:0;background:#141518;color:#e8eaed;font:13px/1.5 -apple-system,system-ui,sans-serif;padding:16px}
+table{border-collapse:collapse;font-size:13px}td,th{padding:4px 10px;border-bottom:1px solid #2a2d31;text-align:left}
+.ok{color:#7ee2a8}.bad{color:#ff9b9b}</style></head>
+<body><div id="out">measuring…</div>
+<script>
+  window.chrome={storage:{sync:{get:async()=>({}),set:async()=>{}},local:{get:(k,cb)=>cb&&cb({}),set:async()=>{}}},
+                 runtime:{sendMessage:()=>{},onMessage:{addListener:()=>{}},lastError:null}};
+</script>
+<script>
+  const V="?v="+Date.now();
+  document.write('<script src="panel-states.js'+V+'"><\/script>');
+  document.write('<link rel="stylesheet" href="../extension/content.css'+V+'" />');
+  document.write('<script src="../extension/content.js'+V+'"><\/script>');
+</script>
+<script>
+(async function(){
+  // Measure the panel's NATURAL height: content.css caps it at
+  // calc(100vh - 20px), which would hide overflow rather than reveal it.
+  const root=document.getElementById("wnpk-root");
+  root.style.position="absolute"; root.style.left="-9999px"; root.style.top="0";
+  root.style.maxHeight="none"; root.style.bottom="auto"; root.style.right="auto";
+  const T=window.__wnpkTest, S=window.WNPK_STATES;
+  const WINDOW_H=850, CHROME=90;           // browser chrome allowance
+  const BUDGET=WINDOW_H-CHROME-32;         // usable page height minus gutters
+  const rows=[];
+  for(const w of [340,280]){
+    root.style.width=w+"px";
+    root.classList.toggle("wnpk-narrow", w<320);
+    for(const [k,v] of Object.entries(S)){
+      T.renderResult(v.identify);
+      if(v.price) T.renderPriceSection(v.price, v.identify);
+      if(v.siblingPrices) Object.entries(v.siblingPrices).forEach(([id,p])=>{
+        const c=root.querySelector("#wnpk-sib-price-"+id); if(!c) return;
+        const bid=p.bid==null?'<span class="wnpk-row-bid wnpk-bid-none">Bid —</span>':p.bid<=0?'<span class="wnpk-row-bid wnpk-bid-skip">Bid Skip</span>':'<span class="wnpk-row-bid">Bid $'+p.bid.toFixed(2)+'</span>';
+        c.innerHTML='<span class="wnpk-row-nm">$'+p.nm.toFixed(2)+'</span>'+bid;
+      });
+      await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+      rows.push({w,state:k,h:Math.round(root.getBoundingClientRect().height)});
+    }
+  }
+  const byState={};
+  rows.forEach(r=>{(byState[r.state]=byState[r.state]||{})[r.w]=r.h;});
+  let html='<p>Natural panel height. Budget at an 850px window: <b>'+BUDGET+'px</b> (850 − ~90 browser chrome − 32 gutters).</p><table><tr><th>state</th><th>340px</th><th>280px</th><th>fits @340</th></tr>';
+  Object.entries(byState).forEach(([k,v])=>{
+    const fits=v[340]<=BUDGET;
+    html+='<tr><td>'+k+'</td><td>'+v[340]+'</td><td>'+v[280]+'</td><td class="'+(fits?'ok':'bad')+'">'+(fits?'yes':'NO ('+(v[340]-BUDGET)+'px over)')+'</td></tr>';
+  });
+  html+='</table>';
+  document.getElementById("out").innerHTML=html;
+  document.body.dataset.done="1";
+  window.__measured=byState;
+})();
+</script></body></html>

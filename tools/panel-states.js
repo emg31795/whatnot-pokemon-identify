@@ -9,6 +9,7 @@ window.WNPK_STATES = {
   "priced-raw": {
     label: "Priced raw card (Alakazam 33, High/High)",
     identify: {
+      cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/83500_in_800x800.jpg",
       found: true, cardName: "Alakazam (33)", setName: "Expedition",
       cardLanguage: "English", confidence: "High", matchConfidence: "High",
       matchBasis: "score-only", stampType: "none",
@@ -42,6 +43,7 @@ window.WNPK_STATES = {
   "alternate-printing": {
     label: "Alternate-printing banner (cheaper variant detected)",
     identify: {
+      cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/91234_in_800x800.jpg",
       found: true, cardName: "Treecko", setName: "EX Crystal Guardians",
       cardLanguage: "English", confidence: "High", matchConfidence: "High",
       matchBasis: "score-only", stampType: "none",
@@ -75,6 +77,7 @@ window.WNPK_STATES = {
   "sibling-ambiguous": {
     label: "Sibling-ambiguous (Tyrunt, Cosmos holo pair)",
     identify: {
+      cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/118554_in_800x800.jpg",
       found: true, cardName: "Tyrunt", setName: "XY - Fates Collide",
       cardLanguage: "English", confidence: "High", matchConfidence: "Low",
       matchBasis: "sibling-ambiguous", stampType: "none", pricingLookup: null,
@@ -95,6 +98,7 @@ window.WNPK_STATES = {
   "number-tie": {
     label: "Number tie across products (Rayquaza 003/017)",
     identify: {
+      cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/88624_in_800x800.jpg",
       found: true, cardName: "Rayquaza", setName: "POP Series 1",
       cardLanguage: "English", confidence: "High", matchConfidence: "Low",
       matchBasis: "number-tie-ambiguous", stampType: "none", pricingLookup: null,
@@ -115,6 +119,7 @@ window.WNPK_STATES = {
   "reprint-three-rows": {
     label: "Anniversary reprint (Blastoise 2/102, 3 rows)",
     identify: {
+      cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/42360_in_800x800.jpg",
       found: true, cardName: "Blastoise", setName: "Base Set",
       cardLanguage: "English", confidence: "High", matchConfidence: "Low",
       matchBasis: "sibling-ambiguous", stampType: "1st Edition", pricingLookup: null,
@@ -153,6 +158,7 @@ window.WNPK_STATES = {
   "slab-priced": {
     label: "Slab priced (SM210 PSA 9)",
     identify: {
+      cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/186000_in_800x800.jpg",
       found: true, isSlab: true, slabCardIdentified: true,
       cardName: "Moltres & Zapdos & Articuno GX - SM210", setName: "SM Promos",
       cardLanguage: "English", confidence: "High", matchConfidence: "High",
@@ -177,6 +183,7 @@ window.WNPK_STATES = {
   "slab-thin": {
     label: "Slab, graded data too thin",
     identify: {
+      cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/232000_in_800x800.jpg",
       found: true, isSlab: true, slabCardIdentified: true,
       cardName: "Dragonite", setName: "SV: Shrouded Fable",
       cardLanguage: "English", confidence: "High", matchConfidence: "Medium",

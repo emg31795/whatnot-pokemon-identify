@@ -1,45 +1,3 @@
-  function initResizable() {
-    // A handle on BOTH edges. The panel is anchored bottom-right by CSS but
-    // is routinely dragged to the left of the page, and a handle that only
-    // works for one anchor is a handle that silently resizes the wrong way
-    // half the time. Each edge grows the panel outward from itself.
-    const handles = root.querySelectorAll(".wnpk-resize");
-    let startX = 0;
-    let startWidth = 0;
-    let dir = null;
-
-    handles.forEach((handle) => {
-      handle.addEventListener("mousedown", (e) => {
-        dir = handle.dataset.dir;
-        startX = e.clientX;
-        startWidth = root.getBoundingClientRect().width;
-        document.body.style.userSelect = "none";
-        e.preventDefault();
-        e.stopPropagation();
-      });
-    });
-
-    window.addEventListener("mousemove", (e) => {
-      if (!dir) return;
-      const delta = dir === "left" ? startX - e.clientX : e.clientX - startX;
-      const next = clampWidth(startWidth + delta);
-      // When the panel has been dragged (inline `left` set) the left edge is
-      // the fixed one, so growing from the left handle must also move it.
-      if (dir === "left" && root.style.left) {
-        const rect = root.getBoundingClientRect();
-        root.style.left = Math.max(0, rect.right - next) + "px";
-      }
-      applyPanelWidth(next);
-    });
-
-    window.addEventListener("mouseup", () => {
-      if (!dir) return;
-      dir = null;
-      document.body.style.userSelect = "";
-      savePanelWidth(root.getBoundingClientRect().width);
-    });
-  }
-
 // content.js — Whatnot Pokémon Card ID (Free) extension
 // Backed up 2026-08-24 from the extension zip the user still had locally
 // (whatnot-pokemon-extension_14) after it was confirmed this was the only
@@ -262,8 +220,14 @@
     return Math.min(Math.max(Math.round(w), PANEL_MIN_WIDTH), cap);
   }
 
+  const PANEL_NARROW_AT = 320;
   function applyPanelWidth(w) {
-    root.style.width = clampWidth(w) + "px";
+    const next = clampWidth(w);
+    root.style.width = next + "px";
+    // Drives the narrow-mode rules in content.css (smaller thumbnail,
+    // smaller price). The panel's width is an inline style, so a media
+    // query cannot see it.
+    root.classList.toggle("wnpk-narrow", next < PANEL_NARROW_AT);
   }
 
   // The DEFAULT width has to fit beside the stream, not just look good in
@@ -325,29 +289,43 @@
   }
 
   function initResizable() {
-    const handle = $("#wnpk-resize");
-    if (!handle) return;
+    // A handle on BOTH edges. The panel is anchored bottom-right by CSS but
+    // defaults to (and is dragged to) the LEFT of the page, and a handle
+    // that only works for one anchor silently resizes the wrong way half
+    // the time. Each edge grows the panel outward from itself.
+    const handles = root.querySelectorAll(".wnpk-resize");
     let startX = 0;
     let startWidth = 0;
-    let resizing = false;
+    let dir = null;
 
-    handle.addEventListener("mousedown", (e) => {
-      resizing = true;
-      startX = e.clientX;
-      startWidth = root.getBoundingClientRect().width;
-      document.body.style.userSelect = "none";
-      e.preventDefault();
-      e.stopPropagation();
+    handles.forEach((handle) => {
+      handle.addEventListener("mousedown", (e) => {
+        dir = handle.dataset.dir;
+        startX = e.clientX;
+        startWidth = root.getBoundingClientRect().width;
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+        e.stopPropagation();
+      });
     });
+
     window.addEventListener("mousemove", (e) => {
-      if (!resizing) return;
-      // The handle is on the LEFT edge and the panel is anchored right, so
-      // dragging left must make it wider.
-      applyPanelWidth(startWidth + (startX - e.clientX));
+      if (!dir) return;
+      const delta = dir === "left" ? startX - e.clientX : e.clientX - startX;
+      const next = clampWidth(startWidth + delta);
+      // Once the panel has been positioned (inline `left` set, which is now
+      // the default) the LEFT edge is the fixed one, so growing from the
+      // left handle has to move it to keep the right edge still.
+      if (dir === "left" && root.style.left) {
+        const rect = root.getBoundingClientRect();
+        root.style.left = Math.max(0, rect.right - next) + "px";
+      }
+      applyPanelWidth(next);
     });
+
     window.addEventListener("mouseup", () => {
-      if (!resizing) return;
-      resizing = false;
+      if (!dir) return;
+      dir = null;
       document.body.style.userSelect = "";
       savePanelWidth(root.getBoundingClientRect().width);
     });
@@ -419,7 +397,20 @@
       chrome.storage.local.get("wnpkPanelPos", ({ wnpkPanelPos }) => {
         if (wnpkPanelPos && typeof wnpkPanelPos.left === "number" && typeof wnpkPanelPos.top === "number") {
           dragTo(wnpkPanelPos.left, wnpkPanelPos.top);
+          return;
         }
+        // CHANGED (#113 follow-up): with nothing stored the panel stayed at
+        // the CSS default, bottom-RIGHT. On the real Whatnot page it belongs
+        // on the LEFT, over the shop/product column, with the stream to its
+        // right — which is also the gap defaultWidthForViewport sizes
+        // against, so the width and the position used to disagree about
+        // which side the panel was on.
+        //
+        // ONLY the default changes. A stored position is applied above and
+        // returns before this line, so a dragged panel is never moved.
+        // Saving on drag end already existed and is untouched.
+        const rect = root.getBoundingClientRect();
+        dragTo(16, Math.max(0, window.innerHeight - rect.height - 16));
       });
     } catch (e) {
       // storage unavailable — panel just stays at its CSS default (bottom-right)
@@ -1507,6 +1498,80 @@
       </div>${sub ? `<div class="wnpk-price-sub">${sub}</div>` : ""}`;
   }
 
+  // HEADER (#113 follow-up)
+  // -------------------------------------------------------------------
+  // The card image was `max-width: 100%`, which on the widened 340px panel
+  // rendered a ~450px-tall card (Pokémon cards are 2.5:3.5) and pushed the
+  // price, the chips and every warning below the fold — widening the panel
+  // made the image problem worse, not better.
+  //
+  // It is now a ~96px thumbnail in a left column with the name, set,
+  // badges, price and confidence chips stacked to its right, so everything
+  // read during a 10-second auction decision is one block at the top. The
+  // full image is a click away rather than gone: eyeballing the art against
+  // the stream is the whole reason it was ever shown.
+  function headBlockHtml(data, rightColumnHtml) {
+    const thumb = data.cardImageUrl
+      ? `<button type="button" class="wnpk-thumb" data-full="${escapeHtml(data.cardImageUrl)}"
+           title="Click to enlarge" aria-label="Enlarge card image"><img src="${escapeHtml(
+             data.cardImageUrl
+           )}" alt="" /></button>`
+      : "";
+    return `<div class="wnpk-head">
+        ${thumb}
+        <div class="wnpk-head-main">
+          <div class="wnpk-card-name">${escapeHtml(data.cardName)}${
+      data.cardLanguage === "Japanese" ? ' <span class="wnpk-lang-badge">JP</span>' : ""
+    }</div>
+          <div class="wnpk-set-name" id="wnpk-set-name">${escapeHtml(data.setName || "")}</div>
+          ${badgeRowHtml(data)}
+          ${rightColumnHtml || ""}
+        </div>
+      </div>`;
+  }
+
+  // Click-to-enlarge overlay. Rendered inside the panel root (already at the
+  // top of the z-order) so the page cannot cover it; dismissed by a click
+  // anywhere on it or by Esc.
+  let previewKeyHandler = null;
+  function closeCardPreview() {
+    const el = root.querySelector("#wnpk-preview");
+    if (el) el.remove();
+    if (previewKeyHandler) {
+      window.removeEventListener("keydown", previewKeyHandler, true);
+      previewKeyHandler = null;
+    }
+  }
+
+  function openCardPreview(src) {
+    closeCardPreview();
+    const overlay = document.createElement("div");
+    overlay.id = "wnpk-preview";
+    overlay.innerHTML = `<img src="${escapeHtml(
+      src
+    )}" alt="" /><div class="wnpk-preview-hint">Click or press Esc to close</div>`;
+    overlay.addEventListener("click", closeCardPreview);
+    root.appendChild(overlay);
+    previewKeyHandler = (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeCardPreview();
+      }
+    };
+    window.addEventListener("keydown", previewKeyHandler, true);
+  }
+
+  // One delegated listener on the panel root, so it survives every
+  // innerHTML swap the render functions do.
+  root.addEventListener("click", (e) => {
+    const thumb = e.target.closest && e.target.closest(".wnpk-thumb");
+    if (thumb && thumb.dataset.full) {
+      e.preventDefault();
+      e.stopPropagation();
+      openCardPreview(thumb.dataset.full);
+    }
+  });
+
   // One wrapping row of small badges instead of a stack of full-width
   // divs, each of which used to cost a line of a ~260px panel.
   function badgeRowHtml(data) {
@@ -1660,28 +1725,12 @@
       return;
     }
 
-    const header = `
-      ${
-        // ADDED (2026-09-03, Haiku active-fallback build): Gemini failed on
-        // this scan (timeout, 5xx, etc.) and Claude Haiku 4.5's read was
-        // used instead — this must always be visible, never a silent
-        // substitution, so the user can judge the result accordingly (see
-        // CLAUDE.md's "Recent / in-flight work" for why this exists).
-        data.visionProvider === "haiku-fallback"
-          ? `<div class="wnpk-fallback-badge">⚡ Fallback read (Gemini unavailable) — identified by Claude Haiku 4.5</div>`
-          : ""
-      }
-      <div class="wnpk-card-name">${escapeHtml(data.cardName)}${
-        data.cardLanguage === "Japanese" ? ' <span class="wnpk-lang-badge">JP</span>' : ""
-      }</div>
-      <div class="wnpk-set-name" id="wnpk-set-name">${escapeHtml(data.setName || "")}</div>
-      ${
-        data.cardImageUrl
-          ? `<img class="wnpk-card-img" src="${data.cardImageUrl}" />`
-          : ""
-      }
-      ${badgeRowHtml(data)}
-    `;
+    // The fallback badge is full-width above everything: it is a statement
+    // about the whole result, not about the card.
+    const fallbackBadge =
+      data.visionProvider === "haiku-fallback"
+        ? `<div class="wnpk-fallback-badge">⚡ Fallback read (Gemini unavailable) — identified by Claude Haiku 4.5</div>`
+        : "";
     // MOVED 2026-09-13 (UI decluttering): the confidence-disclosure
     // warnings (generic Low-confidence, ambiguousNote, stampNote) used to
     // render right here, right after the confidence badges — meaning a
@@ -1842,12 +1891,14 @@
       `;
 
       $("#wnpk-body").innerHTML = `
-        ${header}
-        ${slabBadge}
-        ${headline}
-        <div id="wnpk-sell-through">${sellThroughBadgeHtml(data.gradedSellThrough, null)}</div>
-        <div class="wnpk-caption">${escapeHtml(caption)}</div>
-        ${confidenceChips}
+        ${fallbackBadge}
+        ${headBlockHtml(
+          data,
+          `${slabBadge}${headline}<div id="wnpk-sell-through">${sellThroughBadgeHtml(
+            data.gradedSellThrough,
+            null
+          )}</div><div class="wnpk-caption">${escapeHtml(caption)}</div>${confidenceChips}`
+        )}
         ${confidenceWarnings}
         ${gradedCaveats}
         ${gradeLadderHtml(data.nearbyGradedPrices, data.grader, data.grade, data.gradedPrice)}
@@ -1887,9 +1938,8 @@
           );
 
       $("#wnpk-body").innerHTML = `
-        ${header}
-        ${slabBadge}
-        ${confidenceChips}
+        ${fallbackBadge}
+        ${headBlockHtml(data, `${slabBadge}${confidenceChips}`)}
         ${warningsHtml([thinWarning])}
         ${confidenceWarnings}
         ${notIdentified ? "" : gradeLadderHtml(data.nearbyGradedPrices, data.grader, data.grade, null)}
@@ -1938,9 +1988,8 @@
       ? `<div id="wnpk-price-section"><div class="wnpk-cond-label">Loading price…</div></div>`
       : `<div class="wnpk-cond-label">Printing undetermined — price withheld, see warning above.</div>`;
     $("#wnpk-body").innerHTML = `
-      ${header}
-      ${priceSectionHtml}
-      ${confidenceChips}
+      ${fallbackBadge}
+      ${headBlockHtml(data, priceSectionHtml + confidenceChips)}
       ${confidenceWarnings}
       ${footer}
     `;
