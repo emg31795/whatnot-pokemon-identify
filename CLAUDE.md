@@ -196,45 +196,33 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6`** (2026-10-24, the
-  sibling-cap reason wording, test #110), aliased to
-  `whatnot-pokemon-identify.vercel.app`. **`sourceHash
-  b170c6e88ae4b1713426cf96979f1da5f5e6f394`** == disk at commit `882b400`,
-  checked twice; production e2e 4/4, zero runtime errors.
-- Previous production **`dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`** (2026-10-24, the
-  Blastoise anniversary-reprint fixes, test #109).
-- **`sourceHash 5723ac8d14360a76f5b42b8602a305615a1155e0`** == `shasum
-  api/identify.js` on disk at commit `87bc426`. `GET /api/identify` reports
-  **`slabLabelProbe: "on"`**. The alias served the new hash on the first
-  check (checked twice).
-- E2E verified on production 2026-10-24, four scans, **zero runtime errors**:
-  **Base Set Blastoise 42360** Low / `sibling-ambiguous` / price **withheld**,
-  three rows disclosed (42360 $227.27, 106997 $896.06, 250319 $13.01),
-  1664ms; **Celebrations Blastoise 250319** same three-row disclosure
-  including itself, 1706ms; **Pikachu XY95** High / `score-only` / 114004,
-  linked, 1320ms; **Alakazam 33** 83500, linked, 1871ms.
-  E2E payloads were the real TCGplayer product scans (`imageCdnUrl`), not
-  livestream frames — a cleaner read than reality, and the 200x275 Alakazam
-  thumbnail misreads its number, which is why its confidence varies per run.
+- Deployment **`dpl_7FoFB9NLBQzo4en9eJtJFdYzEKZv`** (2026-10-25, the slab-label
+  rescue + anniversary-family fix, tests #111 and #112), aliased to
+  `whatnot-pokemon-identify.vercel.app`.
+- **`sourceHash 02ff9590e046403c352978ed5701d926f29129b9`** == `shasum
+  api/identify.js` on disk at commit `09f7a90`, byte-exact, checked twice on
+  the alias. `GET /api/identify` reports **`slabLabelProbe: "on"`**.
+- E2E verified on production 2026-10-25, **6/6**: **PSA 9 Pichu slab**
+  Medium / `slab-label` / 607842 with **graded $139.79 (n=9) -> bid $52.83
+  Stagnant**, 1818ms; **Shining Celebi** High / `score-only` / 717001,
+  1421ms; **Base Set Blastoise** Low / `sibling-ambiguous` / withheld, 3 rows,
+  1564ms; **Celebrations Blastoise** same 3-row disclosure, 1471ms;
+  **Pikachu XY95** High / `score-only` / 114004, 1345ms; **Alakazam 33**
+  Medium / `legacy-number-rescue` / 83500, 1893ms.
+- E2E payloads are real TCGplayer product scans (`imageCdnUrl`) plus, for the
+  slab, PSA's own cert photo cropped to the slab front. Cleaner than a
+  livestream frame, so reads are easier than reality.
 - **`extension/content.js` and `content.css` last changed in the 2026-10-17
-  builds** — #109 and #110 are backend-only and need no reload, but if the
-  extension has not been reloaded since 2026-10-17 the sibling/tie rows (with
-  set names) and per-row graded medians still will not render.
-- **No real slab has been scanned end-to-end through Phase 2-lite**, and
-  #109's Pichu investigation found it is **unreachable** on a weak-signal
-  withhold (see the open item below). The graded bid path HAS fired on
-  organic traffic.
-- **BUILT, NOT DEPLOYED: #111 + #112** (`09f7a90`, `sourceHash 02ff9590…`),
-  preview `https://whatnot-pokemon-identify-n3slnvafe-leasedraftai.vercel.app`,
-  **168 local tests**, e2e verified on four real images. Awaiting approval.
-  #111 makes the slab-label rescue reachable (first real slab ever identified
-  end-to-end: PSA 9 Pichu -> 607842, graded $139.79, bid $52.83); #112 stops
-  the #109 reprint disclosure firing on a plural.
-- Earlier production: `dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV` (2026-10-18,
-  `2fe9412d…`, `6247b40`); `dpl_3f4sgBW1BVdLjA4mvFk383thicTg` (2026-10-17,
-  `9f08298e…`, `0601fcc`); `dpl_Eih1EtRbrtHgktna9QiRhq5D4259` (2026-10-17,
-  `b170a4e3…`, `90b7d23`); `dpl_7EmniEgDDAdRmGvmDxJMMta53eZg` (2026-10-16,
-  `c8f57029…`, `a939d95`).
+  builds** — #109 through #112 are all backend-only and need no reload, but an
+  extension not reloaded since 2026-10-17 still will not render the
+  sibling/tie rows or the per-row graded medians.
+- **The first real graded slab has now been identified end-to-end through
+  Phase 2-lite** (#111). The graded bid path has also fired on organic traffic.
+- Earlier production: `dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6` (2026-10-24,
+  `b170c6e8…`, `882b400`, #110); `dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`
+  (2026-10-24, `5723ac8d…`, `87bc426`, #109);
+  `dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV` (2026-10-18, `2fe9412d…`, `6247b40`);
+  `dpl_3f4sgBW1BVdLjA4mvFk383thicTg` (2026-10-17, `9f08298e…`, `0601fcc`).
 - Project `prj_eS2DCNOeX82nyDOA9o5OHVhBwxCA`, team `leasedraftai`
   (`team_DZEpR5n7heCyZsNFjxZmxUP1`). **Not git-linked** — no build-on-push.
   GitHub: `https://github.com/emg31795/whatnot-pokemon-identify`.
@@ -737,3 +725,13 @@ A vision-read issue, not a matching one.
 `2/102`, and `M6a: MEGA Expansion 30th Celebration` stores Shining Celebi as
 `141/103`. Its Classic Collection subset runs `141/103`–`165/103` (25 cards);
 `setId 24721` carries denominators of only `103`, `RGB` and none.
+
+**CONFIRMED THE HARD WAY 2026-10-25 — a rapid e2e burst DOES starve a live
+scan (#106's open item).** Six back-to-back production e2e scans exhausted the
+60-unit minute budget and produced three 429 groups in a 12-second window at
+`01:00:55`–`01:01:07`. One of them was **`name= Eevee`, which was NOT one of
+the e2e scans** — organic traffic, i.e. a real scan of Eric's failed because
+of the test burst. The app handled it correctly (`found: false`,
+`rateLimited: true`, `retryAfter: 25`, no bogus price) and the retried e2e
+scan passed, but the lesson is now measured rather than theoretical:
+**space out e2e scans, and never run a burst while a stream may be live.**
