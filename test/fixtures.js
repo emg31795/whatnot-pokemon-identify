@@ -670,6 +670,33 @@ const PICHU_ETHANS_START_DECK = {
   imageCdnUrl: "https://tcgplayer-cdn.tcgplayer.com/product/669985_in_800x800.jpg",
 };
 
+// --------------------------------------------------------------------------
+// Japanese Shining Celebi, M6a 30th Celebration (test #112).
+// --------------------------------------------------------------------------
+// REAL row captured from PPT 2026-10-25 by tcgPlayerId. The live scan
+// (requestId f86f1d7c) read setName "Celebrations" and number "002/025";
+// PPT stores the ORIGINAL card's number 141/103, the same convention
+// Celebrations: Classic Collection uses. The set's Classic Collection subset
+// runs 141/103..165/103 (25 cards) -- no "/025" denominator exists anywhere
+// in it, which is why the read number matched nothing.
+const SHINING_CELEBI_717001 = {
+  tcgPlayerId: "717001",
+  setName: "M6a: MEGA Expansion 30th Celebration",
+  name: "Shining Celebi",
+  cardNumber: "141/103",
+  totalSetNumber: null,
+  rarity: "Classic Collection",
+  cardType: "Pokemon",
+  hp: "50",
+  stage: "Basic",
+  pokedexNumbers: [251],
+  attacks: ["[Water] Healing Water\r\n<br>\r\nRemove a number of damage counters from 1 of your Benched Pokémon equal to the number of Water Energy cards attached to Shining Celebi. If the Pokémon has fewer damage counters than that, remove all of them.", "[Grass][Psychic] Miracle Leaf (10)\r\n<br>\r\nFlip a number of coins equal to the number of Energy attached to the Defending Pokémon. If you get 1 or more heads, the Defending Pokémon is now Asleep, Confused, or Poisoned (your choice)."],
+  prices: { market: 27.43, primaryPrinting: "Holofoil", listings: 36 },
+  printingsAvailable: ["Holofoil", "Normal"],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/717001",
+  imageCdnUrl: "https://tcgplayer-cdn.tcgplayer.com/product/717001_in_800x800.jpg",
+};
+
 module.exports = {
   CHARIZARD_EX_125,
   CHARIZARD_EX_223,
@@ -689,6 +716,7 @@ module.exports = {
   PICHU_NEO_PREMIUM_FILE_2,
   PICHU_INTRO_PACK_NEO,
   PICHU_ETHANS_START_DECK,
+  SHINING_CELEBI_717001,
   CC_BLASTOISE_2,
   BASE_BLASTOISE_2,
   BASE_BLASTOISE_2_SHADOWLESS,

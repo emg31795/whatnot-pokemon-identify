@@ -2401,6 +2401,116 @@ async function main() {
     assert.ok(!M.slabLabelSetTokens(label, "Pichu").includes("promo"), "PROMO is never required");
   });
 
+  // ======================================================================
+  // 26. ANNIVERSARY FAMILY — the Shining Celebi regression (2026-10-25, #112)
+  // ======================================================================
+  // Live on production dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6 (requestId f86f1d7c):
+  // a Japanese M6a Shining Celebi was identified correctly (hp 50 + Healing
+  // Water, score 10, tieCount 1, tcgPlayerId 717001, $27.43) and then had its
+  // price withheld by #109's reprint disclosure, because
+  //   "m6a mega expansion 30th celebration".includes("celebrations")
+  // is false on the plural "s". The read AGREED with the winner.
+  const CELEBI_READ = {
+    found: true,
+    confidence: "High",
+    cardName: "Celebi",
+    language: "Japanese",
+    stampType: "Pokemon Center",
+    hp: "50",
+    subtype: null,
+    setName: "Celebrations",
+    attackName: "いやしのみず",
+    attackNameEnglish: "Healing Water",
+    cardNumber: "002/025",
+  };
+  const CELEBI_LEGACY = { ...CELEBI_READ, cardNumber: "003/025", setName: null, stampType: "none" };
+
+  await test("#112 setNamesAgree treats the anniversary family as agreement", () => {
+    assert.strictEqual(M.setNamesAgree("Celebrations", "M6a: MEGA Expansion 30th Celebration"), true);
+    assert.strictEqual(M.setNamesAgree("30th Celebration", "M6a: MEGA Expansion 30th Celebration"), true);
+    assert.strictEqual(M.setNamesAgree("25th Anniversary", "Celebrations: Classic Collection"), true);
+    assert.strictEqual(M.setNamesAgree("Celebrations", "Celebrations: Classic Collection"), true);
+    // ...and an ORIGINAL set still disagrees, or the whole disclosure dies.
+    assert.strictEqual(M.setNamesAgree("Base Set", "Celebrations: Classic Collection"), false);
+    assert.strictEqual(M.setNamesAgree("Base Set", "M6a: MEGA Expansion 30th Celebration"), false);
+    assert.strictEqual(M.setNamesAgree("Jungle", "Celebrations: Classic Collection"), false);
+    assert.strictEqual(M.setNamesAgree("Neo Destiny", "M6a: MEGA Expansion 30th Celebration"), false);
+    assert.strictEqual(M.setNamesAgree("", "Celebrations: Classic Collection"), false, "empty is not agreement");
+  });
+
+  await test("#112 REPLAY f86f1d7c: the Celebi is priced, not disclosed", async () => {
+    installPptMock({
+      Celebi: F.padTo([F.SHINING_CELEBI_717001], 30, "Celebi"),
+      "Celebi|offset=30": F.padTo([], 30, "CelebiP2"),
+    });
+    const r = await M.lookupCardPPT(CELEBI_READ, "celebi-112", Promise.resolve(CELEBI_LEGACY));
+    assert.notStrictEqual(r.matchBasis, "anniversary-reprint-ambiguous", "the disclosure must not fire");
+    assert.ok(r.pricingLookup, `the price is no longer withheld: ${JSON.stringify(r.pricingLookup)}`);
+    assert.strictEqual(String(r.pricingLookup.tcgPlayerId), "717001");
+    assert.strictEqual(r.setName, "M6a: MEGA Expansion 30th Celebration");
+    assert.notStrictEqual(r.printingUndetermined, true);
+    assert.ok(
+      !/anniversary reprint/i.test(String(r.ambiguousNote || "")),
+      `no reprint wording: ${r.ambiguousNote}`
+    );
+  });
+
+  await test("#112 TEST VALIDITY: the shipped code really did withhold it", async () => {
+    const { mod: OLD, cleanup } = loadPreFixModule("pre-112", "a9ed5f4");
+    try {
+      installPptMock({
+        Celebi: F.padTo([F.SHINING_CELEBI_717001], 30, "Celebi"),
+        "Celebi|offset=30": F.padTo([], 30, "CelebiP2"),
+      });
+      const r = await OLD.lookupCardPPT(CELEBI_READ, "celebi-prefix", Promise.resolve(CELEBI_LEGACY));
+      assert.strictEqual(r.matchBasis, "anniversary-reprint-ambiguous", "the reported bug");
+      assert.strictEqual(r.pricingLookup, null, "price withheld on a correctly identified card");
+    } finally {
+      cleanup();
+    }
+  });
+
+  await test("#112 the original-vs-reprint disclosure still fires (Blastoise)", async () => {
+    // The case #109 exists for must be completely unaffected: read "Base Set",
+    // winner a Classic Collection reprint.
+    installPptMock({
+      Blastoise: BLASTOISE_PAGE1,
+      "Blastoise|offset=30": F.padTo([], 30, "BlastoiseP2"),
+    });
+    const r = await M.lookupCardPPT(BLASTOISE_READ, "blastoise-112", null);
+    assert.strictEqual(r.matchBasis, "anniversary-reprint-ambiguous");
+    assert.strictEqual(r.pricingLookup, null);
+    assert.ok(/anniversary logo/.test(String(r.ambiguousNote)));
+  });
+
+  await test("#112 the full Blastoise three-row disclosure is unchanged", async () => {
+    installPptMock(blastoiseRoutes());
+    const r = await M.lookupCardPPT(BLASTOISE_READ, "blastoise-112-rows", Promise.resolve(BLASTOISE_LEGACY));
+    const ids = r.siblingAmbiguity.candidates.map((c) => String(c.tcgPlayerId)).sort();
+    assert.deepStrictEqual(ids, ["106997", "250319", "42360"]);
+    assert.strictEqual(r.pricingLookup, null);
+  });
+
+  await test("#112 a genuine Celebrations Blastoise read still keeps its price", async () => {
+    installPptMock({
+      Blastoise: BLASTOISE_PAGE1,
+      "Blastoise|offset=30": F.padTo([], 30, "BlastoiseP2"),
+    });
+    const r = await M.lookupCardPPT({ ...BLASTOISE_READ, setName: "Celebrations" }, "blastoise-112-cc", null);
+    assert.notStrictEqual(r.matchBasis, "anniversary-reprint-ambiguous");
+    assert.ok(r.pricingLookup, "a read that names the reprint family is priced");
+  });
+
+  await test("#112 numbersMatch is untouched by this change", () => {
+    // The Celebi's read number was simply wrong ("002/025"; no /025
+    // denominator exists in that set at all, and the two models disagreed on
+    // the numerator). Nothing here loosens number matching to paper over it.
+    assert.strictEqual(M.numbersMatch("002/025", "141/103").match, false);
+    assert.strictEqual(M.numbersMatch("003/025", "141/103").match, false);
+    assert.strictEqual(M.numbersMatch("141/103", "141/103").match, true);
+    assert.strictEqual(M.numbersMatch("2/102", "002/102").strength, "exact");
+  });
+
   // ----------------------------------------------------------------------
   console.log(`\n${pass} pass, ${failures.length} fail`);
   for (const [name, e] of failures) {

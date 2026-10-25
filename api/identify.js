@@ -479,6 +479,36 @@ function candidateStampType(candidate) {
 const REPRINT_RARITY_PATTERN = /^\s*classic collection\s*$/i;
 const REPRINT_SET_PATTERN = /classic collection/i;
 
+// ADDED 2026-10-24 (#112, live Shining Celebi): the anniversary FAMILY, for
+// deciding whether a read's set name agrees with a reprint candidate's.
+//
+// Plain containment is not enough, and the failure is a single letter. A
+// Japanese M6a Shining Celebi (tcgPlayerId 717001, $27.43) was read with
+// setName "Celebrations" against the winner "M6a: MEGA Expansion 30th
+// Celebration" — the read AGREES, it is naming the anniversary product. But
+//     "m6a mega expansion 30th celebration".includes("celebrations")
+// is FALSE on the trailing PLURAL "s", so the #109 disclosure decided the
+// read named a different, older set and withheld the price of a card it had
+// identified correctly (hp + attack, score 10, tieCount 1).
+//
+// These words are what the reprint sets and their reads are called:
+// "Celebrations", "25th Anniversary", "30th Celebration", "Classic
+// Collection". Matching the singular stem covers the plural.
+const ANNIVERSARY_FAMILY_PATTERN = /\b(celebration|celebrations|anniversary|classic collection)\b/;
+
+// Do a read's set name and a candidate's set name refer to the same thing?
+// Used ONLY to SUPPRESS the reprint disclosure and the padded-number search,
+// so a false "yes" can only ever stop an extra query or a disclosure — it can
+// never make a wrong candidate win. The main path's exact set-name equality
+// guard is a different test for a different job and stays untouched.
+function setNamesAgree(readSetName, candidateSetName) {
+  const r = normalizeSetNameForMatch(readSetName);
+  const c = normalizeSetNameForMatch(candidateSetName);
+  if (!r || !c) return false;
+  if (r === c || r.includes(c) || c.includes(r)) return true;
+  return ANNIVERSARY_FAMILY_PATTERN.test(r) && ANNIVERSARY_FAMILY_PATTERN.test(c);
+}
+
 function isAnniversaryReprintCandidate(candidate) {
   if (!candidate) return false;
   return (
@@ -3756,15 +3786,10 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     const readSetForPadding = normalizeSetNameForMatch(read.setName);
     const matchedSetsConflictWithRead =
       !!readSetForPadding &&
-      numberMatchedRows.every((c) => {
-        const candSet = normalizeSetNameForMatch(c.setName);
-        if (!candSet) return false;
-        return (
-          candSet !== readSetForPadding &&
-          !candSet.includes(readSetForPadding) &&
-          !readSetForPadding.includes(candSet)
-        );
-      });
+      // CHANGED 2026-10-24 (#112): shares setNamesAgree with the reprint
+      // disclosure, so "Celebrations" vs "30th Celebration" counts as
+      // agreement here too and cannot buy a pointless padded search.
+      numberMatchedRows.every((c) => !!normalizeSetNameForMatch(c.setName) && !setNamesAgree(read.setName, c.setName));
     if (everyMatchStoredUnpadded && (anyMatchedIsReprint || matchedSetsConflictWithRead)) {
       const paddedQuery = `${searchCardName} ${paddedRetrievalVariant}`;
       console.log(
@@ -5230,10 +5255,12 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
     read.setName &&
     isAnniversaryReprintCandidate(best)
   ) {
+    // CHANGED 2026-10-24 (#112): was inline containment, which treated the
+    // read "Celebrations" as a DIFFERENT set from "...30th Celebration" over
+    // the plural "s". See setNamesAgree.
     const readSet = normalizeSetNameForMatch(read.setName);
     const winnerSet = normalizeSetNameForMatch(best.setName);
-    const sameFamily =
-      !readSet || !winnerSet || readSet === winnerSet || readSet.includes(winnerSet) || winnerSet.includes(readSet);
+    const sameFamily = !readSet || !winnerSet || setNamesAgree(read.setName, best.setName);
     if (!sameFamily) {
       const reprintGroup = distinctByDedupKey(
         candidates.filter((c) => numberPointsAtCandidate(read.cardNumber, c) || String(c.tcgPlayerId) === String(best.tcgPlayerId))
@@ -7069,6 +7096,8 @@ module.exports.computeGradedBidForBucket = computeGradedBidForBucket;
 module.exports.GRADED_SHIPPING_PER_CARD = GRADED_SHIPPING_PER_CARD;
 module.exports.slabLabelSetPhrases = slabLabelSetPhrases;
 module.exports.slabLabelSetTokens = slabLabelSetTokens;
+module.exports.normalizeSetNameForMatch = normalizeSetNameForMatch;
+module.exports.setNamesAgree = setNamesAgree;
 module.exports.setNameContainsAllTokens = setNameContainsAllTokens;
 module.exports.SLAB_LABEL_MAX_QUERIES = SLAB_LABEL_MAX_QUERIES;
 module.exports.lookupCardFromSlabLabel = lookupCardFromSlabLabel;
