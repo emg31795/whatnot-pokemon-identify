@@ -196,9 +196,13 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`** (2026-10-24, the Blastoise
-  anniversary-reprint fixes, test #109), aliased to
-  `whatnot-pokemon-identify.vercel.app`.
+- Deployment **`dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6`** (2026-10-24, the
+  sibling-cap reason wording, test #110), aliased to
+  `whatnot-pokemon-identify.vercel.app`. **`sourceHash
+  b170c6e88ae4b1713426cf96979f1da5f5e6f394`** == disk at commit `882b400`,
+  checked twice; production e2e 4/4, zero runtime errors.
+- Previous production **`dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`** (2026-10-24, the
+  Blastoise anniversary-reprint fixes, test #109).
 - **`sourceHash 5723ac8d14360a76f5b42b8602a305615a1155e0`** == `shasum
   api/identify.js` on disk at commit `87bc426`. `GET /api/identify` reports
   **`slabLabelProbe: "on"`**. The alias served the new hash on the first
@@ -220,9 +224,12 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
   #109's Pichu investigation found it is **unreachable** on a weak-signal
   withhold (see the open item below). The graded bid path HAS fired on
   organic traffic.
-- **BUILT, NOT DEPLOYED: #110** (`882b400`, `sourceHash b170c6e8…`), the
-  sibling-cap reason wording. Preview `dpl_HxM8eitpYEE7wgQcaWH9AmsnEJFK`,
-  146 local tests, verified on a real image. Awaiting production approval.
+- **BUILT, NOT DEPLOYED: #111 + #112** (`09f7a90`, `sourceHash 02ff9590…`),
+  preview `https://whatnot-pokemon-identify-n3slnvafe-leasedraftai.vercel.app`,
+  **168 local tests**, e2e verified on four real images. Awaiting approval.
+  #111 makes the slab-label rescue reachable (first real slab ever identified
+  end-to-end: PSA 9 Pichu -> 607842, graded $139.79, bid $52.83); #112 stops
+  the #109 reprint disclosure firing on a plural.
 - Earlier production: `dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV` (2026-10-18,
   `2fe9412d…`, `6247b40`); `dpl_3f4sgBW1BVdLjA4mvFk383thicTg` (2026-10-17,
   `9f08298e…`, `0601fcc`); `dpl_Eih1EtRbrtHgktna9QiRhq5D4259` (2026-10-17,
@@ -717,3 +724,16 @@ organic traffic.
 yet fired on organic traffic.
 
 **Not decided:** switching the Vercel project to git-linked deploys.
+
+**OPEN — the 30th Celebration logo reads as a "Pokemon Center" stamp (#112,
+NOT fixed).** The primary model returned `stampType: "Pokemon Center"` on the
+M6a Shining Celebi, so the panel showed a Pokemon Center badge for what is the
+30th Celebration logo. Harmless to scoring (`candidateStampType` is null for
+that set, so neither the +3 nor the −8 branch runs) but the badge is wrong.
+A vision-read issue, not a matching one.
+
+**Reprint sets store the ORIGINAL card's number — now confirmed on BOTH**
+(#109, #112): Celebrations: Classic Collection stores Base Set Blastoise as
+`2/102`, and `M6a: MEGA Expansion 30th Celebration` stores Shining Celebi as
+`141/103`. Its Classic Collection subset runs `141/103`–`165/103` (25 cards);
+`setId 24721` carries denominators of only `103`, `RGB` and none.

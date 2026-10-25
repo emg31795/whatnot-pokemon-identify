@@ -13185,3 +13185,336 @@ the physical card before trusting this price."* There is no dropdown when
 shape as `stripBestGuessClause` at the single nulling point, but it is a
 distinct clause with its own history (it is correct whenever a price IS
 shown), so it was left alone rather than folded into a wording-only change.
+
+---
+
+## #110 production deploy — 2026-10-24
+
+`882b400` deployed as **`dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6`**,
+**`sourceHash b170c6e88ae4b1713426cf96979f1da5f5e6f394`** == disk, checked
+twice on the alias. Production e2e 4/4, **zero runtime errors**: both
+Blastoise images give the corrected wording (`All 3 are shown below`, no
+same-value pair), XY95 High/`score-only`/114004, Alakazam priced on 83500.
+
+All local commits through `ebd749c` pushed to GitHub;
+`origin/main == ebd749c819a679ab6df648720326fd98ade003d2`, 0 ahead / 0 behind.
+
+---
+
+## #111 — 2026-10-24 — The slab-label rescue was unreachable, and three things behind it
+
+**Follows the read-only investigation of the Japanese PSA 9 Pichu** (cert
+115602100, "2000 PM JAPANESE NEO 2 #172 PICHU PROMO-REVERSE FOIL"). Eric
+reported: cert read correctly, **no image, no graded price**, and the
+`[dex-number]` weak-signal note — the first live firing of #108.
+
+### Reproduced on production before changing anything
+
+The real slab image (PSA's own cert photo, cropped to the front) scanned
+against production `dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6`:
+
+```
+matched : 'Pichu' setName=None | Match Low | basis None
+priced  : WITHHELD    graded: none    image: none
+note    : Read the name "Pichu" but the card number ("172") didn't match...
+```
+
+Exactly the reported symptoms.
+
+### The real card
+
+**tcgPlayerId 607842 — "Pichu", `Neo Premium File 2`**, cardNumber **`""`**
+(empty string), `pokedexNumbers [172]`, hp 30, attack "Let's Play!",
+`printingsAvailable ["Holofoil"]`, **NM $42.02**.
+PSA 9: **9 sales, median $139.79**, last sale 2026-10-17, window 78 days.
+
+**It was already in the pool.** It was one of **13 candidates tied at score
+6** (hp 30 alone) — the logged `tiedIds` ends with `607842`. "Ethan's Pichu"
+241/742, a 2024 Start Deck 100 card, won the tie-break on array order.
+
+### Four blockers, not one
+
+**1. The rescue could never run.** The gate was
+`baseFailed = !baseLookup || !baseLookup.found`, but the weak-signal floors
+return **`found: true`** with `pricingLookup: null`, `setName: null` and
+`cardImageUrl: null`. A score of 6 from one signal was enough to make `found`
+true and lock out the entire Phase 2-lite feature — for exactly the
+population it was built for. Both production scans show a clean 73-character
+label read by the probe and **no `SLAB LABEL PARSED` line at all**.
+
+That one return also explains the other two symptoms: `cardImageUrl: null` is
+the missing image, and `pricingLookup: null` means no matched tcgPlayerId for
+`lookupGradedPrice` to price by id.
+
+The gate is now `baseFailed || (pricingLookup == null && !siblingAmbiguity)`,
+gated on `canFetchGraded` so it is slabs only. **The `siblingAmbiguity`
+exclusion is load-bearing**: a disclosure is a deliberate answer, not a
+failure to identify, and letting a label replace it with a single Medium pick
+would invert this project's core principle — the label cannot settle a
+finish/artwork split anyway.
+
+**2. The label number is a Pokédex number.** `#172` is Pichu's dex number, and
+607842's PPT `cardNumber` is `""`, so the by-number filter dropped every
+candidate and the query gave up. Same rule as #108's
+`classifyPokedexNumberRead`, same safeguards: only a label number with **no
+total** (`#12/99` is untouched), and only when the number appears in the
+**pool's own `pokedexNumbers`**. It stops being a requirement; it never
+becomes a selector.
+
+**3. Nothing could break the resulting tie.** `"Pichu NEO"` returns
+"Neo Premium File 2" and "Intro Pack Neo (Totodile)" — both contain "neo",
+only one contains the label's **"2"**. `slabLabelSetTokens` extracts
+`["neo", "2"]`, keeping a bare digit **only when it directly follows a
+surviving set word**, which excludes the year (2000), the card number (#172),
+the grade (9, which follows "MINT") and the cert (115602100) by construction.
+Matching is **whole-token, never substring** — `"Neo Destiny 2000"` must not
+match `"2"`. Still requires exactly one distinct survivor, so it can break a
+tie but never invent a winner. **The main path's exact set-equality guard is
+untouched.**
+
+**4. The working query was outside the budget.** Verified live against PPT:
+
+```
+"Pichu PM NEO PROMO" -> 0 rows
+"Pichu PROMO"        -> 2 rows, neither of them the card
+"Pichu NEO"          -> 2 rows, 607842 FIRST
+```
+
+Two supporting changes the measurements forced:
+
+- **"PM" is now noise.** It is how PSA abbreviates "Pokémon" on a Japanese
+  label. Left in, it both poisoned the query and would have failed the token
+  test — "Neo Premium File 2" has no token "pm".
+- **`SLAB_LABEL_MAX_QUERIES` 2 → 3.** Chosen over demoting the generic
+  "PROMO" phrase (which would also have fixed this card in 2 queries) because
+  PPT really has "XY Promos", "SM Promos" and "CoroCoro Promotional Cards",
+  and one real label is not enough to justify removing a query that may be
+  the right one elsewhere. Strictly additive: no existing query is lost.
+
+"PROMO" is still **searched**, just never **required** of the winning
+setName — the distinction that makes both halves work.
+
+### What the preview e2e caught — the follow-up commit
+
+The first #111 preview logged **every stage succeeding**, including
+`GRADED BID: PSA 9 median=$139.79 list=$140.79 breakEven=$112.67 bid=$52.83
+tier=Stagnant pace=3.5/mo over 78d` — and still returned Low, WITHHELD, no
+image. `slabBase` spread `baseLookup` whenever `baseLookup.found` was true,
+which was correct **only** while the label path required `found === false`;
+under that old gate the two were mutually exclusive by construction. Widening
+the trigger broke the invariant and the withhold was spread over the
+identification. Every log line said the fix worked; only the HTTP body said
+otherwise.
+
+Fixed in `a9ed5f4`: `slabIdentity` wins the spread, and since it is non-null
+only when the base lookup identified nothing, it cannot override a successful
+base match. Pinned by a source assertion, because the suite exercises
+`lookupCardFromSlabLabel` directly and would not have caught it.
+
+### Verified end-to-end on the real slab — preview `sourceHash c5262c53…`
+
+```
+matched   : 'Pichu' 'Neo Premium File 2'
+Match     : Medium | basis slab-label | slabCardIdentified True
+priced    : 607842 | printing Holofoil (label said Reverse Holofoil; catalog
+                     lists only Holofoil, so the label variety was declined)
+image     : .../607842_in_800x800.jpg      url: .../product/607842
+gradedPrice $139.79  sampleCount 9  listPrice $140.79
+gradedBreakEven $112.67  gradedSuggestedBid $52.83  tier Stagnant
+nearbyGradedPrices: PSA 10 $917.50 (7), CGC 9 $66.22 (6), CGC 7.5 $30 (3),
+                    CGC 10 $513.10 (2), PSA 8 $74 (2)
+total 2206ms (lookup 899ms)
+```
+
+**This is the first real graded slab ever identified end-to-end through Phase
+2-lite.** Regressions on the same preview, unchanged: Blastoise 42360 Low /
+`sibling-ambiguous` / 3 rows disclosed; XY95 High / `score-only` / 114004;
+Alakazam Medium / `legacy-number-rescue` / 83500. **Zero runtime errors.**
+
+### Tests
+
+**161 local tests** (146 before). Fixtures are the real captured rows —
+607842 and 614135 from `search="Pichu NEO"`, with 607842's real
+`salesByGrade`. Covered: both real label transcriptions, the grade digit
+exclusion, whole-token vs substring, the dex rule, a label number WITH a
+total still requiring a match (Zapdos G class), two candidates that both
+carry every token staying withheld, the tie-break not rescuing an empty
+query, the PSA 9 figures, the trigger shape including the `siblingAmbiguity`
+exclusion, the response-spread precedence, and a non-slab Meganium withhold
+being untouched.
+
+### Cost
+
+Up to **3 label searches** (3 units / 30 credits each) on a slab that
+identified nothing, where before there were **0** — the path was unreachable.
+The real scan spent **1**: the tie-break resolved on the first query, because
+PPT returned 12 filler rows for `"Pichu NEO PROMO"` rather than the 0 it
+returns for that exact query in isolation. Latency `lookup 899ms`, total
+2206ms. Nothing changes on a slab the ordinary path already identifies, or on
+any non-slab scan.
+
+---
+
+## PSA public API — what adopting it would need (NOT built, for decision)
+
+Researched 2026-10-24 against PSA's own documentation and Swagger spec.
+
+**Endpoint.** `GET https://api.psacard.com/publicapi/cert/GetByCertNumber/{certNumber}`.
+Also available: `cert/GetImagesByCertNumber/{certNumber}` (would fix the
+missing-image symptom directly for slabs) and `pop/GetPSASpecPopulation/{specID}`.
+
+**Auth.** A bearer token generated from a PSA account, sent as
+`Authorization: bearer <token>`. It would be a new Vercel env var
+(`PSA_API_TOKEN`), and **env vars are snapshotted at build time, so adding it
+needs a redeploy.**
+
+**Fields returned** (`PublicPSACert`): `CertNumber`, `SpecID`, `SpecNumber`,
+`LabelType`, `ReverseBarCode`, `Year`, `Brand`, `Category`, `CardNumber`,
+`Subject`, `Variety`, `IsPSADNA`, `IsDualCert`, `GradeDescription`,
+`CardGrade`, `PrimarySigners`, `OtherSigners`, `AutographGrade`,
+`TotalPopulation`, `TotalPopulationWithQualifier`, `PopulationHigher`,
+`T206PopulationAllBacks`, `T206PopulationHigherAllBacks`, `ItemStatus`.
+
+For this Pichu the decisive words — **"PREMIUM FILE 2"** — would come from
+`Brand` and/or `Variety`. Note the slab **label itself does not contain
+"PREMIUM FILE"**; it says "NEO 2". Only the cert record has it, which is
+precisely the argument for the API. `TotalPopulation` / `PopulationHigher`
+would also give a real scarcity signal the tool has no source for today.
+
+**Rate limits — the open question.** PSA's documentation page states a
+**100 calls/day** cap for free accounts, with higher limits on a paid plan
+(contact-for-pricing). The Swagger spec defines **no rate-limit headers**, so
+there is nothing to read back the way PPT's `x-ratelimit-*` headers are read
+today. A third-party scraper's spec claims PSA cut the public API to roughly
+**1 call/day** for free tokens during 2026; that is secondhand and
+**unverified**, and it would make the free tier useless. **Confirm directly
+with PSA before building anything.** At 100/day it is comfortable (slabs are
+rare in these streams); at 1/day it is not viable without a paid plan.
+
+**Recommended shape if adopted.** Corroboration only, never a selector:
+fetch by cert **after** the label path has produced a candidate, and use
+`Brand`/`Variety`/`Year` to **confirm or veto** it — the same role every
+other second signal in this codebase has. Cache by cert number (a cert record
+is immutable), and treat the call as best-effort behind a short timeout, the
+same `Promise.race` pattern as the legacy-read awaits, so a slow or
+rate-limited PSA never holds a live bid decision open.
+
+Sources: [PSA Public API documentation](https://www.psacard.com/publicapi/documentation),
+[PSA Swagger spec](https://api.psacard.com/publicapi/swagger.json).
+
+---
+
+## #112 — 2026-10-25 — The reprint disclosure fired on a plural
+
+**Reported live**, hours after #109 reached production
+(`dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`, later `dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6`).
+A Japanese **M6a: MEGA Expansion 30th Celebration Shining Celebi**
+(tcgPlayerId **717001**) was identified **correctly** and then had its price
+withheld, with a note saying the closest match was an anniversary REPRINT
+"but the card was read as 'Celebrations'".
+
+### The scan — requestId `f86f1d7c`, one scan
+
+| model | cardName | number | setName | stampType |
+|---|---|---|---|---|
+| primary | Celebi | **002/025** | **Celebrations** | **Pokemon Center** |
+| legacy | Celebi | **003/025** | null | none |
+| haiku | **Charmeleon** | null | null | none (*"Card number area obscured by glare and angle; bottom edge not clearly legible"*) |
+
+Winner: **Shining Celebi 141/103, `M6a: MEGA Expansion 30th Celebration`,
+rarity "Classic Collection", $27.43**, `bestScore 10`, `tieCount 1`.
+Score was hp 6 + attackName 4 — **two** corroborating signals, so the
+weak-signal floor passed. Without the #109 rule this scan would have priced.
+
+### Cause: one letter
+
+```
+read   normalized: "celebrations"                          (PLURAL)
+winner normalized: "m6a mega expansion 30th celebration"   (SINGULAR)
+```
+
+`#109`'s `sameFamily` suppression asks whether one whole normalized string
+contains the other. `"m6a mega expansion 30th celebration".includes("celebrations")`
+is **false** on the trailing "s", so a read that *agrees* with the winner —
+it is naming the anniversary product — was treated as naming a different,
+older set, and the one-row branch withheld the price.
+
+The disclosure is meant for "read says **Base Set**, winner is a reprint".
+It is not meant for "read says Celebrations, winner is a Celebration set".
+
+### Fix
+
+`setNamesAgree(readSetName, candidateSetName)`: containment first, then an
+**anniversary-family** check — `celebration|celebrations|anniversary|classic
+collection` present on **both** sides. Now shared by the reprint disclosure
+**and** the #109 padded-number search's conflict test, so the two cannot
+drift apart.
+
+It is used **only to SUPPRESS** a disclosure or a search, so a false "yes"
+can cost an extra query at worst — it can never make a wrong candidate win.
+**The main path's exact set-name equality guard is untouched.**
+
+| read | candidate | agree? |
+|---|---|---|
+| Celebrations | M6a: MEGA Expansion 30th Celebration | **yes** (the bug) |
+| 30th Celebration | M6a: MEGA Expansion 30th Celebration | yes |
+| 25th Anniversary | Celebrations: Classic Collection | yes |
+| Celebrations | Celebrations: Classic Collection | yes |
+| **Base Set** | Celebrations: Classic Collection | **no — still discloses** |
+| **Base Set** | M6a: MEGA Expansion 30th Celebration | **no** |
+| Jungle / Neo Destiny | either reprint set | no |
+
+### The number: a misread, and no number handling changed
+
+PPT stores **`141/103`** for 717001 — the **original** card's number, the
+same convention Celebrations: Classic Collection uses (it stores Base Set
+Blastoise as `2/102`). The set's Classic Collection subset runs
+**`141/103` – `165/103`**, 25 cards; enumerating `setId 24721` shows
+denominators of only `103`, `RGB` and none. **No `/025` denominator exists
+anywhere in that set.**
+
+So `002/025` is **a misread, not a secondary or e-Card-style number**: the
+denominator matches nothing in the catalog, the two Gemini models disagreed
+on the numerator (`002` vs `003`), and Haiku called the number area illegible
+and the card a Charmeleon. (I could not read the physical card's printed
+number directly — TCGplayer's product page is JS-rendered and returns no card
+details to a fetch.)
+
+**Recommendation: change nothing about number handling.** `numbersMatch`
+correctly matched nothing, the page-2 fetch and both combined searches ran
+and correctly found nothing, and the existing READ TOTAL ORPHAN signal
+already describes this shape. The only defect was the disclosure. Pinned by a
+test asserting `numbersMatch` is unchanged.
+
+### After the fix
+
+**Priced.** On the replayed scan: `Shining Celebi`,
+`M6a: MEGA Expansion 30th Celebration`, **Low / `score-only`**, priced on
+**717001**, with the existing honest caveat — *"No printing in our database
+has the exact card number that was read ("002/025") … Showing the closest
+match found on other details (HP/attack/set) as a rough estimate only"*.
+Low is right: the card is identified on hp + attack with a number that
+matched nothing. **NM market $27.43** (Holofoil; `printingsAvailable`
+`["Holofoil", "Normal"]`, 36 listings).
+
+Preview e2e on the real card image (`sourceHash 02ff9590…`) came back
+**High / `score-only` / priced 717001** — the clean catalog scan let the
+model read the number correctly, so the no-number-match cap never applied.
+Either way the card is priced.
+
+### Noted, not fixed
+
+The primary read returned `stampType: "Pokemon Center"` for what is the
+**30th Celebration logo**, which is why the panel showed a "Pokemon Center
+stamp" badge. It cost nothing here — `candidateStampType` returns null for
+this set, so neither the +3 nor the −8 branch ran and the score was
+unaffected — but the badge itself is wrong. A vision-read issue, not a
+matching one.
+
+### Tests
+
+**168 local tests** (161 before). Includes a validity replay through
+`a9ed5f4` asserting the shipped code really did withhold it, the Blastoise
+original-vs-reprint disclosure still firing with all three rows, a genuine
+"Celebrations" Blastoise read keeping its price, and `numbersMatch` pinned
+unchanged.
