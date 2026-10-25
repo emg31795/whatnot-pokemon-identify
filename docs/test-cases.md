@@ -12780,3 +12780,309 @@ for cost reasons. When funded, from **56 real `haikuCostUsd` values** in
 the saved windows: median **$0.00325/scan**, mean $0.00326, range
 $0.00302–$0.00350 (input ~2738 tokens, output ~99, at $1/$5 per 1M) —
 **~$3.25 per 1,000 scans**.
+
+---
+
+## #109 — 2026-10-24 — Base Set Blastoise priced as a Celebrations reprint: two storage conventions for one number
+
+**Reported:** Eric scanned an original Base Set Blastoise 2/102 holo (no
+25th Anniversary logo on the card) on a Whatnot stream, and the extension
+matched **Celebrations: Classic Collection Blastoise at High/High, Holofoil
+$12.89, "Holofoil (detected)"**. Investigated read-only on production
+`dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV` (`2fe9412d…`), then fixed.
+
+The card is worth **$227.27** (Base Set, Unlimited) or **$896.06** (Base Set
+Shadowless, which is also where 1st Edition lives). The panel showed $12.89
+at the highest confidence the tool can express — a **17x–69x understatement
+on a 10-second auction decision**, which is precisely the failure mode this
+project exists to prevent.
+
+### The scans
+
+Two scans, 9 seconds apart, both retained in the 1-hour window:
+
+| # | requestId | primary read | legacy read | outcome |
+|---|---|---|---|---|
+| 1 | `71c04729` | Blastoise / **2/102** / hp100 / Stage 2 / **Base Set** / Hydro Pump / stamp **1st Edition** | identical, stamp `none` | score **20**, tie 1 → **High**, priced 250319 @ $13.01 |
+| 2 | `bb85e77f` | identical | identical | **PPT CACHE HIT**, `lookup ms= 11`, same answer re-served |
+
+The vision read was **correct on every field**. No model read a 25th
+Anniversary stamp and no model read "Celebrations" — all three read `Base
+Set` or null (Haiku: `setName: null`, `reason: "card number area obscured by
+glare and angle"`). This was never a read problem.
+
+### Root cause: PPT stores one number two ways
+
+Verified directly against PPT on 2026-10-24:
+
+```
+search="Blastoise 2/102"      -> 1 row,  250319 Celebrations: Classic Collection  $13.01
+search="Blastoise 002/102"    -> 2 rows, 42360  Base Set              002/102     $227.27
+                                         106997 Base Set (Shadowless) 002/102     $896.06
+search="Blastoise" offset=30  -> 30 rows, the originals are NOT on page 2
+```
+
+**The reprint stores the original's unpadded `2/102`; the originals store
+`002/102`.** A correct read of "2/102" therefore matched the reprint
+**exactly**, and that is what defeated every existing net:
+
+- `numberMissingFromPool` was **false**, so **page-2 pagination** never ran
+  — and page 2 does not contain the card anyway (it bottoms out at `004/165`
+  Expedition; the originals are page 3+).
+- the **combined name+number search** is gated on the same flag, so it never
+  ran. Galling detail: `buildZeroPaddedNumberVariant("2/102")` already
+  returns exactly `"002/102"` — the query that solves this existed and was
+  simply unreachable.
+- both **weak-signal floor** branches are gated on the number *not* matching
+  the winner (`!numberAbsentForFloor && best.number && !numberMatchedForBest`),
+  so neither fired.
+- `tieCount` was **1**, so **number-tie-ambiguous** could not fire.
+- the reprint shares no set with the originals, so **the sibling cap** could
+  not fire (`sameSiblingGroup` is exact normalized set equality).
+
+Every net keys on *"the read number matched nothing."* Here the number
+matched the **wrong storage convention**, which no net could see.
+
+### Why 20 points was enough for High
+
+`bestScore= 20` is `SCORE.number` **alone** — and 20 is twice
+`HIGH_THRESHOLD`. Each of the other signals was zero, and two of those zeros
+were bugs:
+
+| signal | pts | why |
+|---|---|---|
+| number | **+20** | `2/102` == `2/102`, exact |
+| hp | 0 | the reprint row's `hp` is **null** — true of **15 of the 25** Classic Collection rows |
+| set | 0 | `"celebrations: classic collection".includes("base set")` is false |
+| subtype | 0 | the row's `subtypes` is `[]` |
+| attackName | 0 | **bug** — the row's attack text is `"[WWW] <strong>Hydro Pump</strong> (40+)…"`, and the capture group `([^(\r\n<]+)` excludes `<`, so the regex fails outright. The one signal that genuinely **agrees** scored nothing |
+| stamp | 0 | **blind spot** — `STAMP_KEYWORDS` has no 1st Edition / 25th Anniversary / Celebrations entry, so `candidateStampType` returns `null` for *both* the reprint and Base Set (Shadowless) |
+
+The `<strong>` failure also made the **attack-mismatch cap ineligible**,
+since its guard requires a non-empty parsed attack list. The rule built for
+exactly this class of confusion was switched off by an unstripped HTML tag.
+
+**Had the originals been in the pool they would have won 33 to 20** (number
+20 + hp 6 + set 3 + attackName 4), tied with each other, and
+`sameSiblingGroup(42360, 106997)` is `true` — so the existing disclosure
+machinery would have handled it correctly all along. This was retrieval, not
+scoring.
+
+### Breadth: the whole set, and a second set
+
+All **25** rows of `setId 2931` carry their original unpadded numbers, so
+every one collides with a padded original:
+
+| read | unpadded search returns | padded search returns |
+|---|---|---|
+| `Charizard 4/102` | CC $139.17 **+ ME: 30th CC $164.23** | Base Set **$954.65**, Shadowless **$2,172.24** (+ Jumbo $350, Metal $313.39) |
+| `Venusaur 15/102` | CC $9.60 | Base Set $156.02, Shadowless $981.25 |
+| `Blastoise 2/102` | CC $13.01 | Base Set $227.27, Shadowless $896.06 |
+
+**`ME: 30th Celebration Classic Collection` is a second set on `NN/102`
+numbering** (already on record from the #~ Pikachu case, numbering `NN/102`).
+Both reprint sets carry the literal rarity string **"Classic Collection"**
+(confirmed on 250320 and 714372), which is the catalog-side tell this fix
+keys on.
+
+Charizard partly self-protects by accident — its two *reprint* rows share
+`4/102` **and** hp 120, so `tieCount 2` triggers `number-tie-ambiguous`.
+**Blastoise has no ME-30th twin, which is exactly why it came through as a
+clean, confident single winner.**
+
+### The fix — three changes, commits `11c04df` and `87bc426`
+
+**1. Padded-number retrieval.** When the read's number is written unpadded
+and every row matching it is stored unpadded too, search the padded form
+once and re-score. Purely additive — it only concats rows. Accepts only rows
+that actually match the read number (PPT returns unrelated *filler*, not an
+empty array, for a multi-word no-match query — test #63) and dedupes on
+`tcgPlayerId` so a row already in the pool cannot inflate `tieCount`.
+
+Two guards, both load-bearing:
+
+- **`storedNumeratorIsUnpadded`** decides "unpadded" from the **raw digit
+  widths**, not from `buildZeroPaddedNumberVariant` being non-null.
+  `normalizeNumber` strips leading zeros precisely so `numbersMatch` can
+  compare across the two conventions, which means the variant builder returns
+  a non-null **identical** form for an already-padded read:
+  `buildZeroPaddedNumberVariant("050/100") === "050/100"`. Using truthiness
+  fired a search on a modern padded read, and the existing **WIDE PADDING
+  test, case (a)** caught it immediately.
+- **a collision tell** — either a matching row is an anniversary reprint, or
+  the read's setName positively **conflicts** with every matching row's set.
+  Added after measuring the first guard alone: **62 of 278** real rows
+  (22.3%) store numbers unpadded across **31 sets** (XY - Fates Collide
+  `25/124`, XY - Evolutions `2/108`, Rising Rivals `38/111`, World
+  Championship Decks…) where no padded twin exists, so an ungated search
+  spends 30 credits on a guaranteed-empty query. That matters against the
+  open minute-limit pressure from #106. With the tell, only the **15**
+  reprint rows (5.4%) fire unconditionally; the other 47 need a positive set
+  conflict. Containment counts as **agreement** ("Evolutions" vs "XY -
+  Evolutions"), so a merely terser set read never triggers a search.
+
+**2. `extractAttackNames` strips HTML markup.** Break tags (`<br>`, `<p>`,
+`<div>`, `<li>`, `<tr>`, `<td>`) become a **newline** and only then are
+inline tags removed — deleting `<br>` outright would splice a name into its
+own description (`"[W] Surf<br>Does 30 damage."` → `"SurfDoes 30 damage."`),
+manufacturing a bogus name instead of cutting at the break.
+
+Measured over **271 distinct real PPT rows**: **43 results changed, every
+single one `[]` → a parsed list**, so no previously-parsed list was altered.
+`extractFirstAttackName` — which feeds `candidate.attackName` and therefore
+scoring — changed on **zero** rows and is left byte-identical, so scoring
+cannot move. Tag census over 260 rows with attacks: 85.8% carry some tag
+(almost all `<br>`, already handled), 23.5% a non-`<br>` tag (`em` 134,
+`strong` 84, `span` 56, `i` 6, `b` 4, `font` 2). The two biggest affected
+groups are the Classic Collection `<strong>` rows and `<span>`-wrapped GX
+attack names ("Raging Out GX", "Double Blaze GX").
+
+All four existing attack-mismatch cases replay **unchanged**: the 30th
+Celebration Pikachu, the Alakazam Psymimic suppression, the Snorlax `" - "`
+format, and the Rayquaza `fbec1b80` misread.
+
+**3. Anniversary-reprint disclosure**, the catalog-side backstop for when the
+originals are *not* retrievable (padded search empty, a third convention, or
+PPT missing the row). Returns Low, withholds the price, and names the
+problem. Keyed **entirely on the catalog** — rarity `"Classic Collection"`
+plus the set-name pattern — and on the read's own set text, **never on a
+vision stamp read**: proven by a test that runs the same pool through
+`stampType` `none` / `1st Edition` / `other` and asserts an identical
+outcome. The containment check is a **suppression** ("Celebrations" vs
+"Celebrations: Classic Collection" is plausibly the same family, the Pikachu
+class), so it can only ever *stop* a disclosure — not the forbidden loosening
+of the `set` scoring signal.
+
+### What the preview e2e caught — and the follow-up commit
+
+Preview `dpl_FHMLHJrcfkJZjF9W9Jf9Lz9vuQpE` / `dpl_6TH2Q6XS3GX42QkHQjJjZULap3qA`.
+e2e used the real TCGplayer product scans (`imageCdnUrl`, the same URL the
+API's own `cardImageUrl` points at) as scan payloads.
+
+The **first** preview exposed a defect in the fix: scanning a **genuine**
+Celebrations: Classic Collection Blastoise returned a two-row disclosure of
+Base Set and Base Set (Shadowless) and **left out the card actually in front
+of the camera**. The padded retrieval had pulled in the originals, they
+outscored the reprint 33 to 20, and the reprint fell out of the tie.
+Withholding the price was right; omitting the real candidate was not — a
+disclosure that does not name every printing the number could belong to is
+just a differently-shaped guess.
+
+Fixed in `87bc426`: **`appendReprintRows`** folds any anniversary-reprint row
+the read number points at into whichever disclosure fires, deduped on
+`tcgPlayerId`, and the prompt becomes **`REPRINT_DISAMBIGUATION_HINT`** —
+*"This number belongs to both the original and a 25th Anniversary reprint;
+check for the anniversary logo."* That **replaces** the finish/artwork hint
+rather than joining it, because a Classic Collection reprint copies the
+original's artwork faithfully; "check the finish and artwork" is the one
+instruction that cannot separate them.
+
+### Verified end-to-end on preview, `sourceHash 5723ac8d…` byte-exact with disk
+
+| scanned image | matched | Match | basis | price |
+|---|---|---|---|---|
+| **42360 Base Set Blastoise** | Base Set | **Low** | `sibling-ambiguous` | **withheld**, 3 rows disclosed |
+| **250319 Celebrations CC Blastoise** | Base Set | **Low** | `sibling-ambiguous` | **withheld**, 3 rows disclosed **incl. 250319** |
+| 114004 Pikachu XY95 | XY Promos | High | `score-only` | 114004, linked |
+| 83500 Alakazam 33 | Expedition | Low/Medium | read-dependent | 83500, linked |
+
+Both Blastoise scans disclose **all three** printings — Base Set $227.27,
+Base Set (Shadowless) $896.06, Celebrations: Classic Collection $13.01 —
+each with its own `pricingLookup` and its own `tcgplayerUrl`, top-level
+`tcgplayerUrl: null`, and the anniversary-logo prompt. **Never a confident
+$13 again.**
+
+The full trace for `14a5be2c`:
+
+```
+[lookup] search= Blastoise ... raw candidate count= 30
+[lookup] best= Blastoise 2/102 Celebrations: Classic Collection  bestScore= 20 tieCount= 1
+[padded-number] read=2/102 matched only rows that store it unpadded
+                (reprintRow=true, setConflict=true) (2/102 [Celebrations: Classic Collection])
+                — the padded form "002/102" is carried by nothing in the pool
+[padded-number] raw candidate count= 2
+[padded-number] PADDED-FORM ROWS RECOVERED: 42360 market=227.27 | 106997 market=896.06
+                — re-scoring, total candidates= 32
+[lookup:padded] best= Blastoise 002/102 Base Set  bestScore= 33 tieCount= 2 tiedIds= 42360,106997
+[sibling-cap] decision=ambiguous-disagreement
+[lookup] SIBLING DISAGREEMENT CAP: 42360 | 106997 | 250319 — capped to Low, no single price
+[timing] lookup ms= 526 total ms= 1818
+```
+
+**Zero runtime errors** from either preview. The one error group in the
+window is on **production** — `GRADED NUMBER MISMATCH: expected 205/198 but
+tcgPlayerId=523886 is 205/182 - refusing to price`, a graded guard working
+correctly on Eric's own live scanning, unrelated to this change.
+
+The Alakazam row differs between the two preview runs (Medium /
+`legacy-number-rescue` vs Low / `score-only`) from **vision variance, not
+this change**: the primary read was `"10/165"` on the first run and
+`"10/147"` on the second. The catalog thumbnail is only **200×275px**, far
+smaller than a video-frame crop, which is why the number misreads at all —
+a limitation of using catalog images for e2e. Both runs priced the correct
+card, 83500.
+
+### Cost
+
+**Latency:** the padded search costs **~150ms** (`00:09:21.433` →
+`.580`). `lookup ms` 336 → **526** on the Blastoise class; total 1818ms.
+Zero on every scan where it does not fire.
+
+**Credits:** exactly **one extra `limit=30` search** — 3 rate-limit units /
+30 credits — on a scan where it fires, confirmed by test
+(`2 calls total (name search + padded)`), with no page-2 fetch and no
+combined search. 2 searches = 6 units / 60 credits for a Blastoise-class
+scan, against 30 before. Session total 1,741 of 20,000 daily credits (8.7%);
+`minute-remaining` never fell below 47 of 60, so no stream was contending.
+
+### Tests
+
+**142 local tests, 0 fail** (122 before — 20 new). Includes a **validity
+replay** against the pinned pre-fix commit `836ff33` asserting the old code
+really did return `High` on `tcgPlayerId 250319`, so the section cannot pass
+vacuously. Pinned to a SHA, never HEAD. New fixtures are real PPT rows
+captured 2026-10-24, attack text preserved byte-for-byte including the
+`<strong>` wrapper, and the Charizard padded pool is the messy one PPT really
+returns (Jumbo, Metal Card, and a Black Dot Error row with no hp and no
+market).
+
+Explicitly pinned as unchanged: Alakazam, Rayquaza 003/017 (**still exactly
+3 combined searches — no sixth request**), Charizard ex twins, Boss's
+Orders, XY95, Meganium dex, Dragonite graded, Bellibolt `787f6fce`.
+
+### No extension change
+
+`extension/content.js` is **untouched**. The disclosure reuses the existing
+`siblingAmbiguity` payload shape the panel already renders, and the
+withheld-price branch reuses the `printingUndetermined` shape the
+weak-signal floors already return. **No `chrome://extensions` reload needed**
+— though the #106/#107 reload (sibling/tie rows showing the set name) is
+still required if it has not been done since 2026-10-17.
+
+### Measured, no change made — `pickDefaultVariantKey`'s 1st Edition reorder
+
+`api/identify.js:3200` reorders printing preference when the vision read says
+`stampType: "1st edition"`, which sits in tension with the standing *"never
+auto-flip the default printing on a vision stamp read"* rule. Measured over
+**278 distinct real rows**: 53 have more than one printing, 10 of those offer
+a 1st Edition printing, and the reorder changes the default on **zero** of
+them — PPT's own `primaryPrinting` always matched an available key and wins
+first. **The branch is effectively dead on real data**, so the tension is
+theoretical and no change is warranted. Caveat: this used `printingsAvailable`
+as the key set, whereas production builds keys from live TCGplayer data; the
+real log line `raw variants object … {"Holofoil":{…}}` shows the same
+spelling as `primaryPrinting`, so the approximation holds.
+
+### Open, found here, NOT fixed
+
+**The sibling cap's `reason` string can contradict itself.** The real e2e
+disclosure read: *the two AI models read different card numbers ("2/102" vs
+"2/102")*. Both models read `2/102`; the cap classified it
+`ambiguous-disagreement` because that number `numberPointsAtCandidate` BOTH
+siblings (`legacyPointsAtBest=true legacyPointsAtSibling=Blastoise 002/102`),
+not because the models disagreed. The **decision is correct and safe** — two
+rows share one number and neither can be chosen — but the **explanation is
+false as written**, and an explanation that names a disagreement that did not
+happen is the same class of defect as #107's stale "best guess" clause. Needs
+its own wording branch for "one number, two printings" as distinct from "two
+models, two numbers". Pre-existing, independent of this change.

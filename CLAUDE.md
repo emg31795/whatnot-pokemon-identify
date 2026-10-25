@@ -27,11 +27,18 @@ when the catalog lists it. **This depends on `SLAB_LABEL_PROBE` staying on**
 — `labelText` comes from the legacy shadow read, so switching the probe off
 to protect the legacy rescues also disables slab identification.
 
-Two traps found the hard way and worth not re-discovering: **PPT set names
+Three traps found the hard way and worth not re-discovering: **PPT set names
 drop era prefixes** (`"Arceus"`, not `"Platinum: Arceus"` — the latter
 returns 0 and still bills 30 credits, since `limit` is billed, not results),
-and **`normalizePptCard` drops `printingsAvailable`**, so anything needing
-it must read the raw row.
+**`normalizePptCard` drops `printingsAvailable`**, so anything needing
+it must read the raw row, and **PPT stores one card number under two padding
+conventions** (#109): Base Set is `002/102` while its Celebrations: Classic
+Collection reprint is `2/102`, so `search="Blastoise 2/102"` returns ONLY the
+$13 reprint and `"Blastoise 002/102"` ONLY the $227/$896 originals. Because
+`normalizeNumber` strips leading zeros, `buildZeroPaddedNumberVariant`
+returns a non-null **identical** form for an already-padded read — use
+`storedNumeratorIsUnpadded` (raw digit widths) to ask "is this unpadded?",
+never the variant builder's truthiness.
 
 Earlier context (test #96). The graded path now actually works mechanically — before this it could
 never return a price at all (it read two field names that don't exist in
@@ -247,7 +254,7 @@ card; coincidental, worth 0.35x). A *disagreeing* total is **not** a match.
 `matchBasis` (machine-readable reason code on the response): `score-only`,
 `tie`, `weak-number`, `legacy-number-rescue`, `setname-search`,
 `setname-narrowed`, `name-rescued-by-number`, `sibling-ambiguous`,
-`number-tie-ambiguous`.
+`number-tie-ambiguous`, `anniversary-reprint-ambiguous`.
 
 **`number-tie-ambiguous`** (2026-10-18, test #106) — when `tieCount >= 2` and
 EVERY tied candidate matches the read number, the number cannot break the tie,
@@ -499,6 +506,32 @@ sane bid for that card.
   The API wants raw base64 and 400s, manufacturing a fake error cluster.
 
 ## Open items
+
+**BUILT AND PREVIEW-VERIFIED 2026-10-24, AWAITING PRODUCTION APPROVAL (#109)
+— Base Set Blastoise 2/102 priced as a $13 Celebrations reprint.** Commits
+`11c04df` + `87bc426`, `sourceHash 5723ac8d…`, preview
+`dpl_FHMLHJrcfkJZjF9W9Jf9Lz9vuQpE`, 142 local tests (122 before). Root cause
+is the padding-convention trap above: a correct read of "2/102" matched the
+reprint EXACTLY, so every existing net — page-2, combined search, both
+weak-signal floors, number-tie, sibling cap — was keyed on a condition that
+was false. Three changes: **padded-number retrieval** (one extra `limit=30`
+search, ~150ms, gated on a collision tell because 62 of 278 real rows store
+numbers unpadded across 31 ordinary sets); **`extractAttackNames` strips HTML
+markup** (43 of 271 rows change, ALL `[]` → a parsed list,
+`extractFirstAttackName` untouched so scoring cannot move); and
+**`anniversary-reprint-ambiguous`** disclosure keyed on rarity
+`"Classic Collection"`, never on a stamp read. Blastoise now discloses all
+three printings ($227.27 / $896.06 / $13.01) at Low with no single price.
+**No `extension/` change** — reuses the existing `siblingAmbiguity` and
+`printingUndetermined` shapes. Full write-up: `docs/test-cases.md` #109.
+
+**OPEN — the sibling cap's `reason` string can contradict itself (#109, NOT
+fixed).** Real e2e text: *the two AI models read different card numbers
+("2/102" vs "2/102")*. Both models read the same number; the cap fired
+`ambiguous-disagreement` because that number points at BOTH siblings, not
+because the models disagreed. The decision is right, the explanation is false
+as written — same class as #107's stale "best guess" clause. Needs a separate
+wording branch for "one number, two printings" vs "two models, two numbers".
 
 **DEPLOYED TO PRODUCTION 2026-10-18 (#108) — the Japanese Meganium
 Pokédex-number fix.** Commit `6247b40`, production
