@@ -581,12 +581,16 @@
 }
 
 /* ---- the number the panel exists to show ---- */
-#wnpk-root .wnpk-price-block {
+/* CHANGED (#113 polish): was a space-between row, which on a wide panel
+   threw the price to the far left and the bid to the far right — two
+   numbers that belong together, placed as far apart as possible. They now
+   sit on one line and wrap as a unit. */
+#wnpk-root .wnpk-price-block { margin: 2px 0; }
+#wnpk-root .wnpk-price-figures {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 2px 0 2px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
 }
 #wnpk-root .wnpk-price-label {
   font-size: 11px;
@@ -836,3 +840,33 @@
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
 }
 #wnpk-root .wnpk-preview-hint { font-size: 11.5px; color: #9aa0a6; }
+
+/* =====================================================================
+   #113 polish — grouped price, full-width body, quieter stamps
+   ===================================================================== */
+
+/* The head row holds only what belongs beside the card art. Everything
+   below it spans the panel, so the left column is not left empty under
+   the thumbnail on a wide panel. */
+#wnpk-root #wnpk-price-extra,
+#wnpk-root #wnpk-sibling-section { margin-top: 10px; }
+
+#wnpk-root .wnpk-bid {
+  font-size: 15px;
+  font-weight: 600;
+  color: #ffb063;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  padding-bottom: 0;
+}
+
+/* One printing is a fact, not a choice — stated, not offered as a
+   single-option <select>. */
+#wnpk-root .wnpk-printing-line {
+  font-size: 12.5px;
+  color: #b9bcc2;
+  margin: 8px 0 2px;
+}
+#wnpk-root .wnpk-printing-line b { color: #e8eaed; font-weight: 600; }
+
+#wnpk-root .wnpk-badge-hidden[hidden] { display: none; }

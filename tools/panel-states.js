@@ -200,6 +200,39 @@ window.WNPK_STATES = {
     price: { marketPrice: 28.4, conditionPrices: { NM: 28.4 } },
   },
 
+  "single-printing-stamp": {
+    label: "Single printing + generic stamp read (Bulbasaur 037 ME promo)",
+    identify: {
+      found: true,
+      cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/717010_in_800x800.jpg",
+      cardName: "Bulbasaur", setName: "ME: MEGA Evolution Promos",
+      cardLanguage: "English", confidence: "High", matchConfidence: "High",
+      matchBasis: "score-only",
+      // The live read that produced an "other stamp" badge for what is just
+      // the set's own logo — the case #113's polish pass exists for.
+      stampType: "other",
+      stampNote: "This card appears to carry a stamp. Stamped promos are sometimes a separate product with their own price.",
+      tcgplayerUrl: "https://www.tcgplayer.com/product/717010",
+      pricingLookup: { tcgPlayerId: "717010" },
+      usage: { estCostUsd: 0.00092 },
+    },
+    price: {
+      listingCount: 23, priceVariantUsed: "Holofoil",
+      conditionPrices: { NM: 3.48, LP: 2.8, MP: 2.2, HP: 1.6, DMG: 1.0 },
+      conditionsSuggestedBid: { NM: 1.63, LP: 1.19, MP: 0.83, HP: 0.45, DMG: null },
+      // ONE printing: no dropdown should render.
+      priceVariants: {
+        Holofoil: {
+          label: "Holofoil", basePrice: 3.48,
+          sellThrough: { monthlyPace: 21.0, tier: "Slow", totalSold: 63 },
+          conditions: { NM: 3.48, LP: 2.8, MP: 2.2, HP: 1.6, DMG: 1.0 },
+          conditionsSuggestedBid: { NM: 1.63, LP: 1.19, MP: 0.83, HP: 0.45, DMG: null },
+          conditionsBreakEven: { NM: 1.88, LP: 1.37, MP: 0.96, HP: 0.52, DMG: null },
+        },
+      },
+    },
+  },
+
   "not-found": {
     label: "Not identified",
     identify: {

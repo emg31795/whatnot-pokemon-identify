@@ -214,6 +214,11 @@
   const PANEL_MIN_WIDTH = 280;
   const PANEL_MAX_WIDTH = 560;
   const PANEL_DEFAULT_WIDTH = 340;
+  // Cap for the AUTO-FIT default only. The gap left of the video is often
+  // far wider than the panel needs — on a 1410px window it measured ~480px,
+  // and the panel grew to fill all of it, which is not a design, just an
+  // absence of one. A user who drags wider still gets PANEL_MAX_WIDTH.
+  const PANEL_AUTOFIT_MAX_WIDTH = 360;
 
   function clampWidth(w) {
     const cap = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, window.innerWidth - 40));
@@ -262,7 +267,9 @@
           const GUTTER = 16;
           // Space LEFT of the video, which is where the panel sits.
           const available = r.left - GUTTER * 2;
-          if (available > 0 && available < PANEL_DEFAULT_WIDTH) return clampWidth(available);
+          if (available <= 0) return PANEL_DEFAULT_WIDTH;
+          // Never wider than the autofit cap, never narrower than the floor.
+          return clampWidth(Math.min(available, PANEL_AUTOFIT_MAX_WIDTH));
         }
       }
     } catch (e) {
@@ -1384,8 +1391,18 @@
     // particular are easy for a vision model to misread or miss from a
     // video frame, so the user can just switch the dropdown to whatever
     // matches what they're actually holding, no rescan needed.
-    const variantPicker = priceData.priceVariants
-      ? `
+    // A <select> with one option is a control that cannot do anything — it
+    // reads as a choice the user has to make and costs a full row to say
+    // nothing. One printing is stated as plain text; two or more keep the
+    // picker, because then it really is a choice.
+    const variantKeys = priceData.priceVariants ? Object.keys(priceData.priceVariants) : [];
+    const variantPicker = !variantKeys.length
+      ? ""
+      : variantKeys.length === 1
+      ? `<div class="wnpk-printing-line">Printing: <b>${escapeHtml(
+          priceData.priceVariants[variantKeys[0]].label
+        )}</b></div>`
+      : `
         <div class="wnpk-cond-label">PRINT VARIANT</div>
         <select id="wnpk-variant-select" class="wnpk-variant-select">${Object.entries(priceData.priceVariants)
           .map(
@@ -1395,29 +1412,43 @@
               )}${key === priceData.priceVariantUsed ? " (detected)" : ""}</option>`
           )
           .join("")}</select>
-      `
-      : "";
+      `;
 
     const initialVariant = priceData.priceVariants ? priceData.priceVariants[priceData.priceVariantUsed] : null;
 
+    // The head sits beside the thumbnail: the number and the tier chip that
+    // qualifies it, nothing else.
     section.innerHTML = `
-      ${pricingWarnings}
-      <div id="wnpk-alt-printing">${alternatePrintingAlertHtml(
-        priceData.priceVariants,
-        priceData.priceVariantUsed,
-        identifyData && identifyData.matchConfidence
-      )}</div>
       <div id="wnpk-market-price">${marketPriceBlock(initialVariant, priceData)}</div>
       <div id="wnpk-sell-through">${sellThroughBadgeHtml(
         initialVariant ? initialVariant.sellThrough : priceData.sellThrough,
         initialVariant ? initialVariant.conditionsBreakEven : priceData.conditionsBreakEven
       )}</div>
-      ${variantPicker}
-      ${conditionDetailsHtml(
-        initialVariant ? initialVariant.conditions : priceData.conditionPrices,
-        initialVariant ? initialVariant.conditionsSuggestedBid : priceData.conditionsSuggestedBid
-      )}
     `;
+
+    // Everything else runs full width under the thumbnail row.
+    const extra = $("#wnpk-price-extra");
+    if (extra) {
+      extra.innerHTML = `
+        ${pricingWarnings}
+        <div id="wnpk-alt-printing">${alternatePrintingAlertHtml(
+          priceData.priceVariants,
+          priceData.priceVariantUsed,
+          identifyData && identifyData.matchConfidence
+        )}</div>
+        ${variantPicker}
+        ${conditionDetailsHtml(
+          initialVariant ? initialVariant.conditions : priceData.conditionPrices,
+          initialVariant ? initialVariant.conditionsSuggestedBid : priceData.conditionsSuggestedBid
+        )}
+      `;
+    }
+
+    // #113 polish (5): a generic stamp read is only worth a badge once we
+    // know an alternate printing actually exists for it to point at. By the
+    // time we are here we know how many printings there are, so reveal it
+    // now if it could matter. It still never changes the price.
+    if (identifyData && variantKeys.length > 1) revealStampBadgeIfHidden(identifyData);
 
     // FIX (2026-09-17, see setNameForVariantKey above): keep the header's
     // set name in sync with whichever variant is actually selected,
@@ -1428,7 +1459,7 @@
       setNameEl.textContent = setNameForVariantKey(priceData.priceVariantUsed, identifyData);
     }
 
-    if (priceData.priceVariants) {
+    if (priceData.priceVariants && variantKeys.length > 1) {
       const select = $("#wnpk-variant-select");
       select.addEventListener("change", () => {
         const variant = priceData.priceVariants[select.value];
@@ -1477,6 +1508,13 @@
       </details>`;
   }
 
+  // Unhides the held-back generic stamp badge once an alternate printing is
+  // known to exist. Called from renderPriceSection.
+  function revealStampBadgeIfHidden() {
+    const el = root.querySelector("#wnpk-stamp-badge");
+    if (el) el.hidden = false;
+  }
+
   // The one number the panel exists to show, plus the bid derived from it.
   // Previously both were a single 14px sentence competing with every other
   // line; here they are the visual anchor and everything else defers.
@@ -1485,16 +1523,20 @@
       bid === undefined
         ? ""
         : bid == null
-        ? `<div class="wnpk-bid wnpk-bid-none">Bid —</div>`
+        ? `<span class="wnpk-bid wnpk-bid-none">Bid —</span>`
         : bid <= 0
-        ? `<div class="wnpk-bid wnpk-bid-skip">Bid Skip</div>`
-        : `<div class="wnpk-bid">Bid <b>$${bid.toFixed(2)}</b></div>`;
+        ? `<span class="wnpk-bid wnpk-bid-skip">Bid Skip</span>`
+        : `<span class="wnpk-bid">Bid <b>$${bid.toFixed(2)}</b></span>`;
+    // CHANGED (#113 polish): this was a space-between row, which threw the
+    // price to the left edge and the bid to the right edge of a 480px panel
+    // — two numbers that belong to each other, as far apart as the layout
+    // allowed. They now sit together on one line and wrap as a unit.
     return `<div class="wnpk-price-block">
-        <div class="wnpk-price-main">
-          <div class="wnpk-price-label">${escapeHtml(priceLabel || "Market")}</div>
-          <div class="wnpk-price-value">${price != null ? "$" + price.toFixed(2) : "—"}</div>
+        <div class="wnpk-price-label">${escapeHtml(priceLabel || "Market")}</div>
+        <div class="wnpk-price-figures">
+          <span class="wnpk-price-value">${price != null ? "$" + price.toFixed(2) : "—"}</span>
+          ${bidHtml}
         </div>
-        ${bidHtml}
       </div>${sub ? `<div class="wnpk-price-sub">${sub}</div>` : ""}`;
   }
 
@@ -1578,10 +1620,31 @@
     const b = [];
     if (data.printEdition) b.push(`<span class="wnpk-badge" id="wnpk-edition-badge">${escapeHtml(data.printEdition)}</span>`);
     // "none" is the schema DEFAULT (returned whenever the stamp area is
-    // unclear or absent), so it is not a finding and is not shown. "other"
-    // IS shown: it means a stamp was seen but not named.
+    // unclear or absent), so it is not a finding and is not shown.
+    //
+    // CHANGED (#113 polish): "other" used to be shown unconditionally, on
+    // the reasoning that the model SAW a stamp it could not name. In
+    // practice it fires on ordinary cards — the live Bulbasaur 037 ME promo
+    // got an "other stamp" badge for what is just the set's own logo — and
+    // a badge that cannot change the decision is noise competing with the
+    // price. A named stamp (Pokemon Center, Prerelease, Staff...) still
+    // shows always: those name a real, separately-priced product.
+    //
+    // A generic "other" is held back until something exists for it to point
+    // at — a disclosed sibling now, or an alternate printing once
+    // /api/price reveals one (see revealStampBadgeIfHidden). It never
+    // changes which price is shown either way.
     if (data.stampType && data.stampType !== "none" && data.stampType !== "1st Edition") {
-      b.push(`<span class="wnpk-badge">${escapeHtml(data.stampType)} stamp</span>`);
+      const generic = String(data.stampType).toLowerCase() === "other";
+      if (!generic || data.siblingAmbiguity) {
+        b.push(`<span class="wnpk-badge">${escapeHtml(data.stampType)} stamp</span>`);
+      } else {
+        b.push(
+          `<span class="wnpk-badge wnpk-badge-hidden" id="wnpk-stamp-badge" hidden>${escapeHtml(
+            data.stampType
+          )} stamp</span>`
+        );
+      }
     }
     return b.length ? `<div class="wnpk-badges">${b.join("")}</div>` : "";
   }
@@ -1678,7 +1741,16 @@
       );
     }
 
-    if (data.stampNote) out.push(WARN("info", "This card looks stamped", data.stampNote));
+    // Same rule as the badge (#113 polish): a generic stamp read with
+    // nothing for it to point at is noise. `stampNote` is advisory text the
+    // backend attaches to a stamp read — when the read is the unnamed
+    // "other" AND no sibling was disclosed, there is no alternate product
+    // whose price it could send you to, so it is withheld rather than
+    // spending a warning slot. A NAMED stamp always keeps its note.
+    const genericStamp = String(data.stampType || "").toLowerCase() === "other";
+    if (data.stampNote && (!genericStamp || data.siblingAmbiguity)) {
+      out.push(WARN("info", "This card looks stamped", data.stampNote));
+    }
 
     return out;
   }
@@ -1982,14 +2054,27 @@
     // branch rather than the blanket "price withheld" line. Each row shows
     // number and rarity (the holo/non-holo tell Eric can actually check on
     // stream) and is filled in by fetchAndRenderSiblingPrices.
-    const priceSectionHtml = data.siblingAmbiguity
-      ? `<div id="wnpk-sibling-section">${siblingRowsHtml(data.siblingAmbiguity)}</div>`
+    // SPLIT (#113 polish): only the things that belong NEXT TO the card art
+    // go in the head row — name, set, badges, the price + bid, the tier
+    // chip. Everything else (print variant, condition table, confidence
+    // chips, warnings, links) runs FULL WIDTH underneath, because a 480px
+    // panel with a 96px thumbnail left an empty left column below the
+    // image while the right column wrapped.
+    const headPriceHtml = data.siblingAmbiguity
+      ? ""
       : data.pricingLookup
       ? `<div id="wnpk-price-section"><div class="wnpk-cond-label">Loading price…</div></div>`
-      : `<div class="wnpk-cond-label">Printing undetermined — price withheld, see warning above.</div>`;
+      : `<div class="wnpk-cond-label">Price withheld — see below.</div>`;
+    const belowHtml = data.siblingAmbiguity
+      ? `<div id="wnpk-sibling-section">${siblingRowsHtml(data.siblingAmbiguity)}</div>`
+      : data.pricingLookup
+      ? `<div id="wnpk-price-extra"></div>`
+      : "";
     $("#wnpk-body").innerHTML = `
       ${fallbackBadge}
-      ${headBlockHtml(data, priceSectionHtml + confidenceChips)}
+      ${headBlockHtml(data, headPriceHtml)}
+      ${belowHtml}
+      ${confidenceChips}
       ${confidenceWarnings}
       ${footer}
     `;
