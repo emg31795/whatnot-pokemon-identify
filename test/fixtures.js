@@ -558,6 +558,118 @@ const BASE_VENUSAUR_15_SHADOWLESS = {
   printingsAvailable: ["Unlimited Holofoil", "1st Edition Holofoil"],
 };
 
+// --------------------------------------------------------------------------
+// Japanese PSA 9 Pichu slab, cert 115602100 (test #111).
+// --------------------------------------------------------------------------
+// REAL rows captured from PPT 2026-10-24:
+//   search="Pichu NEO" language=japanese -> both rows below, 607842 FIRST
+//   ("Pichu NEO PROMO" returns 0 rows and "Pichu PROMO" returns neither.)
+// Both carry cardNumber "" and pokedexNumbers [172] -- the label's "#172" is
+// Pichu's POKEDEX number, which is why the by-number filter had to learn the
+// #108 lesson. Only 607842's setName contains the label's "2".
+// The ebay block is the real salesByGrade, trimmed to the fields the graded
+// path reads.
+const PICHU_NEO_PREMIUM_FILE_2 = {
+  tcgPlayerId: "607842",
+  setName: "Neo Premium File 2",
+  name: "Pichu",
+  cardNumber: "",
+  rarity: "None",
+  cardType: "Pokemon",
+  hp: "30",
+  stage: "Basic",
+  pokedexNumbers: [172],
+  attacks: ["[Colorless] Let's Play! <br>Search your deck for a Baby Pokémon card and put it onto your Bench. Shuffle your deck afterward. (You can't use this attack if your Bench is full.)"],
+  prices: { market: 42.02, primaryPrinting: "Holofoil", listings: 27 },
+  printingsAvailable: ["Holofoil"],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/607842",
+  imageCdnUrl: "https://tcgplayer-cdn.tcgplayer.com/product/607842_in_800x800.jpg",
+  ebay: {
+    "dateRangeStart": "2026-07-31T00:00:00.000Z",
+    "dateRangeEnd": "2026-10-17T00:00:00.000Z",
+    "totalSales": 34,
+    "gradesTracked": [
+        "cgc7_5",
+        "cgc8_5",
+        "cgc9",
+        "psa10",
+        "cgc10",
+        "psa9",
+        "psa8",
+        "psa5",
+        "tag7_5",
+        "bgs9",
+        "psa6"
+    ],
+    "salesByGrade": {
+        "psa9": {
+            "count": 9,
+            "totalValue": 1081.57,
+            "averagePrice": 135.19625,
+            "medianPrice": 139.79,
+            "minPrice": 61,
+            "maxPrice": 179.99,
+            "lastSaleDate": "2026-10-17T00:00:00.000Z"
+        },
+        "psa10": {
+            "count": 7,
+            "totalValue": 5585,
+            "averagePrice": 930.8333333333334,
+            "medianPrice": 917.5,
+            "minPrice": 800,
+            "maxPrice": 1100,
+            "lastSaleDate": "2026-10-17T00:00:00.000Z"
+        },
+        "psa8": {
+            "count": 2,
+            "totalValue": 148,
+            "averagePrice": 74,
+            "medianPrice": 74,
+            "minPrice": 57.5,
+            "maxPrice": 90.5,
+            "lastSaleDate": "2026-07-31T00:00:00.000Z"
+        }
+    }
+},
+};
+
+const PICHU_INTRO_PACK_NEO = {
+  tcgPlayerId: "614135",
+  setName: "Intro Pack Neo (Totodile)",
+  name: "Pichu",
+  cardNumber: "",
+  rarity: "None",
+  cardType: "Pokemon",
+  hp: "30",
+  stage: "Baby",
+  pokedexNumbers: [172],
+  attacks: ["[Colorless] Pound (10)"],
+  prices: { market: 65, primaryPrinting: "Normal", listings: 0 },
+  printingsAvailable: ["Normal"],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/614135",
+  imageCdnUrl: "https://tcgplayer-cdn.tcgplayer.com/product/614135_in_800x800.jpg",
+};
+
+// The junk winner from the real scans: a 2024 Start Deck 100 card that cleared
+// MATCH_FLOOR on hp 30 alone (score 6) in a THIRTEEN-way tie, made
+// `found: true`, and so locked the slab-label rescue out entirely.
+const PICHU_ETHANS_START_DECK = {
+  tcgPlayerId: "669985",
+  setName: "Start Deck 100 Battle Collection",
+  name: "Ethan's Pichu",
+  cardNumber: "241/742",
+  rarity: "",
+  cardType: "Pokemon",
+  hp: "30",
+  stage: "Basic",
+  pokedexNumbers: [172],
+  attacks: ["[0] Zapping Draw (30)<br> Draw a card."],
+  prices: { market: 4.99, primaryPrinting: "Normal", listings: 4 },
+  printingsAvailable: ["Normal"],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/669985",
+  imageCdnUrl: "https://tcgplayer-cdn.tcgplayer.com/product/669985_in_800x800.jpg",
+};
+
 module.exports = {
   CHARIZARD_EX_125,
   CHARIZARD_EX_223,
@@ -574,6 +686,9 @@ module.exports = {
   VICTREEBEL_SV2A_71,
   AZUMARILL_JP_NO_NUMBER,
   TYPHLOSION_JP_NO_NUMBER,
+  PICHU_NEO_PREMIUM_FILE_2,
+  PICHU_INTRO_PACK_NEO,
+  PICHU_ETHANS_START_DECK,
   CC_BLASTOISE_2,
   BASE_BLASTOISE_2,
   BASE_BLASTOISE_2_SHADOWLESS,

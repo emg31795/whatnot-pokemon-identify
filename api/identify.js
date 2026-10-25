@@ -192,9 +192,26 @@ const SIBLING_GRADED_MAX_LOOKUPS = 6;
 // scan. Each is a full limit=30 request (30 credits, ~3 rate-limit units),
 // and this path only runs on a slab that the ordinary lookup already
 // failed to identify — so it must not be able to turn one failed scan into
-// an unbounded credit burn. 2 is enough for the real shape seen in the
-// logs: a completed-number query, then the most specific set word.
-const SLAB_LABEL_MAX_QUERIES = 2;
+// an unbounded credit burn. 2 was enough for the real shape seen in the
+// 2026-10-11 logs: a completed-number query, then the most specific set word.
+//
+// RAISED to 3 on 2026-10-24 (#111), measured against the real Japanese PSA 9
+// Pichu label. Its phrases are ["NEO PROMO", "PROMO", "NEO"] and, verified
+// live against PPT:
+//     "Pichu NEO PROMO" -> 0 rows
+//     "Pichu PROMO"     -> 2 rows, neither of them the card
+//     "Pichu NEO"       -> 2 rows, the correct 607842 FIRST
+// so the only query that works was the one just outside the budget.
+//
+// Deliberately a budget increase rather than a reordering. Demoting the
+// generic "PROMO" phrase would also have fixed this card in 2 queries, but
+// PPT genuinely has sets called "XY Promos", "SM Promos" and "CoroCoro
+// Promotional Cards", and there is no slab corpus to show which ordering is
+// better for those — one real label is not enough to justify removing a query
+// that might be the right one elsewhere. Raising the cap takes no existing
+// query away; it only adds one more, and only on a slab that has already
+// failed to identify.
+const SLAB_LABEL_MAX_QUERIES = 3;
 
 // Cap on awaiting the legacy shadow read for labelText, same Promise.race
 // pattern and same reasoning as LEGACY_SETNAME_HINT_TIMEOUT_MS above: the
@@ -5636,6 +5653,31 @@ const SLAB_LABEL_NOISE_WORDS = new Set([
   "AUTHENTIC", "ALTERED", "TRADING", "CARD", "GAME", "JAPANESE", "ENGLISH",
   // Era/brand prefixes PPT does not carry in setName.
   "PLATINUM", "SWSH", "SM", "XY", "BW", "HGSS", "DP", "SV", "EX",
+  // ADDED 2026-10-24 (#111): "PM" is how PSA abbreviates "Pokemon" on a
+  // Japanese label — the real cert 115602100 reads "2000 PM JAPANESE NEO 2".
+  // It is the same class as "POKEMON" directly above, appears in no PPT
+  // setName, and left in it both poisoned the set phrases ("Pichu PM NEO
+  // PROMO" returns ZERO rows, verified) and would have failed the label
+  // token test below against the correct set, "Neo Premium File 2".
+  "PM",
+]);
+
+// ADDED 2026-10-24 (#111): product-type words PSA prints on a label that are
+// NOT part of the set name it belongs to. Deliberately tiny and separate from
+// the noise list above, because these are used ONLY by slabLabelSetTokens
+// (the tie-break) and NOT by slabLabelSetPhrases (the search queries) — PPT
+// really does have sets called "XY Promos", "SM Promos" and "CoroCoro
+// Promotional Cards", so "PROMO" is still worth SEARCHING on. It just cannot
+// be REQUIRED to appear in the winning candidate's setName, which is what
+// broke the real Pichu: its label says PROMO, its set is "Neo Premium File 2".
+const SLAB_LABEL_GENERIC_PRODUCT_WORDS = new Set(["PROMO", "PROMOS", "PROMOTIONAL"]);
+
+// Hoisted out of slabLabelSetPhrases 2026-10-24 (#111) so the phrase builder
+// and the new token test share ONE definition and cannot drift apart.
+// Contents unchanged from the 2026-10-11 original.
+const SLAB_LABEL_VARIETY_TOKENS = new Set([
+  "REVFOIL", "REV", "FOIL", "HOLO", "HOLOFOIL", "REVERSE", "FA", "FULLART",
+  "REVFOILNMMT", "NMMT", "GEMMT", "SHADOWLESS", "STEDITION", "EDITION", "ST",
 ]);
 
 // Printing qualifiers as PSA abbreviates them, mapped onto the printing
@@ -5728,10 +5770,7 @@ function slabLabelSetPhrases(label, cardName) {
       .map((t) => t.replace(/[^A-Za-z]/g, "").toUpperCase())
       .filter(Boolean)
   );
-  const varietyTokens = new Set([
-    "REVFOIL", "REV", "FOIL", "HOLO", "HOLOFOIL", "REVERSE", "FA", "FULLART",
-    "REVFOILNMMT", "NMMT", "GEMMT", "SHADOWLESS", "STEDITION", "EDITION", "ST",
-  ]);
+  const varietyTokens = SLAB_LABEL_VARIETY_TOKENS;
   const kept = label.setWords.filter((w) => {
     const u = w.replace(/[^A-Za-z]/g, "").toUpperCase();
     if (!u) return false;
@@ -5746,6 +5785,74 @@ function slabLabelSetPhrases(label, cardName) {
   if (kept.length > 1) phrases.push(kept.join(" "));
   for (let i = kept.length - 1; i >= 0; i--) phrases.push(kept[i]);
   return [...new Set(phrases)];
+}
+
+// ADDED 2026-10-24 (#111): the label's SET tokens, for the tie-break inside
+// lookupCardFromSlabLabel. Distinct from slabLabelSetPhrases, which builds
+// SEARCH QUERIES; this builds the set of words a surviving candidate's own
+// setName must contain, so it is stricter and it keeps DIGITS.
+//
+// The digit rule is the whole point. The real label reads
+//   "2000 PM JAPANESE NEO 2 #172 PICHU MINT 9 PROMO-REVERSE FOIL 115602100 PSA"
+// and the set is "Neo 2" — the "2" is load-bearing, because the search that
+// finds the card ("Pichu NEO") returns BOTH "Neo Premium File 2" (the right
+// card) and "Intro Pack Neo (Totodile)" (not it). Only the 2 separates them.
+// But that label holds four other numbers: the year 2000, the card number
+// #172, the grade 9 and the cert 115602100. A bare digit is kept ONLY when it
+// directly follows a surviving set word — which is how set names are written
+// ("Neo 2", "Base Set 2", "Premium File 2") and which excludes the grade
+// ("MINT 9" follows a noise word), the cert and the year by construction.
+// "#"-prefixed tokens are dropped outright: that is the card number, and
+// parseSlabLabel has already taken it.
+function slabLabelSetTokens(label, cardName) {
+  if (!label || !label.raw) return [];
+  const nameTokens = new Set(
+    String(cardName || "")
+      .split(/\s+/)
+      .map((t) => t.replace(/[^A-Za-z]/g, "").toUpperCase())
+      .filter(Boolean)
+  );
+  const out = [];
+  let prevWasSetWord = false;
+  for (const rawTok of String(label.raw).split(/[\s\-]+/)) {
+    const tok = rawTok.trim();
+    if (!tok) continue;
+    if (tok.startsWith("#")) { prevWasSetWord = false; continue; }
+    if (/^\d+$/.test(tok)) {
+      if (prevWasSetWord && tok.length <= 2 && tok !== label.year) out.push(tok.toLowerCase());
+      prevWasSetWord = false;
+      continue;
+    }
+    const alpha = tok.replace(/[^A-Za-z&'.]/g, "").toUpperCase();
+    if (!alpha || alpha.length < 2) { prevWasSetWord = false; continue; }
+    if (
+      SLAB_LABEL_NOISE_WORDS.has(alpha) ||
+      SLAB_LABEL_GENERIC_PRODUCT_WORDS.has(alpha) ||
+      SLAB_LABEL_VARIETY_TOKENS.has(alpha) ||
+      nameTokens.has(alpha)
+    ) {
+      prevWasSetWord = false;
+      continue;
+    }
+    out.push(alpha.toLowerCase());
+    prevWasSetWord = true;
+  }
+  return [...new Set(out)];
+}
+
+// Whole-token containment, never substring. "2" must match the "2" in
+// "Neo Premium File 2" and NOT the "2" inside "Neo Destiny 2000" — the same
+// reason the main path's set comparison is exact equality rather than
+// `includes`, which this project has been burned by before.
+function setNameContainsAllTokens(setName, tokens) {
+  if (!tokens.length) return false;
+  const have = new Set(
+    String(setName || "")
+      .toLowerCase()
+      .split(/[^a-z0-9&'.]+/)
+      .filter(Boolean)
+  );
+  return tokens.every((t) => have.has(t));
 }
 
 // One label-driven retrieval attempt. Returns a single candidate or null.
@@ -5786,6 +5893,10 @@ async function lookupCardFromSlabLabel(read, label, requestId) {
       .map((raw) => {
         const c = normalizePptCard(raw);
         c.printingsAvailable = Array.isArray(raw.printingsAvailable) ? raw.printingsAvailable : [];
+        // ADDED 2026-10-24 (#111): same reason printingsAvailable is attached
+        // here — normalizePptCard is held byte-identical, and the dex check
+        // below needs the raw row's own pokedexNumbers.
+        c.pokedexNumbers = Array.isArray(raw.pokedexNumbers) ? raw.pokedexNumbers : [];
         return c;
       })
       .filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
@@ -5800,7 +5911,34 @@ async function lookupCardFromSlabLabel(read, label, requestId) {
     // behind glare. A bare label numerator ("12") is allowed to match a
     // catalog "12/99", which is exactly the completion the old by-number
     // rescue could not do.
-    if (labelNum && labelNum.num != null) {
+    // ADDED 2026-10-24 (#111): the #108 lesson, applied to the LABEL number.
+    //
+    // A PSA label writes the Pokedex number when the card has no collector
+    // number of its own: cert 115602100 reads "#172" for a Pichu, and 172 is
+    // Pichu's Pokedex number. PPT stores that card (607842, "Neo Premium File
+    // 2") with cardNumber "" — an EMPTY STRING — so the by-number filter below
+    // drops every candidate and the query gives up, which is exactly what
+    // would have happened on the real scan had this path been reachable at all.
+    //
+    // Same shape as classifyPokedexNumberRead on the main path, and the same
+    // two safeguards: it requires the label number to carry NO total (a bare
+    // "#172"; "#12/99" is a real collector number and is untouched), and it
+    // only fires when the number appears in the POOL'S OWN pokedexNumbers, so
+    // it is decided by the catalog rather than assumed. A dex number is never
+    // a selector here either — it simply stops being a requirement, and the
+    // set-token test below is what actually picks the card.
+    const labelNumberIsDex =
+      !!labelNum &&
+      labelNum.num != null &&
+      labelNum.total == null &&
+      pool.some((c) => (c.pokedexNumbers || []).some((n) => String(n) === String(Number(labelNum.num))));
+    if (labelNumberIsDex) {
+      console.log(
+        `[requestId=${requestId}]`,
+        `[slab-label][dex-number] label number "${label.cardNumber}" is the Pokedex number of candidates in this pool — treating it as absent, not requiring a card-number match`
+      );
+    }
+    if (!labelNumberIsDex && labelNum && labelNum.num != null) {
       const byNumber = pool.filter((c) => {
         const cn = normalizeNumber(c.number);
         if (!cn || cn.num == null) return false;
@@ -5818,7 +5956,36 @@ async function lookupCardFromSlabLabel(read, label, requestId) {
     }
 
     pool = filterCandidatesByStampAgreement(pool, read);
-    const distinct = distinctByDedupKey(pool);
+    let distinct = distinctByDedupKey(pool);
+
+    // ADDED 2026-10-24 (#111): the label's own set words as a TIE-BREAK.
+    //
+    // Only runs when the search left more than one candidate — it can narrow
+    // a tie, never widen one, and never rescues a query that found nothing.
+    // The real case: "Pichu NEO" returns "Neo Premium File 2" (607842, the
+    // card) and "Intro Pack Neo (Totodile)" (614135). Both contain "neo";
+    // only the first contains "2", and "NEO 2" is what the label says.
+    //
+    // Requires EVERY label set token to appear in the candidate's setName as
+    // a whole token, and then still demands exactly one distinct survivor —
+    // the same bar every other rescue in this file has to clear. This is
+    // deliberately NOT a loosening of the main path's exact set-name equality
+    // guard, which is untouched: that guard decides whether to believe a
+    // VISION setName hint, while this one compares against a flat, printed
+    // label, and it only ever removes candidates from an already-ambiguous set.
+    if (distinct.length > 1) {
+      const labelTokens = slabLabelSetTokens(label, read.cardName);
+      if (labelTokens.length) {
+        const narrowed = distinct.filter((c) => setNameContainsAllTokens(c.setName, labelTokens));
+        console.log(
+          `[requestId=${requestId}]`,
+          `[slab-label] SET-TOKEN TIE-BREAK: tokens=[${labelTokens.join(", ")}] ${distinct.length} -> ${narrowed.length} ` +
+            `(${distinct.map((c) => `${c.setName}${narrowed.includes(c) ? " KEPT" : " dropped"}`).join(" | ")})`
+        );
+        if (narrowed.length) distinct = narrowed;
+      }
+    }
+
     if (distinct.length !== 1) {
       console.log(
         `[requestId=${requestId}]`,
@@ -6492,7 +6659,47 @@ async function handler(req, res) {
     let slabLabel = null;
     let slabLabelRescued = null;
     const baseFailed = !baseLookup || !baseLookup.found;
-    if (baseFailed && legacyReadPromise) {
+    // CHANGED 2026-10-24 (#111): "failed" used to mean `found === false`
+    // ONLY, which made this entire feature unreachable for the population it
+    // was built for.
+    //
+    // The weak-signal floors return `found: true` alongside
+    // `pricingLookup: null`, `setName: null` and `cardImageUrl: null` — a
+    // result that identifies nothing. So a slab whose scan produced a junk
+    // above-floor match never reached the label at all. Measured on the real
+    // Japanese PSA 9 Pichu (cert 115602100, two scans): the probe read a
+    // clean 73-character label both times, and no SLAB LABEL PARSED line was
+    // ever emitted, because "Ethan's Pichu" — a 2024 Start Deck 100 card —
+    // cleared MATCH_FLOOR on hp 30 alone (score 6, in a THIRTEEN-way tie) and
+    // made `found` true. The correct card, 607842, was sitting in that same
+    // tie. A score of 6 from one signal was enough to lock out the rescue.
+    //
+    // `pricingLookup == null` is the honest test for "we did not identify
+    // this card": it is exactly what every withhold path sets, and a scan
+    // that DID identify something keeps its price and is still left
+    // completely alone, so this cannot regress a working slab scan. Gated on
+    // canFetchGraded (grader AND grade present) so it only ever runs for a
+    // real slab — the enclosing branch already requires a label, and without
+    // both fields there is no graded price to be gained by identifying it.
+    //
+    // ONE EXCLUSION, and it is load-bearing: a result that withheld its price
+    // because it DISCLOSED a candidate set (`siblingAmbiguity`) is not an
+    // un-identified card — it is a deliberate "here are the printings, we will
+    // not pick for you". Letting the label override that would replace a
+    // disclosure with a single Medium guess, which inverts this project's core
+    // principle, and the label could not settle it anyway: the sibling cap
+    // separates printings by finish and artwork, which a label's set words do
+    // not address, and its `printing` field must never silently flip a default
+    // (the 2026-08-26 rule). So the label runs only when nothing was named.
+    const noUsableIdentification =
+      baseFailed || (baseLookup.pricingLookup == null && !baseLookup.siblingAmbiguity);
+    if (noUsableIdentification && canFetchGraded && legacyReadPromise) {
+      if (!baseFailed) {
+        console.log(
+          `[identify] requestId=${requestId} SLAB LABEL PATH: base lookup returned found=true but withheld identification ` +
+            `(matchBasis=${baseLookup.matchBasis || "n/a"}, pricingLookup=null) — falling back to the label`
+        );
+      }
       let labelTimer = null;
       try {
         // Capped race, never a bare await — same pattern and same reason
@@ -6845,6 +7052,9 @@ module.exports.computeGradedSellThrough = computeGradedSellThrough;
 module.exports.computeGradedBidForBucket = computeGradedBidForBucket;
 module.exports.GRADED_SHIPPING_PER_CARD = GRADED_SHIPPING_PER_CARD;
 module.exports.slabLabelSetPhrases = slabLabelSetPhrases;
+module.exports.slabLabelSetTokens = slabLabelSetTokens;
+module.exports.setNameContainsAllTokens = setNameContainsAllTokens;
+module.exports.SLAB_LABEL_MAX_QUERIES = SLAB_LABEL_MAX_QUERIES;
 module.exports.lookupCardFromSlabLabel = lookupCardFromSlabLabel;
 module.exports.identifyWithGemini = identifyWithGemini;
 module.exports.SLAB_LABEL_PROBE_ENABLED = SLAB_LABEL_PROBE_ENABLED;

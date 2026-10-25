@@ -2177,6 +2177,212 @@ async function main() {
     }
   });
 
+  // ======================================================================
+  // 25. SLAB LABEL RESCUE — the Japanese PSA 9 Pichu (2026-10-24, #111)
+  // ======================================================================
+  // Production cert 115602100, two scans (requestIds 39a6177b, 78c3fc18).
+  // The probe read a clean 73-char label both times and the rescue NEVER RAN,
+  // because "Ethan's Pichu" cleared MATCH_FLOOR on hp 30 alone (score 6, in a
+  // 13-way tie that contained the correct card) and made `found: true`.
+  const PICHU_LABEL_A = "2000 PM JAPANESE NEO 2 #172 PICHU MINT 9 PROMO-REVERSE FOIL 115602100 PSA";
+  const PICHU_LABEL_B = "2000 PM JAPANESE NEO 2 #172 PICHU MINT PROMO-REVERSE FOIL 9 PSA 115602100";
+  const PICHU_READ = {
+    found: true,
+    confidence: "High",
+    cardName: "Pichu",
+    language: "Japanese",
+    stampType: "none",
+    isSlab: true,
+    grader: "PSA",
+    grade: "9",
+    certNumber: "115602100",
+    hp: "30",
+    subtype: "Baby",
+    setName: "Neo 2",
+    attackName: "いっしょにあそぼ",
+    attackNameEnglish: "Play Together",
+    cardNumber: "no. 172",
+  };
+
+  await test("#111 label set tokens keep the load-bearing digit and drop the rest", () => {
+    const label = M.parseSlabLabel(PICHU_LABEL_A);
+    assert.deepStrictEqual(M.slabLabelSetTokens(label, "Pichu"), ["neo", "2"]);
+    // Both label transcriptions of the SAME slab must agree — the grade and
+    // the cert swap places between them.
+    assert.deepStrictEqual(M.slabLabelSetTokens(M.parseSlabLabel(PICHU_LABEL_B), "Pichu"), ["neo", "2"]);
+    // Everything else on that label must be excluded: the year, the card
+    // number, the grade, the cert, PSA-isms, the card name, the variety.
+    for (const bad of ["2000", "172", "9", "115602100", "psa", "pichu", "mint", "reverse", "foil", "promo", "pm", "japanese"]) {
+      assert.ok(!M.slabLabelSetTokens(label, "Pichu").includes(bad), `"${bad}" must not be a set token`);
+    }
+  });
+
+  await test("#111 the grade digit is excluded because it follows a noise word", () => {
+    // "MINT 9" vs "NEO 2" — both are a bare single digit. Only the one that
+    // follows a surviving set word is kept.
+    const label = M.parseSlabLabel("2000 PM JAPANESE NEO 2 #172 PICHU MINT 9 PSA 115602100");
+    assert.deepStrictEqual(M.slabLabelSetTokens(label, "Pichu"), ["neo", "2"]);
+  });
+
+  await test("#111 set-name token test is whole-token, never substring", () => {
+    assert.strictEqual(M.setNameContainsAllTokens("Neo Premium File 2", ["neo", "2"]), true);
+    assert.strictEqual(M.setNameContainsAllTokens("Intro Pack Neo (Totodile)", ["neo", "2"]), false);
+    // The substring trap this project has been burned by before.
+    assert.strictEqual(M.setNameContainsAllTokens("Neo Destiny 2000", ["neo", "2"]), false);
+    assert.strictEqual(M.setNameContainsAllTokens("Neo Genesis", ["neo", "2"]), false);
+    assert.strictEqual(M.setNameContainsAllTokens("Neo Premium File 2", []), false, "no tokens is not a match");
+  });
+
+  await test("#111 REPLAY cert 115602100: the label identifies 607842", async () => {
+    const calls = installPptMock({
+      "Pichu NEO PROMO": [],
+      "Pichu PROMO": [],
+      "Pichu NEO": [F.PICHU_NEO_PREMIUM_FILE_2, F.PICHU_INTRO_PACK_NEO],
+    });
+    const label = M.parseSlabLabel(PICHU_LABEL_A);
+    const found = await M.lookupCardFromSlabLabel(PICHU_READ, label, "pichu-111");
+    assert.ok(found, `label rescue returned a card: ${calls.join(" | ")}`);
+    assert.strictEqual(String(found.tcgPlayerId), "607842");
+    assert.strictEqual(found.setName, "Neo Premium File 2");
+    // The query that works is third, which is why the budget had to be 3.
+    assert.strictEqual(M.SLAB_LABEL_MAX_QUERIES, 3);
+    assert.ok(calls.includes("Pichu NEO"), `the working query ran: ${calls.join(" | ")}`);
+  });
+
+  await test("#111 both real label transcriptions reach the same card", async () => {
+    for (const text of [PICHU_LABEL_A, PICHU_LABEL_B]) {
+      installPptMock({ "Pichu NEO": [F.PICHU_NEO_PREMIUM_FILE_2, F.PICHU_INTRO_PACK_NEO] });
+      const found = await M.lookupCardFromSlabLabel(PICHU_READ, M.parseSlabLabel(text), "pichu-both");
+      assert.strictEqual(String(found && found.tcgPlayerId), "607842", `failed for: ${text}`);
+    }
+  });
+
+  await test("#111 the label's '#172' is treated as a Pokedex number, not a card number", async () => {
+    // Without the dex rule the by-number filter drops BOTH candidates (their
+    // PPT cardNumber is ""), and the query gives up.
+    installPptMock({ "Pichu NEO": [F.PICHU_NEO_PREMIUM_FILE_2, F.PICHU_INTRO_PACK_NEO] });
+    const found = await M.lookupCardFromSlabLabel(PICHU_READ, M.parseSlabLabel(PICHU_LABEL_A), "pichu-dex");
+    assert.ok(found, "an empty catalog cardNumber no longer blocks the match");
+    assert.strictEqual(String(found.tcgPlayerId), "607842");
+  });
+
+  await test("#111 a label number WITH a total still has to match (Zapdos G class)", async () => {
+    // "#12/99" is a real collector number, not a dex number, and must keep
+    // its hard requirement. 12 is also not any pool candidate's dex number.
+    const zap = {
+      tcgPlayerId: "900100", setName: "Arceus", name: "Zapdos G", cardNumber: "12/99",
+      rarity: "Rare", cardType: "Pokemon", hp: "70", pokedexNumbers: [145],
+      attacks: ["[L] Thunder (30)"], prices: { market: 20, primaryPrinting: "Reverse Holofoil" },
+      printingsAvailable: ["Reverse Holofoil"], tcgPlayerUrl: "https://x/900100",
+    };
+    const wrong = { ...zap, tcgPlayerId: "900101", cardNumber: "13/99", name: "Zapdos G" };
+    installPptMock({ "Zapdos G 12/99": [wrong] });
+    const label = M.parseSlabLabel("2009 POKEMON PLATINUM #12/99 ZAPDOS G-REV.FOIL NM-MT ARCEUS 8");
+    const found = await M.lookupCardFromSlabLabel(
+      { cardName: "Zapdos G", language: "English", stampType: "none", grader: "PSA", grade: "8" },
+      label,
+      "zap-111"
+    );
+    assert.strictEqual(found, null, "a non-matching number is still rejected");
+  });
+
+  await test("#111 two candidates that BOTH carry every label token stay withheld", async () => {
+    // The guard that keeps this honest: narrowing may break a tie, never
+    // invent a winner.
+    // A genuinely different product whose setName ALSO contains both "neo"
+    // and "2", so the token test cannot separate them either.
+    const twin = {
+      ...F.PICHU_NEO_PREMIUM_FILE_2,
+      tcgPlayerId: "999999",
+      setName: "Neo Premium File 2 Glossy",
+      prices: { market: 500, primaryPrinting: "Holofoil", listings: 1 },
+    };
+    assert.strictEqual(M.setNameContainsAllTokens(twin.setName, ["neo", "2"]), true, "the twin really does pass the token test");
+    installPptMock({ "Pichu NEO": [F.PICHU_NEO_PREMIUM_FILE_2, twin] });
+    const found = await M.lookupCardFromSlabLabel(PICHU_READ, M.parseSlabLabel(PICHU_LABEL_A), "pichu-twin");
+    assert.strictEqual(found, null, "ambiguous after narrowing must decline, not pick the pricier one");
+  });
+
+  await test("#111 the tie-break cannot rescue a query that found nothing", async () => {
+    installPptMock({ "Pichu NEO PROMO": [], "Pichu PROMO": [], "Pichu NEO": [] });
+    const found = await M.lookupCardFromSlabLabel(PICHU_READ, M.parseSlabLabel(PICHU_LABEL_A), "pichu-empty");
+    assert.strictEqual(found, null);
+  });
+
+  await test("#111 PSA 9 on 607842 prices at median $139.79 with a real bid", () => {
+    const eb = F.PICHU_NEO_PREMIUM_FILE_2.ebay;
+    const verdict = M.assessGradedBucket(eb.salesByGrade.psa9, eb);
+    assert.strictEqual(verdict.ok, true, "the thin-data gate passes on 9 sales");
+    assert.strictEqual(verdict.price, 139.79);
+    const be = M.computeGradedBreakEven(verdict.price);
+    assert.strictEqual(be.listPrice, 140.79);
+    assert.strictEqual(be.breakEven, 112.67);
+    const bid = M.computeGradedBidForBucket(verdict, eb.dateRangeStart, eb.dateRangeEnd);
+    assert.ok(bid && bid.gradedSuggestedBid > 0, `a bid is produced: ${JSON.stringify(bid)}`);
+    assert.strictEqual(bid.gradedSuggestedBid, 52.83);
+    assert.strictEqual(bid.gradedSellThrough.tier, "Stagnant");
+    // Flat graded shipping, not the raw sub-$20 rate.
+    assert.strictEqual(M.GRADED_SHIPPING_PER_CARD, 5.8);
+  });
+
+  await test("#111 the label's printing is not asserted over the catalog", () => {
+    // The label says PROMO-REVERSE FOIL, but 607842 only has Holofoil. The
+    // existing rule (apply the label variety only when the catalog lists it)
+    // must still decline rather than invent a printing.
+    const label = M.parseSlabLabel(PICHU_LABEL_A);
+    assert.strictEqual(label.printing, "Reverse Holofoil");
+    assert.deepStrictEqual(F.PICHU_NEO_PREMIUM_FILE_2.printingsAvailable, ["Holofoil"]);
+    assert.ok(!F.PICHU_NEO_PREMIUM_FILE_2.printingsAvailable.includes(label.printing));
+  });
+
+  await test("#111 the trigger is no-usable-identification, and slabs only", () => {
+    const src = fs.readFileSync(IDENTIFY, "utf8");
+    assert.ok(
+      /const noUsableIdentification =\s*\n?\s*baseFailed \|\| \(baseLookup\.pricingLookup == null && !baseLookup\.siblingAmbiguity\);/.test(src),
+      "the widened trigger is present, and excludes a disclosure"
+    );
+    // A disclosure is a deliberate answer, not a failure to identify: the
+    // label must never replace it with a single Medium pick.
+    assert.ok(
+      /!baseLookup\.siblingAmbiguity/.test(src),
+      "a disclosed candidate set is excluded from the slab-label override"
+    );
+    assert.ok(
+      /if \(noUsableIdentification && canFetchGraded && legacyReadPromise\)/.test(src),
+      "gated on canFetchGraded (grader AND grade), i.e. slabs only"
+    );
+    // The old gate must be gone, or the feature stays unreachable.
+    assert.ok(!/if \(baseFailed && legacyReadPromise\)/.test(src), "the found-only gate is replaced");
+  });
+
+  await test("#111 a NON-slab weak-signal withhold is completely unaffected", async () => {
+    // Meganium: the #108 dex case. No grader/grade, so canFetchGraded is
+    // false and nothing about the slab path can touch it.
+    installPptMock({
+      Meganium: F.padTo([F.MEGANIUM_NEO_JP, F.MEGANIUM_BEP_102], 30, "Meganium"),
+      "Meganium|offset=30": F.padTo([], 30, "MeganiumP2"),
+    });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Meganium", cardNumber: "No. 154", hp: "100", language: "Japanese", setName: null },
+      "meganium-111",
+      null
+    );
+    assert.strictEqual(r.pricingLookup, null, "still withheld");
+    assert.strictEqual(r.printingUndetermined, true);
+    assert.notStrictEqual(r.matchBasis, "slab-label", "the slab path never touched it");
+  });
+
+  await test("#111 PM is noise, PROMO is searchable but never required", () => {
+    // PM poisoned both the query ("Pichu PM NEO PROMO" returns 0 rows live)
+    // and the token test ("Neo Premium File 2" has no token "pm").
+    const label = M.parseSlabLabel(PICHU_LABEL_A);
+    assert.ok(!label.setWords.map((w) => w.toUpperCase()).includes("PM"), "PM is dropped as noise");
+    // PROMO still produces a SEARCH phrase, because PPT really has "XY Promos".
+    assert.ok(M.slabLabelSetPhrases(label, "Pichu").includes("PROMO"), "PROMO is still searched");
+    // ...but is never required of the winning setName.
+    assert.ok(!M.slabLabelSetTokens(label, "Pichu").includes("promo"), "PROMO is never required");
+  });
+
   // ----------------------------------------------------------------------
   console.log(`\n${pass} pass, ${failures.length} fail`);
   for (const [name, e] of failures) {
