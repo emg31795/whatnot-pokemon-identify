@@ -6,7 +6,8 @@
      fixed to the right edge, to check the panel never overlaps the video at
      common window widths. */
   body { margin:0; background:#101114; color:#e8eaed; font-family:-apple-system,system-ui,sans-serif; }
-  #page { display:flex; justify-content:center; padding-top:48px; }
+  /* Whatnot-ish: a shop/product column on the left, stream right of it. */
+  #page { display:flex; justify-content:flex-end; padding-top:48px; padding-right:360px; }
   #video { width:720px; height:405px; background:#2b6cb0; border-radius:6px; display:block; }
   #meta { position:fixed; top:8px; left:12px; font-size:13px; color:#9aa0a6; }
 </style></head>
@@ -25,16 +26,21 @@
 </script>
 <script>
 (function(){
+  // Put the panel where it actually lives on the real page: left edge, the
+  // way dragTo() leaves it once Eric has moved it there.
+  const rootEl = document.getElementById("wnpk-root");
+  rootEl.style.left = "16px";
+  rootEl.style.right = "auto";
   window.__wnpkTest.renderResult(window.WNPK_STATES["priced-raw"].identify);
   window.__wnpkTest.renderPriceSection(window.WNPK_STATES["priced-raw"].price, window.WNPK_STATES["priced-raw"].identify);
   function report(){
     const p = document.getElementById("wnpk-root").getBoundingClientRect();
     const v = document.getElementById("video").getBoundingClientRect();
-    const overlap = p.left < v.right && p.right > v.left;
+    const overlap = p.right > v.left && p.left < v.right;
     document.getElementById("meta").textContent =
       "window " + window.innerWidth + "px · panel " + Math.round(p.width) + "px at left " +
-      Math.round(p.left) + " · video right edge " + Math.round(v.right) +
-      " · gap " + Math.round(p.left - v.right) + "px · OVERLAP: " + (overlap ? "YES" : "no");
+      Math.round(p.left) + " · video left edge " + Math.round(v.left) +
+      " · gap " + Math.round(v.left - p.right) + "px · OVERLAP: " + (overlap ? "YES" : "no");
     document.body.dataset.overlap = overlap ? "yes" : "no";
     document.body.dataset.gap = Math.round(p.left - v.right);
   }

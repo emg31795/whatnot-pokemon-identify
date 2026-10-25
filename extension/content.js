@@ -1,3 +1,45 @@
+  function initResizable() {
+    // A handle on BOTH edges. The panel is anchored bottom-right by CSS but
+    // is routinely dragged to the left of the page, and a handle that only
+    // works for one anchor is a handle that silently resizes the wrong way
+    // half the time. Each edge grows the panel outward from itself.
+    const handles = root.querySelectorAll(".wnpk-resize");
+    let startX = 0;
+    let startWidth = 0;
+    let dir = null;
+
+    handles.forEach((handle) => {
+      handle.addEventListener("mousedown", (e) => {
+        dir = handle.dataset.dir;
+        startX = e.clientX;
+        startWidth = root.getBoundingClientRect().width;
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+        e.stopPropagation();
+      });
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!dir) return;
+      const delta = dir === "left" ? startX - e.clientX : e.clientX - startX;
+      const next = clampWidth(startWidth + delta);
+      // When the panel has been dragged (inline `left` set) the left edge is
+      // the fixed one, so growing from the left handle must also move it.
+      if (dir === "left" && root.style.left) {
+        const rect = root.getBoundingClientRect();
+        root.style.left = Math.max(0, rect.right - next) + "px";
+      }
+      applyPanelWidth(next);
+    });
+
+    window.addEventListener("mouseup", () => {
+      if (!dir) return;
+      dir = null;
+      document.body.style.userSelect = "";
+      savePanelWidth(root.getBoundingClientRect().width);
+    });
+  }
+
 // content.js — Whatnot Pokémon Card ID (Free) extension
 // Backed up 2026-08-24 from the extension zip the user still had locally
 // (whatnot-pokemon-extension_14) after it was confirmed this was the only
@@ -85,7 +127,8 @@
       <button id="wnpk-flag-btn" title="Flag this scan for later debugging (logged server-side, not shown anywhere)" disabled>🚩 Flag</button>
     </div>
     <button id="wnpk-identify-btn">Identify Card</button>
-    <div id="wnpk-resize" title="Drag to resize"></div>
+    <div class="wnpk-resize" id="wnpk-resize-left" data-dir="left" title="Drag to resize"></div>
+    <div class="wnpk-resize" id="wnpk-resize-right" data-dir="right" title="Drag to resize"></div>
   `;
   document.documentElement.appendChild(root);
 
@@ -224,24 +267,28 @@
   }
 
   // The DEFAULT width has to fit beside the stream, not just look good in
-  // isolation. A flat 340px panel overlapped a centred 720px video by 76px
-  // at a 1280px window, so the default is "340 unless the space right of
-  // the video is smaller", floored at PANEL_MIN_WIDTH. A width the user has
-  // actually chosen is never second-guessed — this only picks the FIRST
-  // width, and the drag handle overrides it permanently.
+  // isolation.
   //
-  // Measured in tools/panel-video-check.html against a centred 720x405
-  // video, which is an APPROXIMATION of the Whatnot layout, not the real
-  // thing:
-  //     1920px window -> panel 340px, 244px clear of the video
+  // CORRECTED 2026-10-25: this first measured the space to the RIGHT of the
+  // video, which is where content.css anchors the panel (bottom/right 16px).
+  // On the real Whatnot page the panel lives on the LEFT, over the
+  // shop/product column, with the stream to its right — so the gap that
+  // actually constrains it is the one LEFT of the video. Measuring the wrong
+  // side gave a width that fit a space the panel is never in.
+  //
+  // Measured in tools/panel-video-check.html, which models the real shape
+  // (panel left, 720x405 stream to its right) but is still an
+  // APPROXIMATION — the width of Whatnot's own shop column is a guess:
+  //     1920px window -> panel 340px, 484px clear of the video
   //     1440px window -> panel 328px,  16px clear
-  //     1280px window -> panel 280px,  16px OVERLAP
-  // At 1280 the space right of a centred 720px video is only 264px, which
-  // is below the 280px minimum — i.e. at that width there is no room for a
-  // readable panel beside the video at all, and the honest options are to
-  // overlap slightly or to be unreadable. It overlaps, and the panel stays
-  // draggable so it can be moved. Worth re-measuring against the real page
-  // if 1280 turns out to be a width Eric actually streams at.
+  //     1280px window -> panel 280px, overlaps (only ~200px sits left of
+  //                      the video there, below the 280px floor)
+  // 1280 is left overlapping on purpose, per Eric: at that width there is
+  // no room for a readable panel beside the stream, and the panel is
+  // draggable. Worth re-measuring against the real page if that changes.
+  //
+  // A width the user has dragged is never second-guessed — this only picks
+  // the FIRST width, and the drag handles override it permanently.
   function defaultWidthForViewport() {
     try {
       const video = findVideo();
@@ -249,7 +296,8 @@
         const r = video.getBoundingClientRect();
         if (r.width > 0) {
           const GUTTER = 16;
-          const available = window.innerWidth - r.right - GUTTER * 2;
+          // Space LEFT of the video, which is where the panel sits.
+          const available = r.left - GUTTER * 2;
           if (available > 0 && available < PANEL_DEFAULT_WIDTH) return clampWidth(available);
         }
       }

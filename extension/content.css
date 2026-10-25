@@ -544,17 +544,21 @@
   line-height: 1.4;
 }
 
-/* Drag handle on the left edge (the panel is anchored right). */
-#wnpk-resize {
+/* Drag handles on BOTH edges: the panel is anchored bottom-right by default
+   but is routinely dragged to the left of the page, so either edge has to be
+   able to resize it. */
+#wnpk-root .wnpk-resize {
   position: absolute;
-  left: 0;
   top: 0;
   bottom: 0;
   width: 8px;
   cursor: ew-resize;
   background: transparent;
+  z-index: 2;
 }
-#wnpk-resize:hover { background: rgba(255, 141, 26, 0.35); }
+#wnpk-root #wnpk-resize-left { left: 0; }
+#wnpk-root #wnpk-resize-right { right: 0; }
+#wnpk-root .wnpk-resize:hover { background: rgba(255, 141, 26, 0.35); }
 
 /* ---- header ---- */
 #wnpk-root .wnpk-card-name { font-size: 17px; line-height: 1.25; margin-bottom: 1px; }
