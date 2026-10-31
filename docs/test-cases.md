@@ -13564,3 +13564,65 @@ upgrades the standing rule from caution to evidence: **space out e2e scans,
 and never run a burst while a stream may be live.** It also strengthens the
 case for #106's option 3 (client-side debouncing of repeat scans), which is
 the only one of the three options that would also cut the Gemini spend.
+
+## #113 follow-up — the condition table expands by default, and drops dead rows (extension-only, 2026-10-31)
+
+Three changes in `extension/content.js`, no backend change, no deploy.
+
+1. **`All conditions & bids` renders expanded.** It is the per-condition bid
+   ladder — the thing a bid is actually decided from — so it no longer sits
+   behind a click.
+2. **The choice is remembered.** `condTableOpen` in `chrome.storage.sync`
+   (same area as `panelWidth`), cached in a module variable because the
+   render path is synchronous and cannot await a read; written from a
+   `toggle` listener. Needed because the panel is rebuilt from scratch on
+   every scan and on every print-variant switch, so without it a user who
+   collapsed the table would have to collapse it again on the next card.
+   `toggle` does not bubble and the `<details>` is replaced outright on a
+   variant switch, so `wireCondTableToggle()` re-attaches after each render
+   that writes it. The variant switch still passes an explicit `open`, which
+   wins over the stored value — switching printings must not move what the
+   user has in front of them.
+3. **A condition with no live price is dropped**, instead of rendering as a
+   `—` row. If NOTHING is priced the NM row stays alone, dashed: an empty
+   `<details>` body reads as a broken panel, and the `(no live data)` note
+   beside the label already explains the dash. The bid stays beside each
+   price, unchanged.
+
+### Harness height check — all 10 states still fit
+
+`tools/panel-measure.html`, budget **728px** (850px window − ~90 chrome − 32
+gutters). Nothing is over at either width:
+
+| state | 340px | 280px | fits @340 |
+|---|---|---|---|
+| priced-raw | 574 | 570 | yes |
+| alternate-printing | 658 | 654 | yes |
+| sibling-ambiguous | 636 | 621 | yes |
+| number-tie | 654 | 655 | yes |
+| reprint-three-rows | 724 | 724 | yes |
+| weak-signal-withhold | 340 | 340 | yes |
+| slab-priced | 458 | 478 | yes |
+| slab-thin | 433 | 425 | yes |
+| single-printing-stamp | 552 | 548 | yes |
+| not-found | 198 | 198 | yes |
+
+Only three fixture states carry a condition table, and expanding it costs
+**+130px** on each (`priced-raw` 444→574, `alternate-printing` 528→658,
+`single-printing-stamp` 422→552) — measured by forcing the same state open
+and closed. The worst case with a table open is `alternate-printing` at
+658px, 70px inside the budget. The tallest state overall is still
+`reprint-three-rows` at **724px** (4px of headroom), which has no condition
+table and is therefore untouched by this change.
+
+Row-dropping measured on a `priced-raw` fixture with condition prices
+blanked out: NM-only → 1 row / 473px, NM+LP → 2 rows / 499px, all five empty
+→ the single `NM —` row / 473px.
+
+### Persistence verified against the real render path
+
+A page mocking `chrome.storage.sync.get` as a user who had collapsed the
+table: cold load renders **collapsed** (`open: false`); expanding writes
+`{condTableOpen: true}`; a re-render (the next scan) comes back **open**.
+168 local tests still pass (the suite is backend-only and this change cannot
+move it, run as a regression guard).

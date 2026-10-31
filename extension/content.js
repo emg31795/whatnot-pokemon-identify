@@ -24,6 +24,10 @@
 
   const CONDITION_ORDER = ["NM", "LP", "MP", "HP", "DMG"];
 
+  // Whether the "All conditions & bids" table renders expanded. Default is
+  // open; a collapse is remembered. See loadCondTableOpen below.
+  let condTableOpen = true;
+
   const DEFAULT_BACKEND_URL = "https://whatnot-pokemon-identify.vercel.app/api/identify";
 
   async function getBackendUrl() {
@@ -203,6 +207,7 @@
   initDraggable();
   initResizable();
   loadPanelWidth();
+  loadCondTableOpen();
 
   // PANEL WIDTH (#113)
   // -------------------------------------------------------------------
@@ -293,6 +298,44 @@
     } catch (e) {
       /* width is a convenience, never worth throwing over */
     }
+  }
+
+  // CONDITION TABLE OPEN/CLOSED (#113 follow-up)
+  // -------------------------------------------------------------------
+  // The table is the per-condition bid ladder, which is what a bid is
+  // actually decided from, so it starts EXPANDED rather than behind a
+  // click. Collapsing is still a real choice, and it sticks: the panel is
+  // re-rendered from scratch on every scan and on every variant switch, so
+  // without a stored preference a user who closed it would have to close
+  // it again on the next card. Mirrors loadPanelWidth/savePanelWidth —
+  // sync storage, cached in a module variable (declared with
+  // CONDITION_ORDER, above loadCondTableOpen's early init call) because
+  // the render path is synchronous and cannot await a read.
+  async function loadCondTableOpen() {
+    try {
+      const stored = await chrome.storage.sync.get("condTableOpen");
+      if (stored && stored.condTableOpen === false) condTableOpen = false;
+    } catch (e) {
+      /* a missing preference just means the default: expanded */
+    }
+  }
+
+  function saveCondTableOpen(open) {
+    condTableOpen = open;
+    try {
+      chrome.storage.sync.set({ condTableOpen: open });
+    } catch (e) {
+      /* same as the width: a convenience, never worth throwing over */
+    }
+  }
+
+  // `toggle` does not bubble, and the <details> is replaced outright on a
+  // variant switch, so the listener is re-attached after every render that
+  // writes it rather than delegated from the panel root.
+  function wireCondTableToggle() {
+    const el = $("#wnpk-cond-details");
+    if (!el) return;
+    el.addEventListener("toggle", () => saveCondTableOpen(el.open));
   }
 
   function initResizable() {
@@ -985,8 +1028,15 @@
   //   sellThroughBadgeHtml) — this only changes the headline figure on
   //   the condition row, per this project's "never hide real numbers,
   //   just don't let one number read as a glitch" principle.
+  // CHANGED (#113 follow-up): a tier with no live TCGplayer data used to
+  // render as a "—" row. Five dashes say the same nothing five times and
+  // push the real numbers down, so a priceless tier is simply dropped. If
+  // NOTHING has a price the table keeps the NM row alone — an empty
+  // <details> body would read as a broken panel, and the "(no live data)"
+  // note beside the label already says why it is dashed.
   function conditionRowsHtml(conditions, suggestedBid) {
-    return CONDITION_ORDER.map((tier) => {
+    const priced = CONDITION_ORDER.filter((tier) => conditions && conditions[tier] != null);
+    return (priced.length ? priced : ["NM"]).map((tier) => {
       const price = conditions ? conditions[tier] : null;
       let bidHtml = "";
       if (price != null && suggestedBid) {
@@ -1442,6 +1492,7 @@
           initialVariant ? initialVariant.conditionsSuggestedBid : priceData.conditionsSuggestedBid
         )}
       `;
+      wireCondTableToggle();
     }
 
     // #113 polish (5): a generic stamp read is only worth a badge once we
@@ -1475,6 +1526,7 @@
         if (condWrap) {
           const wasOpen = condWrap.open;
           condWrap.outerHTML = conditionDetailsHtml(variant.conditions, variant.conditionsSuggestedBid, wasOpen);
+          wireCondTableToggle();
         }
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
@@ -1502,7 +1554,10 @@
 
   function conditionDetailsHtml(conditions, suggestedBid, open) {
     const rows = conditionRowsHtml(conditions, suggestedBid);
-    return `<details class="wnpk-cond-details" id="wnpk-cond-details"${open ? " open" : ""}>
+    // An explicit `open` (the variant switch preserving what the user had
+    // in front of them) wins; otherwise fall back to the stored choice.
+    const isOpen = open === undefined ? condTableOpen : open;
+    return `<details class="wnpk-cond-details" id="wnpk-cond-details"${isOpen ? " open" : ""}>
         <summary>All conditions &amp; bids</summary>
         <div class="wnpk-cond-list" id="wnpk-cond-list">${rows}</div>
       </details>`;
