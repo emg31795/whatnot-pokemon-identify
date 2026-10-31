@@ -870,3 +870,52 @@
 #wnpk-root .wnpk-printing-line b { color: #e8eaed; font-weight: 600; }
 
 #wnpk-root .wnpk-badge-hidden[hidden] { display: none; }
+
+/* =====================================================================
+   #113 follow-up 2 — the price lives in the condition table
+   ===================================================================== */
+
+/* The head no longer carries a 26px price (the expanded table's
+   highlighted row is that number now), only which printing is priced and
+   how many live listings stand behind it. */
+#wnpk-root .wnpk-head-meta {
+  font-size: 12px;
+  color: #9aa0a6;
+  margin: 4px 0 2px;
+}
+
+/* Summary line: the label, plus the price when the table is CLOSED. The
+   price is the only one on screen in that state, so it is sized to be
+   read at a glance rather than matched to the label. */
+#wnpk-root .wnpk-cond-details > summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+#wnpk-root .wnpk-cond-summary-price {
+  font-size: 15px;
+  color: #e8eaed;
+  font-variant-numeric: tabular-nums;
+}
+#wnpk-root .wnpk-cond-summary-price b { color: #fff; font-weight: 700; }
+#wnpk-root .wnpk-summary-bid { color: #ffb063; font-weight: 600; }
+#wnpk-root .wnpk-summary-bid b { color: #ff8d1a; }
+/* Hidden by CSS, not by JS, so it can never disagree with the row that
+   replaces it. */
+#wnpk-root .wnpk-cond-details[open] > summary .wnpk-cond-summary-price { display: none; }
+
+/* The row the shown market price comes from (NM, or the best condition
+   with live data). Same treatment as the grade ladder's own row for the
+   scanned grade — the established precedent in this panel. */
+#wnpk-root .wnpk-cond-row-base {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #fff;
+  background: #33363b;
+  border-radius: 4px;
+  padding-left: 6px;
+  padding-right: 6px;
+  margin: 0 -6px;
+}
+#wnpk-root .wnpk-cond-row-base .wnpk-be { font-size: 11px; color: #c9cbd1; }

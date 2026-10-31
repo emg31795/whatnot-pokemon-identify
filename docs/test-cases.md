@@ -13626,3 +13626,141 @@ table: cold load renders **collapsed** (`open: false`); expanding writes
 `{condTableOpen: true}`; a re-render (the next scan) comes back **open**.
 168 local tests still pass (the suite is backend-only and this change cannot
 move it, run as a regression guard).
+
+## #113 follow-up 2 — the price lives in the table, and every warning names its caveat (extension-only, 2026-10-31)
+
+`extension/content.js` + `content.css`. No backend change, no deploy.
+
+### 1. The header stopped shouting a number the table already shows
+
+With the condition table expanded by default, the 26px NM price beside the
+thumbnail was the same figure as the table's first row — the panel said it
+twice and spent the head column doing it. `marketPriceBlock` now renders
+only `Normal · 67 listings`; the tier chip below it is unchanged, and the
+header keeps name, set, badges, listings count and chip.
+
+The price moved into the table, in exactly one place at a time:
+
+- **Expanded**: the row the market price comes from is highlighted —
+  14.5px, bold, `#33363b` background, the same treatment `.wnpk-grade-self`
+  already uses for the scanned grade in the slab ladder. Its bid sits
+  beside it as before.
+- **Collapsed**: the summary line carries `NM $21.37 Bid $12.03`, so a
+  price is always on screen. Shown/hidden **by CSS** off the `<details>`
+  open state (`[open] > summary .wnpk-cond-summary-price { display: none }`)
+  rather than by JS, so it cannot drift out of sync with the row it stands
+  in for.
+
+Which row is "the" row: `baseConditionTier()` — NM when NM has live data,
+otherwise the best condition that does. That is the same rule the backend
+picks `basePriceTier` by (api/identify.js:3105), and `basePriceTier` is
+deleted before the response leaves `/api/price`, so the client has to
+re-derive it. **There is no vision-read card condition anywhere in either
+response** — nothing reports the condition of the physical card — so this
+is the only "detected" row there is; a real condition read would slot into
+`baseConditionTier` and nowhere else. Verified with NM and MP blanked: the
+highlight and the summary both fall to LP.
+
+### 2. No warning says "this match has a caveat" any more
+
+The generic fallback is gone. Resolution order for a note-carrying result:
+`BASIS_HEADLINES[matchBasis]` → `NOTE_HEADLINES` (ordered regexes on the
+backend's own stable phrasing) → the note's own first clause, truncated at
+72 chars. The last step means a matchBasis this build has never seen still
+produces a specific headline instead of a placeholder. Full text is
+untouched under "Why?".
+
+**matchBasis → headline**
+
+| matchBasis | headline |
+|---|---|
+| `sibling-ambiguous` | N printings of this card — we can't tell which · no single price |
+| `number-tie-ambiguous` | This number belongs to N different products · no single price |
+| `anniversary-reprint-ambiguous` | Could be the original or an anniversary reprint — no single price |
+| `weak-number` | Number format doesn't fit this printing — may be coincidence |
+| `legacy-number-rescue` | First number read was wrong — a second AI read matched |
+| `name-rescued-by-number` | Name didn't match — identified by its number alone |
+| `setname-search` | Not found by name or number — matched on the set name |
+| `setname-narrowed` | No readable number — narrowed down by set name |
+| `slab-label` | Identified from the slab label, not the card |
+| `score-only`, `tie` | *note-driven, below* |
+
+`score-only` and `tie` are deliberately absent from the table: neither is a
+caveat by itself, and when one carries a note it can be any of several
+different problems.
+
+**note phrase → headline** (first match wins)
+
+| phrase in `ambiguousNote` | headline |
+|---|---|
+| `HP doesn't match` | HP doesn't match this printing — number may be misread |
+| `more valuable version of the same card` | A pricier printing of this card exists |
+| `two different print runs` | Shadowless or standard print run — can't tell from video |
+| `share an identical card number` | Several printings share this number |
+| `is used by N different products` | This number belongs to several different products |
+| `only a Pokédex number` | This card shows only a Pokédex number, not a set number |
+| `wasn't legible this scan` | Card number wasn't legible — matched on other details |
+| `isn't on this printing's attack list` | Attack didn't match this printing — verify |
+| *anything else* | the note's first clause, ≤72 chars |
+
+**price-withheld branch** (`printingUndetermined`) has its **own** table,
+because these results come back from the weak-signal floors **without a
+matchBasis at all** and the same phrases mean the opposite there — nothing
+was matched on, the price is gone:
+
+| phrase | headline |
+|---|---|
+| `only a Pokédex number` | Only a Pokédex number on this card — price withheld |
+| `wasn't legible this scan` | Card number wasn't legible — price withheld |
+| `anniversary REPRINT` | Could be the original or an anniversary reprint — price withheld |
+| *anything else* | Couldn't pin the exact printing — price withheld |
+
+**flags, unchanged in behaviour, retitled or kept**
+
+| flag | headline |
+|---|---|
+| `attackMismatch` | Attack didn't match this printing — verify |
+| `visionProvider === "haiku-fallback"` | Fallback AI read this card |
+| `stampNote` | This card looks stamped |
+| `matchConfidence === "Low"`, no note | Low-confidence match — check it's the right card |
+| `pricingError` | No live price available |
+| alternate-printing banner | *dynamic, already specific:* "Reverse Holofoil is worth far more — NM $28.50" |
+| slab, card not identified | Couldn't identify the card in this slab |
+| slab, thin bucket | Only N recent sales at this grade |
+
+The attack sentence is appended to `ambiguousNote` by the backend **and**
+reported via `attackMismatch`, which used to produce two rows. It is now
+peeled off the note (`ATTACK_NOTE_RE`); when it was the whole note, the
+note row is skipped entirely and only the dedicated attack warning renders.
+
+### Headline coverage, measured against the real render path
+
+23 synthetic results covering every basis, every real note variant and an
+invented future basis, rendered through `__wnpkTest.renderResult` and read
+back out of the DOM. Every one produced a specific headline; the invented
+basis fell through to its first clause ("The set symbol we read belongs to
+a set this card was never printed in"). `attack-mismatch only` produced
+exactly one row, not two. A clean scan produced none.
+
+### Harness heights — all 10 states still fit
+
+Budget **728px**. Nothing over at either width; the three states with a
+condition table each got *shorter*, since the head no longer carries a
+26px price block.
+
+| state | 340px | 280px | vs. previous |
+|---|---|---|---|
+| priced-raw | 565 | 532 | −9 / −38 |
+| alternate-printing | 650 | 617 | −8 / −37 |
+| sibling-ambiguous | 636 | 621 | — |
+| number-tie | 654 | 655 | — |
+| reprint-three-rows | 724 | 724 | — |
+| weak-signal-withhold | 340 | 340 | — |
+| slab-priced | 458 | 478 | — |
+| slab-thin | 433 | 425 | — |
+| single-printing-stamp | 536 | 503 | −16 / −45 |
+| not-found | 198 | 198 | — |
+
+`reprint-three-rows` is still the tallest at 724px (4px of headroom) and
+has no condition table, so it is untouched by this change. 168 local tests
+pass (backend-only suite, run as a regression guard).

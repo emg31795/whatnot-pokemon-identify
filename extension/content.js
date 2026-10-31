@@ -1036,7 +1036,9 @@
   // note beside the label already says why it is dashed.
   function conditionRowsHtml(conditions, suggestedBid) {
     const priced = CONDITION_ORDER.filter((tier) => conditions && conditions[tier] != null);
-    return (priced.length ? priced : ["NM"]).map((tier) => {
+    const shown = priced.length ? priced : ["NM"];
+    const base = baseConditionTier(conditions);
+    return shown.map((tier) => {
       const price = conditions ? conditions[tier] : null;
       let bidHtml = "";
       if (price != null && suggestedBid) {
@@ -1048,10 +1050,45 @@
             ? ` <span class="wnpk-be wnpk-be-negative">(Bid: Skip)</span>`
             : ` <span class="wnpk-be">(Bid: $${bid.toFixed(2)})</span>`;
       }
-      return `<div class="wnpk-cond-row"><span>${tier}</span><span>${
+      return `<div class="wnpk-cond-row${tier === base ? " wnpk-cond-row-base" : ""}"><span>${tier}</span><span>${
         price != null ? "$" + price.toFixed(2) + bidHtml : "—"
       }</span></div>`;
     }).join("");
+  }
+
+  // Which condition row is THE price — the one the header used to shout and
+  // the one the collapsed summary still shows. Same rule the backend picks
+  // `basePriceTier` by (api/identify.js): NM when NM has live data,
+  // otherwise the best condition that does. There is no vision-read card
+  // condition in the response to prefer instead — nothing in /api/identify
+  // or /api/price reports the condition of the physical card — so this is
+  // the only "detected" row there is, and a real condition read would slot
+  // in here and nowhere else.
+  function baseConditionTier(conditions) {
+    if (!conditions) return "NM";
+    if (conditions.NM != null) return "NM";
+    return CONDITION_ORDER.find((t) => conditions[t] != null) || "NM";
+  }
+
+  // The collapsed summary's price. With the table open by default the
+  // highlighted row carries the number; collapsed, this is the only price
+  // on screen, so it may never be omitted. Shown/hidden by CSS off the
+  // <details> open state rather than by JS, so it cannot drift out of sync
+  // with the thing it is standing in for.
+  function condSummaryPriceHtml(conditions, suggestedBid) {
+    const tier = baseConditionTier(conditions);
+    const price = conditions ? conditions[tier] : null;
+    if (price == null) return "";
+    const bid = suggestedBid ? suggestedBid[tier] : undefined;
+    const bidHtml =
+      bid === undefined
+        ? ""
+        : bid == null
+        ? ` <span class="wnpk-bid-none">Bid —</span>`
+        : bid <= 0
+        ? ` <span class="wnpk-bid-skip">Bid Skip</span>`
+        : ` <span class="wnpk-summary-bid">Bid <b>$${bid.toFixed(2)}</b></span>`;
+    return `<span class="wnpk-cond-summary-price">${tier} <b>$${price.toFixed(2)}</b>${bidHtml}</span>`;
   }
 
   // CHANGED (2026-08-29, user report — Hitmontop/Cinccino/Snorlax Japanese
@@ -1537,19 +1574,23 @@
     }
   }
 
-  // NM is the number people actually bid against, so it is the headline and
-  // the rest of the condition table is one tap away rather than five rows
-  // of permanent furniture.
+  // HEAD META (#113 follow-up 2)
+  // -------------------------------------------------------------------
+  // This was a 26px NM price with its bid beside it, sitting next to the
+  // thumbnail. With the condition table expanded by default that number is
+  // ALSO the table's highlighted first row, so the panel shouted the same
+  // figure twice and spent the whole head column doing it. The head now
+  // carries only what the table cannot: which printing is priced and how
+  // many live listings stand behind it. The tier chip renders directly
+  // below this, unchanged, and the price itself lives in exactly one place
+  // — the table (or its summary line, when collapsed).
   function marketPriceBlock(variant, priceData) {
-    const base = variant && variant.basePrice != null ? variant.basePrice : priceData.marketPrice;
-    const bids = variant ? variant.conditionsSuggestedBid : priceData.conditionsSuggestedBid;
-    const nmBid = bids ? bids.NM : undefined;
-    const listing =
-      priceData.listingCount != null
-        ? `${priceData.listingCount} listing${priceData.listingCount === 1 ? "" : "s"}`
-        : "";
-    const label = variant && variant.label ? `NM · ${variant.label}` : "NM market";
-    return bigPriceHtml({ priceLabel: label, price: base, bid: nmBid, sub: listing ? escapeHtml(listing) : "" });
+    const bits = [];
+    if (variant && variant.label) bits.push(escapeHtml(variant.label));
+    if (priceData.listingCount != null) {
+      bits.push(`${priceData.listingCount} listing${priceData.listingCount === 1 ? "" : "s"}`);
+    }
+    return bits.length ? `<div class="wnpk-head-meta">${bits.join(" · ")}</div>` : "";
   }
 
   function conditionDetailsHtml(conditions, suggestedBid, open) {
@@ -1558,7 +1599,10 @@
     // in front of them) wins; otherwise fall back to the stored choice.
     const isOpen = open === undefined ? condTableOpen : open;
     return `<details class="wnpk-cond-details" id="wnpk-cond-details"${isOpen ? " open" : ""}>
-        <summary>All conditions &amp; bids</summary>
+        <summary><span class="wnpk-cond-summary-label">All conditions &amp; bids</span>${condSummaryPriceHtml(
+          conditions,
+          suggestedBid
+        )}</summary>
         <div class="wnpk-cond-list" id="wnpk-cond-list">${rows}</div>
       </details>`;
   }
@@ -1724,17 +1768,86 @@
   // matchBasis -> headline, for the cases where the basis alone says what
   // happened. Kept as data rather than branches so a new basis from the
   // backend shows up as a missing headline in one place.
+  //
+  // CHANGED (#113 follow-up 2): there is no generic headline any more. A
+  // warning that says "this match has a caveat" costs a line of a ~10
+  // second bid decision and hands back nothing — the reader has to open
+  // "Why?" to learn whether the number was unreadable or the attack
+  // positively contradicts the card. Every warning now names its own
+  // caveat; the full backend text still lives under "Why?", unedited.
+  //
+  // Two matchBasis values are deliberately absent: "score-only" and "tie".
+  // Neither is a caveat by itself (score-only is the clean path), and when
+  // one of them carries a note the note can be any of several different
+  // problems — an HP contradiction, a pricier sibling, a Shadowless pair,
+  // an unreadable number. Those are named from the note itself by
+  // NOTE_HEADLINES below.
   const BASIS_HEADLINES = {
     "sibling-ambiguous": "Two printings of this card — we can't tell which",
-    "number-tie-ambiguous": "This number belongs to more than one product",
+    "number-tie-ambiguous": "Two printings share this number",
     "anniversary-reprint-ambiguous": "Could be the original or an anniversary reprint",
-    "weak-number": "The card number didn't match — matched on other details",
-    "legacy-number-rescue": "Card number was misread — a second AI read fixed it",
-    "name-rescued-by-number": "Name was unclear — matched on the number",
-    "setname-search": "Matched using the set name, not the number",
-    "setname-narrowed": "Matched using the set name, not the number",
+    "weak-number": "Number format doesn't fit this printing — may be coincidence",
+    "legacy-number-rescue": "First number read was wrong — a second AI read matched",
+    "name-rescued-by-number": "Name didn't match — identified by its number alone",
+    "setname-search": "Not found by name or number — matched on the set name",
+    "setname-narrowed": "No readable number — narrowed down by set name",
     "slab-label": "Identified from the slab label, not the card",
   };
+
+  // For "score-only"/"tie" notes, and for any basis a future backend adds:
+  // the backend's own wording is stable and specific, so each known note
+  // gets a headline keyed off the phrase that identifies it. Ordered —
+  // the first match wins, and the attack sentence is last because a
+  // composed note ("weak number ... AND the attack doesn't fit") should
+  // lead with the problem the dedicated attack warning is not already
+  // going to state on its own line.
+  const NOTE_HEADLINES = [
+    [/HP doesn't match/i, "HP doesn't match this printing — number may be misread"],
+    [/more valuable version of the same card/i, "A pricier printing of this card exists"],
+    [/two different print runs/i, "Shadowless or standard print run — can't tell from video"],
+    [/share an identical card number/i, "Several printings share this number"],
+    [/is used by \d+ different products/i, "This number belongs to several different products"],
+    [/only a Pok\u00e9dex number/i, "This card shows only a Pokédex number, not a set number"],
+    [/wasn't legible this scan/i, "Card number wasn't legible — matched on other details"],
+    [/isn't on this printing's attack list/i, "Attack didn't match this printing — verify"],
+  ];
+
+  // Same idea for the withheld-price branch. The note phrases overlap with
+  // NOTE_HEADLINES above, but the outcome is the opposite — nothing was
+  // priced — so "matched on other details" would be exactly wrong here and
+  // these say what was missing and that the price is gone.
+  const WITHHELD_HEADLINES = [
+    [/only a Pok\u00e9dex number/i, "Only a Pokédex number on this card — price withheld"],
+    [/wasn't legible this scan/i, "Card number wasn't legible — price withheld"],
+    [/anniversary REPRINT/i, "Could be the original or an anniversary reprint — price withheld"],
+  ];
+
+  // The attack sentence the backend appends to `ambiguousNote`. It is also
+  // reported on its own via the `attackMismatch` flag, so it is peeled off
+  // the note rather than printed twice.
+  const ATTACK_NOTE_RE = /\s*The attack we read,.*?attack list\.\s*/i;
+
+  // Last resort, and still specific: lead with the note's own first
+  // clause. Every backend note opens by stating what happened, so a basis
+  // this build has never seen still produces a headline that names the
+  // real caveat instead of a placeholder.
+  function firstClauseHeadline(note) {
+    const text = String(note).replace(/\s+/g, " ").trim();
+    const cut = text.search(/[,.;:]| — /);
+    let head = cut > 20 ? text.slice(0, cut) : text;
+    if (head.length > 72) {
+      const clipped = head.slice(0, 72);
+      const sp = clipped.lastIndexOf(" ");
+      head = (sp > 40 ? clipped.slice(0, sp) : clipped) + "…";
+    }
+    return head;
+  }
+
+  function headlineForNote(data, note) {
+    if (BASIS_HEADLINES[data.matchBasis]) return BASIS_HEADLINES[data.matchBasis];
+    for (const [re, headline] of NOTE_HEADLINES) if (re.test(note)) return headline;
+    return firstClauseHeadline(note);
+  }
 
   // Builds the ordered warning list for a result. Returns [] for a clean
   // scan, which is the common case and should look clean.
@@ -1761,21 +1874,31 @@
           : data.matchBasis === "number-tie-ambiguous"
           ? `This number belongs to ${n} different products`
           : `${n} printings of this card — we can't tell which`;
+      // The qualifier is joined with a dot when the headline already uses
+      // an em dash, so a counted headline doesn't read as two dashes.
+      const withheldTag = headline.includes("—") ? " · no single price" : " — no single price";
       out.push(
-        WARN("check", headline + " — no single price", stripPromptFromNote(data.ambiguousNote, data.siblingAmbiguity.prompt))
+        WARN("check", headline + withheldTag, stripPromptFromNote(data.ambiguousNote, data.siblingAmbiguity.prompt))
       );
     } else if (data.printingUndetermined) {
+      // NOTE: this branch's results come back from api/identify.js without a
+      // matchBasis at all (the weak-signal floors return their own object),
+      // so the note is the only evidence there is for naming the caveat.
+      const note = data.ambiguousNote;
+      const matched = note && WITHHELD_HEADLINES.find(([re]) => re.test(note));
       out.push(
         WARN(
           "check",
-          "Couldn't pin the exact printing — price withheld",
-          data.ambiguousNote ||
-            "The scan didn't produce enough to identify one specific printing, so no price is shown."
+          matched ? matched[1] : "Couldn't pin the exact printing — price withheld",
+          note || "The scan didn't produce enough to identify one specific printing, so no price is shown."
         )
       );
     } else if (data.ambiguousNote) {
-      const headline = BASIS_HEADLINES[data.matchBasis] || "This match has a caveat";
-      out.push(WARN("check", headline, data.ambiguousNote));
+      // The attack sentence belongs to the attackMismatch warning below;
+      // when it is the WHOLE note there is nothing left for a second row
+      // to say, so this row is skipped rather than duplicated.
+      const rest = data.attackMismatch ? data.ambiguousNote.replace(ATTACK_NOTE_RE, " ").trim() : data.ambiguousNote;
+      if (rest) out.push(WARN("check", headlineForNote(data, rest), rest));
     } else if (data.matchConfidence === "Low") {
       out.push(
         WARN(
@@ -1790,7 +1913,7 @@
       out.push(
         WARN(
           "check",
-          "The attack we read isn't on this printing",
+          "Attack didn't match this printing — verify",
           "A confidently-read attack name does not appear on the matched card's attack list. That is a positive contradiction, not just missing evidence — treat the match as unconfirmed."
         )
       );
