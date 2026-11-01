@@ -196,13 +196,20 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_7FoFB9NLBQzo4en9eJtJFdYzEKZv`** (2026-10-25, the slab-label
-  rescue + anniversary-family fix, tests #111 and #112), aliased to
+- Deployment **`dpl_9hLr9ZbJ9Jr6foJPi1Tv23fw84o4`** (2026-11-01, the
+  disclosure-row base-tier + common-printing fix, test #114), aliased to
   `whatnot-pokemon-identify.vercel.app`.
-- **`sourceHash 02ff9590e046403c352978ed5701d926f29129b9`** == `shasum
-  api/identify.js` on disk at commit `09f7a90`, byte-exact, checked twice on
+- **`sourceHash 4d30cd1b72d6acfe5bb6249a10f6ba273f95da3f`** == `shasum
+  api/identify.js` on disk at commit `4927dc7`, byte-exact, checked twice on
   the alias. `GET /api/identify` reports **`slabLabelProbe: "on"`**.
-- E2E verified on production 2026-10-25, **6/6**: **PSA 9 Pichu slab**
+- E2E verified on production 2026-11-01, **7/7**: **Ninetales 012/102**
+  Low / `sibling-ambiguous` / two rows, 1849ms, with the Shadowless row now
+  **$172.83 / Bid $87.89** (alt `1st Edition Holofoil $400.00 LP`) and the
+  Base Set row unchanged at **$38.54 / Bid $19.61**; controls **106997**
+  $894.71 (#109 intact), **107008 flag-absent** $400.00 LP (single-match path
+  unchanged), **114004** $204.03. Five of the seven ran through `/api/price`
+  only, so they cost **zero PPT credits** — a stream was live.
+- Earlier e2e on production 2026-10-25, **6/6**: **PSA 9 Pichu slab**
   Medium / `slab-label` / 607842 with **graded $139.79 (n=9) -> bid $52.83
   Stagnant**, 1818ms; **Shining Celebi** High / `score-only` / 717001,
   1421ms; **Base Set Blastoise** Low / `sibling-ambiguous` / withheld, 3 rows,
@@ -212,13 +219,16 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 - E2E payloads are real TCGplayer product scans (`imageCdnUrl`) plus, for the
   slab, PSA's own cert photo cropped to the slab front. Cleaner than a
   livestream frame, so reads are easier than reality.
-- **`extension/content.js` and `content.css` last changed in the 2026-10-17
-  builds** — #109 through #112 are all backend-only and need no reload, but an
-  extension not reloaded since 2026-10-17 still will not render the
-  sibling/tie rows or the per-row graded medians.
+- **`extension/content.js` and `content.css` last changed in the 2026-11-01
+  (#114) build** — reload the extension. An extension not reloaded since then
+  still gets #114's price (the backend half of the fix is independently
+  effective, measured) but shows no condition-tier label and no alt-printing
+  line; one not reloaded since 2026-10-17 also will not render the
+  sibling/tie rows or the per-row graded medians at all.
 - **The first real graded slab has now been identified end-to-end through
   Phase 2-lite** (#111). The graded bid path has also fired on organic traffic.
-- Earlier production: `dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6` (2026-10-24,
+- Earlier production: `dpl_7FoFB9NLBQzo4en9eJtJFdYzEKZv` (2026-10-25,
+  `02ff9590…`, `09f7a90`, #111/#112); `dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6` (2026-10-24,
   `b170c6e8…`, `882b400`, #110); `dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`
   (2026-10-24, `5723ac8d…`, `87bc426`, #109);
   `dpl_7jFrzJVGmHPwQkLanpvqYKVCVFBV` (2026-10-18, `2fe9412d…`, `6247b40`);
@@ -500,33 +510,41 @@ sane bid for that card.
 
 ## Open items
 
-**FIXED LOCALLY, AWAITING PREVIEW/PROD APPROVAL (#114, 2026-11-01) — a
-Shadowless disclosure row said "no price" over three real prices.** Live scan
-`45b271ae`: Base Set Ninetales 012/102 disclosed two rows, 42352 at
-$38.54 / Bid $19.61 and 107008 (Shadowless) blank — while `/api/price` had
-already fetched 8 real SKUs for it. Two causes. (1) `fetchAndRenderSiblingPrices`
-read `conditionPrices.NM` **and only NM**, and the chosen printing was
-107008's `1st Edition Holofoil`, which has **no Near Mint SKU at all** (LP 400
-/ MP 350.50 / HP 338.88). Any disclosure row whose printing lacks a recent NM
+**DEPLOYED TO PRODUCTION 2026-11-01 (#114) — a Shadowless disclosure row said
+"no price" over three real prices.** Commit `4927dc7`, production
+`dpl_9hLr9ZbJ9Jr6foJPi1Tv23fw84o4`, `sourceHash 4d30cd1b…` byte-exact with
+disk (checked twice on the alias), 183 local tests (168 before), production
+e2e 7/7 with zero new runtime errors. Live scan `45b271ae`: Base Set Ninetales
+012/102 disclosed two rows, 42352 at $38.54 / Bid $19.61 and 107008
+(Shadowless) **blank** — while `/api/price` had already fetched 8 real SKUs
+for it. Two causes. (1) `fetchAndRenderSiblingPrices` read
+`conditionPrices.NM` **and only NM**, and the chosen printing was 107008's
+`1st Edition Holofoil`, which has **no Near Mint SKU at all** (LP 400 /
+MP 350.50 / HP 338.88). Any disclosure row whose printing lacked a recent NM
 sale blanked; the single-match panel never had this bug. (2) PPT's
 `primaryPrinting` chose that printing — and **that one field is the entire
 difference from #109's Blastoise 106997**, which reads `Unlimited Holofoil`
-and so priced fine. `primaryPrinting` is whichever printing PPT last happened
-to price, and on `Base Set (Shadowless)` products it is often the rare 1st
-Edition one. The stamp read was no safer: primary read `"1st Edition"`, legacy
-read `"none"`.
+and so priced fine through identical code. `primaryPrinting` is whichever
+printing PPT last happened to price, and on `Base Set (Shadowless)` products
+it is often the rare 1st Edition one. The stamp read was no safer: primary
+read `"1st Edition"`, legacy read `"none"`.
 Fix: `pickDefaultVariantKey` takes `opts.preferCommonPrinting`, which ignores
 BOTH `primaryPrinting` and the stamp read and falls through to the **existing**
 non-1st preference order (it already prefers `unlimited holofoil`); set only
-by `buildAmbiguityDisclosure`, so the single-match path is byte-unchanged in
-behaviour. `/api/price` now reports **`marketPriceTier`** (which condition
-`marketPrice` came from — previously unknowable to any caller) and
-**`altPrintings`**; the row prices off that tier, labels it when it isn't NM,
-and shows `1st Ed $400.00 LP` alongside. Result over the real payloads:
-107008 → **$172.83 / Bid $87.89 / Slow**, and 42352 still exactly
-`$38.54 / Bid $19.61`. 183 local tests (168 before), TEST VALIDITY pinned to
-`53003bb`. **`extension/content.js` + `content.css` changed — reload the
-extension.** Full write-up: `docs/test-cases.md` #114 and
+by `buildAmbiguityDisclosure`, so the single-match path's default is
+unchanged. `basePriceTierForConditions` extracted (one definition of the
+NM-or-best-present rule) and `buildAltPrintings` added. `/api/price` now
+reports **`marketPriceTier`** — which condition `marketPrice` came from,
+previously unknowable to any caller — and **`altPrintings`**. The row prices
+off that tier, names it when it isn't NM, and shows `1st Ed $400.00 LP`
+alongside. Production result: 107008 → **$172.83 / Bid $87.89 / Slow**, and
+42352 still exactly `$38.54 / Bid $19.61`.
+**`extension/content.js` + `content.css` changed — reload the extension.**
+Measured: an UNRELOADED extension still gets the price ($172.83 / Bid $87.89,
+since the backend now picks the Unlimited printing and the old code's
+`conditionPrices.NM` is that printing's NM); what a reload adds is the tier
+label, the alt-printing line, and the general no-NM case.
+Full write-up: `docs/test-cases.md` #114 and
 `investigations/2026-11-01-ninetales-shadowless/findings.md`.
 **The Machoke 034/102 pair from #105 IS the same handling** (107031 has
 `primaryPrinting "1st Edition"`, `printingsAvailable ['1st Edition','Unlimited']`)

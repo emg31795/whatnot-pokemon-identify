@@ -13936,3 +13936,66 @@ group's `first` is 2026-10-16). **Zero errors from the preview.**
 investigation (logs, captured payloads, e2e record) is on disk at
 `investigations/2026-11-01-ninetales-shadowless/`, which `.gitignore`
 deliberately excludes.
+
+### Production deploy — 2026-11-01, 7/7, zero new runtime errors
+
+Production **`dpl_9hLr9ZbJ9Jr6foJPi1Tv23fw84o4`**, target `production`, Ready,
+aliased to `whatnot-pokemon-identify.vercel.app`. Commit `4927dc7`.
+**`sourceHash 4d30cd1b72d6acfe5bb6249a10f6ba273f95da3f`** from live
+`GET /api/identify` on the alias == `shasum api/identify.js` on disk,
+byte-exact, **checked twice**. `slabLabelProbe: "on"`.
+
+Note the preview and production deployments share this one `sourceHash` — two
+deployment IDs, one hash, exactly as the deploy checklist's item 6 says to
+expect.
+
+**Pacing.** 16 organic `/api/identify` scans in the 10 minutes before the
+deploy, so again: all five price cases went through **`/api/price` only**
+(TCGplayer, **zero PPT credits**), and the single identify scan was fired only
+after PPT's `x-ratelimit-minute-remaining` was confirmed at **59/60**. Calls
+spaced 2s. **No 429 produced** — a `query="429"` pull over the window returns
+nothing.
+
+Identify scan, requestId `b32bb1f9`, **1849ms** (gemini 1200, lookup 649):
+
+```
+found true  Ninetales  matchConfidence Low  matchBasis sibling-ambiguous
+pricingLookup null   tcgplayerUrl null
+  42352   Base Set              012/102  primaryPrinting=Holofoil             preferCommonPrinting=true
+  107008  Base Set (Shadowless) 012/102  primaryPrinting=1st Edition Holofoil preferCommonPrinting=true
+```
+
+Rows then priced with the candidates' **own `pricingLookup` objects taken
+verbatim** from that response:
+
+| row | printing chosen | renders | alt line |
+|---|---|---|---|
+| 42352 | Holofoil | **$38.54   Bid $19.61** | (none) |
+| 107008 | **Unlimited Holofoil** | **$172.83   Bid $87.89** | `1st Edition Holofoil $400.00 LP` |
+
+Controls, all on production:
+
+| case | printing | renders | alt |
+|---|---|---|---|
+| 106997 Blastoise Shadowless (#109) | Unlimited Holofoil | $894.71  Bid $351.73 | 1st Ed Holofoil $1300.00 MP |
+| 107008 **without** the flag | 1st Edition Holofoil | $400.00 LP  Bid $155.86 | Unlimited Holofoil $172.83 NM |
+| 114004 Pikachu XY95 | Holofoil | $204.03  Bid $104.36 | (none) |
+
+`get_runtime_errors` over the window: **one** group, the known-benign PPT
+abort-retry, whose `last` is 00:28:39Z on the **previous** production
+deployment `dpl_7FoFB9...` — i.e. before this deploy. **Nothing from
+`dpl_9hLr9Zb...`.**
+
+**`extension/content.js` and `content.css` changed in this build — the
+extension needs a manual reload in `chrome://extensions`, and an unreloaded
+extension will not show the tier label or the alt-printing line.**
+
+**Measured, not assumed:** an unreloaded extension still benefits from the
+backend half of the fix. The old row code reads `conditionPrices.NM`, and
+because the backend now chooses the Unlimited printing for that row, the live
+production response carries `conditionPrices.NM = 172.83` /
+`conditionsSuggestedBid.NM = 87.89` — so the old code renders
+**$172.83 / Bid $87.89** rather than "no price". Verified against production.
+What a reload adds is the `LP`-style tier label and the
+`1st Ed $400.00 LP` alt line, plus coverage of the general case where the
+chosen printing has no NM at all.
