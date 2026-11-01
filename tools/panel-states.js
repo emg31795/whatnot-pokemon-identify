@@ -220,7 +220,7 @@ window.WNPK_STATES = {
       listingCount: 23, priceVariantUsed: "Holofoil",
       conditionPrices: { NM: 3.48, LP: 2.8, MP: 2.2, HP: 1.6, DMG: 1.0 },
       conditionsSuggestedBid: { NM: 1.63, LP: 1.19, MP: 0.83, HP: 0.45, DMG: null },
-      // ONE printing: no dropdown should render.
+      // ONE printing: a plain text line, no pills.
       priceVariants: {
         Holofoil: {
           label: "Holofoil", basePrice: 3.48,
@@ -228,6 +228,100 @@ window.WNPK_STATES = {
           conditions: { NM: 3.48, LP: 2.8, MP: 2.2, HP: 1.6, DMG: 1.0 },
           conditionsSuggestedBid: { NM: 1.63, LP: 1.19, MP: 0.83, HP: 0.45, DMG: null },
           conditionsBreakEven: { NM: 1.88, LP: 1.37, MP: 0.96, HP: 0.52, DMG: null },
+        },
+      },
+    },
+  },
+
+  // ADDED 2026-11-01 (PRINT VARIANT pills): the two cases a one-line
+  // <select> never had to render — a printing whose base tier is NOT Near
+  // Mint, and enough printings to wrap onto a second row.
+  //
+  // Real #114 data: Base Set (Shadowless) Ninetales 012/102, product 107008.
+  // Its 1st Edition Holofoil printing has NO Near Mint SKU at all (LP 400 /
+  // MP 350.50 / HP 338.88), which is the exact shape that rendered "no price"
+  // before #114. The pill must show $400.00 LP, tier named.
+  "printing-no-nm": {
+    label: "Two printings, one with no NM sale (Ninetales 012/102 Shadowless)",
+    identify: {
+      cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/107008_in_800x800.jpg",
+      found: true, cardName: "Ninetales", setName: "Base Set (Shadowless)",
+      cardLanguage: "English", confidence: "High", matchConfidence: "Medium",
+      matchBasis: "score-only", stampType: "none",
+      tcgplayerUrl: "https://www.tcgplayer.com/product/107008",
+      pricingLookup: { tcgPlayerId: "107008" },
+      usage: { estCostUsd: 0.00093 },
+    },
+    price: {
+      listingCount: 31, priceVariantUsed: "Unlimited Holofoil",
+      marketPriceTier: "NM",
+      conditionPrices: { NM: 172.83, LP: 148.5, MP: 121.0, HP: 96.4, DMG: 61.2 },
+      conditionsSuggestedBid: { NM: 87.89, LP: 74.7, MP: 59.8, HP: 46.4, DMG: 27.9 },
+      priceVariants: {
+        "Unlimited Holofoil": {
+          label: "Unlimited Holofoil", basePrice: 172.83,
+          sellThrough: { monthlyPace: 7.0, tier: "Slow", totalSold: 21 },
+          conditions: { NM: 172.83, LP: 148.5, MP: 121.0, HP: 96.4, DMG: 61.2 },
+          conditionsSuggestedBid: { NM: 87.89, LP: 74.7, MP: 59.8, HP: 46.4, DMG: 27.9 },
+          conditionsBreakEven: { NM: 140.09, LP: 119.9, MP: 95.7, HP: 74.3, DMG: 44.6 },
+        },
+        "1st Edition Holofoil": {
+          label: "1st Edition Holofoil", basePrice: 400.0,
+          sellThrough: { monthlyPace: 1.0, tier: "Stagnant", totalSold: 3 },
+          // No NM row at all — baseConditionTier falls through to LP.
+          conditions: { NM: null, LP: 400.0, MP: 350.5, HP: 338.88, DMG: null },
+          conditionsSuggestedBid: { NM: null, LP: 157.9, MP: 137.4, HP: 132.6, DMG: null },
+          conditionsBreakEven: { NM: null, LP: 336.6, MP: 294.0, HP: 283.6, DMG: null },
+        },
+      },
+    },
+  },
+
+  // Four printings — the wrap case. A pill row that fits on one line at
+  // 340px would prove nothing about what a product with this many does.
+  "many-printings": {
+    label: "Four printings (pill wrap)",
+    identify: {
+      cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/83500_in_800x800.jpg",
+      found: true, cardName: "Alakazam (33)", setName: "Expedition",
+      cardLanguage: "English", confidence: "High", matchConfidence: "High",
+      matchBasis: "score-only", stampType: "none",
+      tcgplayerUrl: "https://www.tcgplayer.com/product/83500",
+      pricingLookup: { tcgPlayerId: "83500" },
+      usage: { estCostUsd: 0.00092 },
+    },
+    price: {
+      listingCount: 67, priceVariantUsed: "Normal",
+      conditionPrices: { NM: 21.37, LP: 16.1, MP: 12.44, HP: 9.08, DMG: 5.58 },
+      conditionsSuggestedBid: { NM: 12.03, LP: 8.9, MP: 6.63, HP: 4.53, DMG: 2.35 },
+      priceVariants: {
+        Normal: {
+          label: "Normal", basePrice: 21.37,
+          sellThrough: { monthlyPace: 6.3, tier: "Slow", totalSold: 19 },
+          conditions: { NM: 21.37, LP: 16.1, MP: 12.44, HP: 9.08, DMG: 5.58 },
+          conditionsSuggestedBid: { NM: 12.03, LP: 8.9, MP: 6.63, HP: 4.53, DMG: 2.35 },
+          conditionsBreakEven: { NM: 17.14, LP: 12.7, MP: 9.45, HP: 6.46, DMG: 3.35 },
+        },
+        Holofoil: {
+          label: "Holofoil", basePrice: 58.4,
+          sellThrough: { monthlyPace: 4.0, tier: "Slow", totalSold: 12 },
+          conditions: { NM: 58.4, LP: 44.2, MP: 34.1, HP: 24.8, DMG: 15.1 },
+          conditionsSuggestedBid: { NM: 26.1, LP: 19.4, MP: 14.6, HP: 10.2, DMG: 5.4 },
+          conditionsBreakEven: { NM: 47.2, LP: 35.4, MP: 26.9, HP: 19.0, DMG: 10.8 },
+        },
+        "Reverse Holofoil": {
+          label: "Reverse Holofoil", basePrice: 34.9,
+          sellThrough: { monthlyPace: 2.0, tier: "Stagnant", totalSold: 6 },
+          conditions: { NM: 34.9, LP: 26.2, MP: 20.1, HP: 14.4, DMG: 8.8 },
+          conditionsSuggestedBid: { NM: 13.38, LP: 9.63, MP: 6.99, HP: 4.51, DMG: 2.0 },
+          conditionsBreakEven: { NM: 28.37, LP: 20.9, MP: 15.6, HP: 10.6, DMG: 5.8 },
+        },
+        "1st Edition Holofoil": {
+          label: "1st Edition Holofoil", basePrice: 212.5,
+          sellThrough: { monthlyPace: 1.3, tier: "Stagnant", totalSold: 4 },
+          conditions: { NM: 212.5, LP: 171.0, MP: 139.4, HP: 110.2, DMG: null },
+          conditionsSuggestedBid: { NM: 82.9, LP: 66.2, MP: 53.5, HP: 41.8, DMG: null },
+          conditionsBreakEven: { NM: 173.0, LP: 138.9, MP: 112.0, HP: 87.6, DMG: null },
         },
       },
     },

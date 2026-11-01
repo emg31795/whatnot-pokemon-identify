@@ -402,22 +402,91 @@
   color: #a3a4ab;
 }
 
-.wnpk-variant-select {
-  display: block;
-  width: 100%;
-  margin-top: 4px;
+/* PRINT VARIANT pills (2026-11-01, replacing .wnpk-variant-select).
+   A wrapping row of real buttons: every printing and its price visible at
+   once, one click to switch. `flex-wrap` is what makes a four-printing
+   product land on two lines at 340px and three at the 280px floor instead
+   of overflowing the panel. */
+#wnpk-root .wnpk-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+#wnpk-root .wnpk-pill {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
   background: #26272e;
-  color: #f2f2f2;
+  color: #c7cad0;
   border: 1px solid #3a3b44;
-  border-radius: 6px;
-  padding: 6px 8px;
-  font-size: 12px;
+  border-radius: 7px;
+  padding: 4px 8px 5px;
+  font-family: inherit;
+  line-height: 1.25;
+  text-align: left;
   cursor: pointer;
 }
 
-.wnpk-variant-select:hover {
-  background: #2e2f38;
+#wnpk-root .wnpk-pill:hover { background: #30313a; border-color: #4a4b56; }
+
+/* Keyboard focus must be unmistakable — this control is the one thing in
+   the panel that changes the price, so a pill reached by Tab says so as
+   loudly as one under the cursor. */
+#wnpk-root .wnpk-pill:focus-visible {
+  outline: 2px solid #8ab4f8;
+  outline-offset: 2px;
 }
+
+/* The live printing. The orange is the panel's own accent (the bid colour),
+   so "this is the number you are looking at" reads the same here as it does
+   on the price itself. */
+#wnpk-root .wnpk-pill-selected {
+  background: #3a2a14;
+  border-color: #ff8d1a;
+  color: #f2f2f2;
+}
+#wnpk-root .wnpk-pill-selected:hover { background: #46331a; }
+
+#wnpk-root .wnpk-pill-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#wnpk-root .wnpk-pill-price {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #e8eaed;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+#wnpk-root .wnpk-pill-selected .wnpk-pill-price { color: #ffb063; }
+
+/* Which printing the vision read picked — a provenance marker, not a
+   recommendation, so it stays quiet even on the selected pill. */
+#wnpk-root .wnpk-pill-detected {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9aa0a6;
+  border: 1px solid #44464f;
+  border-radius: 4px;
+  padding: 0 3px;
+}
+#wnpk-root .wnpk-pill-selected .wnpk-pill-detected { color: #d8b48a; border-color: #6d5433; }
+
+/* At the 280px floor the pills give up horizontal padding before they give
+   up the price, which is the only thing on them worth reading. */
+#wnpk-root.wnpk-narrow .wnpk-pill { padding: 4px 6px 5px; }
+#wnpk-root.wnpk-narrow .wnpk-pill-name { font-size: 11px; }
 
 .wnpk-estimate-note {
   font-style: italic;

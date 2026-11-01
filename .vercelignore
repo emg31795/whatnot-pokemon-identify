@@ -10,6 +10,7 @@
 extension/
 docs/
 test/
+tools/
 CLAUDE.md
 README.md
 .claude/

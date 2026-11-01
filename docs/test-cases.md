@@ -13999,3 +13999,122 @@ production response carries `conditionPrices.NM = 172.83` /
 What a reload adds is the `LP`-style tier label and the
 `1st Ed $400.00 LP` alt line, plus coverage of the general case where the
 chosen printing has no NM at all.
+
+## #115 — 2026-11-01 — PRINT VARIANT is pills, not a dropdown (extension-only)
+
+**Extension-only. No `api/` change, no deploy.** `extension/content.js` +
+`extension/content.css` only, plus two new harness states.
+
+### Why
+
+The PRINT VARIANT control was a full-width `<select>`. A dropdown shows one
+option and hides the rest, so the question that actually decides a bid —
+*is the other printing worth more than this one?* — cost a click to ask and
+a second to undo, mid-auction. #114 had just finished proving how much that
+hidden number can be worth: the Ninetales Shadowless pair is $172.83 against
+$400.00.
+
+### What it is now
+
+One pill per printing, each carrying **its own price**, all visible at once:
+
+```
+PRINT VARIANT
+[ Normal  DETECTED ] [ Holo     ] [ Reverse Holo ]
+[ $21.37           ] [ $58.40   ] [ $34.90       ]
+[ 1st Ed Holo      ]
+[ $212.50          ]
+```
+
+- **Real `<button>` elements.** Enter/Space, Tab order and the focus ring
+  come free; `aria-pressed` says which printing is live, and the group is
+  labelled by the PRINT VARIANT caption. The accessible name carries the
+  **unshortened** printing label and the price, since the visible text is
+  abbreviated to fit 280px.
+- **The pill price is that printing's own base tier**, via the existing
+  `baseConditionTier` (#114's NM-or-best-present rule) — not a hardcoded
+  `conditions.NM` read, which is the exact bug #114 fixed in the disclosure
+  rows. A non-NM tier is **named on the pill** (`$400.00 LP`), because every
+  unqualified price in this panel is NM.
+- **`pillPrintingLabel`** shortens for display: `1st Edition` -> `1st Ed`,
+  `Holofoil` -> `Holo`. Deliberately NOT the row cell's `shortPrintingLabel`,
+  which drops holo-ness entirely — a ~90px cell can afford that where both
+  printings of a Shadowless product are holo, but a pill reading just
+  "Reverse" beside one reading "Normal" invites the wrong pick.
+- **`detected` is a separate marker from selection.** The vision read's
+  printing keeps its chip wherever the selection goes; it is provenance,
+  not a recommendation, so it stays quiet even on the selected pill.
+- **Selection moves by toggling classes, never by re-rendering the pills** —
+  a re-render would destroy the focus ring on the button the user just
+  operated with the keyboard.
+- **One printing is still plain text** (`Printing: Holofoil`), unchanged.
+- The alternate-printing warning's "Why?" body now says *"Check the card
+  against the PRINT VARIANT pills below and tap that one if it's what
+  you're holding."*
+
+### Verified in the harness
+
+| check | result |
+|---|---|
+| click switches printing | head meta, tier chip, condition table, bids and set name all update |
+| `condTableOpen` preserved | collapsed the table, clicked another pill — stayed collapsed, summary line showed `NM $58.40 Bid $26.10` |
+| keyboard | Tab reached the next pill, **Space** activated it, focus ring visible |
+| no-NM printing | `1st Ed Holo $400.00 LP`; table opens at LP $400.00 / Bid $157.90, no NM row |
+| wrap | 4 printings = 2 rows at 340px, 2 rows at 280px, nothing clipped |
+| single printing | 0 pills, 0 `<select>`, plain `Printing: Holofoil` |
+| local suite | **183 pass, 0 fail** (unchanged — this touches no `api/` code) |
+
+### Harness heights, all 12 states
+
+Two states added for this change: **`printing-no-nm`** (real #114 Ninetales
+012/102 Shadowless data — the 1st Edition Holofoil printing has no NM SKU at
+all) and **`many-printings`** (four printings, the wrap case).
+
+Budget at an 850px window is **728px**. Baseline is HEAD (`ff59d8b`),
+measured by reverting `extension/` only and re-running with the same states.
+
+| state | 340 before | 340 after | Δ | 280 before | 280 after | fits @340 |
+|---|---|---|---|---|---|---|
+| priced-raw | 565 | **578** | +13 | 532 | 544 | yes |
+| alternate-printing | 650 | **663** | +13 | 617 | 629 | yes |
+| sibling-ambiguous | 636 | 636 | 0 | 621 | 621 | yes |
+| number-tie | 654 | 654 | 0 | 655 | 655 | yes |
+| reprint-three-rows | 724 | 724 | 0 | 724 | 724 | yes |
+| weak-signal-withhold | 340 | 340 | 0 | 340 | 340 | yes |
+| slab-priced | 458 | 458 | 0 | 478 | 478 | yes |
+| slab-thin | 433 | 433 | 0 | 425 | 425 | yes |
+| single-printing-stamp | 536 | 536 | 0 | 503 | 503 | yes |
+| printing-no-nm | 564 | **577** | +13 | 531 | 544 | yes |
+| many-printings | 648 | **708** | +60 | 615 | 674 | yes |
+| not-found | 198 | 198 | 0 | 198 | 198 | yes |
+
+**Cost: +13px for a one-row pill set, +60px for a two-row one.** Every state
+still fits. The tightest is unchanged — `reprint-three-rows` at 724px, 4px
+under budget, which this change does not touch. `many-printings` at 708px is
+the new second-tightest; a **five**-printing product would wrap to three rows
+and is the first thing that would go over, so that is the case to watch.
+
+**Measurement note:** the first run of a state whose card image is not yet in
+the browser cache reads ~25px short, because the thumbnail is `height: auto`
+and has not laid out yet. Run the measure page twice and use the second
+result. This bit once during this session (`printing-no-nm` read 539 cold,
+577 warm).
+
+### Also added
+
+**`tools/serve.js`** + **`.claude/launch.json`**. `tools/panel-measure.html`
+and `panel-harness.html` load `../extension/content.css` and `content.js`
+with relative paths, which a `file://` URL cannot resolve once the page is
+opened through a preview pane — it renders as a static snapshot and the panel
+never builds, so the page sits at "measuring…" forever. A zero-dependency
+read-only static server over the repo fixes it:
+
+```
+node tools/serve.js
+# http://localhost:8731/tools/panel-harness.html
+```
+
+**`extension/content.js` + `content.css` changed — the extension needs a
+manual reload in `chrome://extensions`.** An unreloaded extension keeps the
+old dropdown; nothing breaks, because this is a pure UI swap over the same
+`priceVariants` data, but no pill or per-printing price appears until reload.

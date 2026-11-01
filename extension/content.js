@@ -1164,7 +1164,7 @@
   // prices it as the "Normal" printing — NM $1.18, Suggested Bid $0.61 —
   // when the stamped card in hand is the "Reverse Holofoil" printing at
   // NM $34.27, Suggested Bid $14.74. Both printings are already in this
-  // same priceData, fully priced; the right answer was one dropdown click
+  // same priceData, fully priced; the right answer was one pill click
   // away with nothing on screen suggesting the click.
   //
   // This is NOT specific to stamped cards. Median Reverse Holofoil /
@@ -1306,7 +1306,7 @@
         )} is worth far more — NM $${best.nm.toFixed(2)}</span></div>
         <details class="wnpk-why"><summary>Why?</summary><div class="wnpk-why-body">Another printing of this card prices much higher than the one detected: <strong>${escapeHtml(
           best.v.label
-        )}</strong> at NM $${best.nm.toFixed(2)} ${bidHtml} ${soldHtml}. Check the card against the PRINT VARIANT options below and switch if that's the one you're holding.</div></details>
+        )}</strong> at NM $${best.nm.toFixed(2)} ${bidHtml} ${soldHtml}. Check the card against the PRINT VARIANT pills below and tap that one if it's what you're holding.</div></details>
       </div>`;
   }
 
@@ -1316,13 +1316,13 @@
   // of sync — this was the exact bug a user hit (badge said "Unlimited",
   // but the price shown was actually the 1st Edition figure). Both the
   // badge and this line are driven from the SAME variant object, on both
-  // initial render and every dropdown change, so they can't disagree.
+  // initial render and every pill click, so they can't disagree.
   // ADDED 2026-09-13 (liquidity metric): `listingCount` is PPT's own
   // active-listings count for the matched card (see pricingLookup.listingCount
   // in api/identify.js / api/price.js) — a real, currently-live TCGplayer
   // listing count, not an estimate. It's a per-card figure from PPT's
   // primaryPrinting data, not tracked per print-variant, so it doesn't
-  // change when the dropdown below switches variants — an acceptable
+  // change when the pills below switch variants — an acceptable
   // approximation for a supplementary liquidity signal, not the
   // authoritative price itself.
   const marketPriceLine = (variant, listingCount) =>
@@ -1340,7 +1340,7 @@
   // folding this into one score would hide exactly that distinction.
   // `sellThrough` comes from the SAME variant object as basePrice/
   // conditions (see buildLiveVariantsForCandidate in api/identify.js), so
-  // switching the print-variant dropdown below updates this the same way
+  // clicking a print-variant pill below updates this the same way
   // it already updates the price. Renders nothing when the lookup failed
   // (best-effort supplementary signal, never blocks/replaces the price).
   const SELL_THROUGH_TIER_CLASS = {
@@ -1410,18 +1410,18 @@
   // FIX (2026-09-17, user-reported bug — live Chansey Base Set
   // (Shadowless) scan): the header's set name used to be fixed forever
   // at `data.setName` (the WINNING candidate's name at match time),
-  // completely unaffected by the print-variant dropdown below it — so
-  // when a Shadowless/non-Shadowless tie's price dropdown was used
+  // completely unaffected by the print-variant pills below it — so
+  // when a Shadowless/non-Shadowless tie's price picker was used
   // exactly as intended (the code's own "real safety net" for a wrong
   // Shadowless guess, see api/identify.js's isShadowlessVsPlainTie
   // comment) to switch to the OTHER printing's price, the header kept
   // naming the printing that was no longer selected. Real logs
   // confirmed this scan's `pickDefaultVariantKey` had correctly found
-  // the tagged default (the price dropdown's own "(detected)" label was
+  // the tagged default (the price picker's own "detected" marker was
   // accurate) — the bug was purely that nothing updated the header once
   // the user picked a different option.
   //
-  // Scoped narrowly to the one case this project's dropdown-merging
+  // Scoped narrowly to the one case this project's variant-merging
   // logic ever actually produces two differently-tagged candidates for
   // (a Shadowless/non-Shadowless pair, see the sibling-merge comment in
   // lookupCardPPT) — `identifyData.pricingLookup.siblingSetName` is a
@@ -1452,7 +1452,7 @@
   // the original /api/identify response this pricing call is for — only
   // used to keep the header's set name in sync with whichever print
   // variant is currently selected; optional so the error-fallback call
-  // site below (which has no variants/dropdown to sync at all) doesn't
+  // site below (which has no variants/pills to sync at all) doesn't
   // need to pass anything new.
   // ADDED 2026-10-11 (Phase 0e/0f): a graded slab's price section is a
   // single ungraded reference figure, not the raw card's condition/bid
@@ -1527,12 +1527,15 @@
     // edition/finish. Gemini's stampType read (1st Edition, etc.) is only
     // used to pick the DEFAULT selection — vintage-card stamps in
     // particular are easy for a vision model to misread or miss from a
-    // video frame, so the user can just switch the dropdown to whatever
-    // matches what they're actually holding, no rescan needed.
-    // A <select> with one option is a control that cannot do anything — it
-    // reads as a choice the user has to make and costs a full row to say
-    // nothing. One printing is stated as plain text; two or more keep the
-    // picker, because then it really is a choice.
+    // video frame, so the user can just switch to whatever matches what
+    // they're actually holding, no rescan needed.
+    // CHANGED 2026-11-01: this was a <select>. A dropdown hides every
+    // option but one, so the question that actually matters mid-auction —
+    // "is the other printing worth more than this one?" — took a click to
+    // ask and a second click to undo. The printings are now pills, each
+    // carrying its own price, so the whole choice and its stakes are
+    // readable without touching anything.
+    // One printing is a fact, not a choice: it stays plain text.
     const variantKeys = priceData.priceVariants ? Object.keys(priceData.priceVariants) : [];
     const variantPicker = !variantKeys.length
       ? ""
@@ -1541,15 +1544,8 @@
           priceData.priceVariants[variantKeys[0]].label
         )}</b></div>`
       : `
-        <div class="wnpk-cond-label">PRINT VARIANT</div>
-        <select id="wnpk-variant-select" class="wnpk-variant-select">${Object.entries(priceData.priceVariants)
-          .map(
-            ([key, v]) =>
-              `<option value="${escapeHtml(key)}"${key === priceData.priceVariantUsed ? " selected" : ""}>${escapeHtml(
-                v.label
-              )}${key === priceData.priceVariantUsed ? " (detected)" : ""}</option>`
-          )
-          .join("")}</select>
+        <div class="wnpk-cond-label" id="wnpk-variant-pills-label">PRINT VARIANT</div>
+        ${variantPillsHtml(priceData.priceVariants, priceData.priceVariantUsed, priceData.priceVariantUsed)}
       `;
 
     const initialVariant = priceData.priceVariants ? priceData.priceVariants[priceData.priceVariantUsed] : null;
@@ -1599,19 +1595,31 @@
     }
 
     if (priceData.priceVariants && variantKeys.length > 1) {
-      const select = $("#wnpk-variant-select");
-      select.addEventListener("change", () => {
-        const variant = priceData.priceVariants[select.value];
+      const pills = $("#wnpk-variant-pills");
+      // One delegated listener on the container, and the selection moves by
+      // toggling classes rather than re-rendering the pills — a re-render
+      // would blow away the focus ring on the button the user just operated
+      // with the keyboard, which is the whole point of them being buttons.
+      pills.addEventListener("click", (e) => {
+        const btn = e.target.closest(".wnpk-pill");
+        if (!btn || !pills.contains(btn)) return;
+        const key = btn.dataset.variant;
+        const variant = priceData.priceVariants[key];
         if (!variant) return;
+        setPillSelection(pills, key);
         $("#wnpk-market-price").innerHTML = marketPriceBlock(variant, priceData);
         $("#wnpk-alt-printing").innerHTML = alternatePrintingAlertHtml(
           priceData.priceVariants,
-          select.value,
+          key,
           identifyData && identifyData.matchConfidence
         );
         $("#wnpk-sell-through").innerHTML = sellThroughBadgeHtml(variant.sellThrough, variant.conditionsBreakEven);
         const condWrap = $("#wnpk-cond-details");
         if (condWrap) {
+          // Carries the user's open/closed choice across the swap — see
+          // conditionDetailsHtml's `open` argument. Rebuilding the table
+          // collapsed every time would punish switching printings, which is
+          // exactly what the pills are there to make cheap.
           const wasOpen = condWrap.open;
           condWrap.outerHTML = conditionDetailsHtml(variant.conditions, variant.conditionsSuggestedBid, wasOpen);
           wireCondTableToggle();
@@ -1619,10 +1627,70 @@
         const badge = $("#wnpk-edition-badge");
         if (badge && variant.printEdition) badge.textContent = variant.printEdition;
         if (setNameEl && identifyData) {
-          setNameEl.textContent = setNameForVariantKey(select.value, identifyData);
+          setNameEl.textContent = setNameForVariantKey(key, identifyData);
         }
       });
     }
+  }
+
+  // PRINT VARIANT PILLS (2026-11-01)
+  // -------------------------------------------------------------------
+  // One pill per printing, each showing its own price, so the cost of
+  // picking wrong is on screen before anything is clicked. Real buttons,
+  // not styled divs: Enter/Space, Tab order and the focus ring all come
+  // free, and `aria-pressed` says which printing is live.
+  //
+  // The price on a pill is that printing's own base tier (#114's
+  // NM-or-best-present rule, `baseConditionTier`), not a hardcoded NM read
+  // — a rare printing frequently has no Near Mint sale at all, and a pill
+  // reading "—" beside three real LP/MP/HP prices is the same lie the
+  // disclosure rows used to tell. When the tier isn't NM it is named on
+  // the pill, because every other unqualified price in this panel is NM.
+  function variantPillsHtml(priceVariants, selectedKey, detectedKey) {
+    const pills = Object.entries(priceVariants)
+      .map(([key, v]) => {
+        const tier = baseConditionTier(v.conditions);
+        const price = v.conditions ? v.conditions[tier] : null;
+        const isSelected = key === selectedKey;
+        const isDetected = key === detectedKey;
+        const short = pillPrintingLabel(v.label);
+        const priceText = price == null ? "—" : "$" + price.toFixed(2) + (tier === "NM" ? "" : " " + tier);
+        // The visible text is shortened to fit a 280px panel, so the full
+        // printing name goes in the accessible name and the tooltip — the
+        // shortening must never be the only place the real label exists.
+        const aria = `${v.label} — ${price == null ? "no live price" : priceText}${isDetected ? ", detected" : ""}`;
+        return `<button type="button" class="wnpk-pill${isSelected ? " wnpk-pill-selected" : ""}"
+            data-variant="${escapeHtml(key)}" aria-pressed="${isSelected ? "true" : "false"}"
+            title="${escapeHtml(v.label)}" aria-label="${escapeHtml(aria)}">
+            <span class="wnpk-pill-name">${escapeHtml(short)}${
+          isDetected ? `<span class="wnpk-pill-detected">detected</span>` : ""
+        }</span>
+            <span class="wnpk-pill-price">${escapeHtml(priceText)}</span>
+          </button>`;
+      })
+      .join("");
+    return `<div class="wnpk-pills" id="wnpk-variant-pills" role="group" aria-labelledby="wnpk-variant-pills-label">${pills}</div>`;
+  }
+
+  function setPillSelection(container, key) {
+    container.querySelectorAll(".wnpk-pill").forEach((btn) => {
+      const on = btn.dataset.variant === key;
+      btn.classList.toggle("wnpk-pill-selected", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+
+  // "1st Edition Holofoil" -> "1st Ed Holo". A pill has more room than the
+  // ~90px disclosure-row cell `shortPrintingLabel` shortens for, so holo-ness
+  // survives here where that one drops it: on a Shadowless product BOTH
+  // printings are holo and the edition word is the distinction, but on an
+  // ordinary set "Holo" vs "Reverse Holo" is itself the distinction, and a
+  // pill reading just "Reverse" would invite exactly the wrong pick.
+  function pillPrintingLabel(label) {
+    return String(label == null ? "" : label)
+      .replace(/\b1st Edition\b/i, "1st Ed")
+      .replace(/\bHolofoil\b/i, "Holo")
+      .trim();
   }
 
   // HEAD META (#113 follow-up 2)

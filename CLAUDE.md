@@ -137,7 +137,13 @@ api/flag.js      "Flag this scan" -> one greppable log line.
 docs/history.md  Full project history (was CLAUDE.md).
 docs/test-cases.md  Live test log.
 docs/archive/    ROADMAP.md, build-status.md.
-test/            Local suite, `node test/alakazam.test.js` (108 tests, no
+tools/           Panel harness — the REAL content.js/content.css driven by
+                 window.__wnpkTest over fixture states in panel-states.js.
+                 `node tools/serve.js`, then panel-harness.html (one state)
+                 or panel-measure.html (heights for every state at 340px and
+                 280px). Run measure TWICE — a card image not yet cached
+                 reads ~25px short. Excluded from deploys via .vercelignore.
+test/            Local suite, `node test/alakazam.test.js` (183 tests, no
                  network — mocks global.fetch over real captured PPT rows).
                  Excluded from deploys via .vercelignore. Two tests replay
                  against the pinned pre-fix commit `PRE_FIX_REF` (`1960cd5`)
@@ -219,11 +225,14 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 - E2E payloads are real TCGplayer product scans (`imageCdnUrl`) plus, for the
   slab, PSA's own cert photo cropped to the slab front. Cleaner than a
   livestream frame, so reads are easier than reality.
-- **`extension/content.js` and `content.css` last changed in the 2026-11-01
-  (#114) build** — reload the extension. An extension not reloaded since then
-  still gets #114's price (the backend half of the fix is independently
-  effective, measured) but shows no condition-tier label and no alt-printing
-  line; one not reloaded since 2026-10-17 also will not render the
+- **`extension/content.js` and `content.css` last changed 2026-11-01 (#115,
+  extension-only, no deploy)** — reload the extension. #115 replaced the
+  PRINT VARIANT `<select>` with per-printing pills, each showing its own
+  base-tier price; an extension not reloaded since then keeps the dropdown
+  (nothing breaks — same `priceVariants` data). One not reloaded since the
+  #114 build also shows no condition-tier label and no alt-printing line
+  (it still gets #114's price — the backend half is independently effective,
+  measured); one not reloaded since 2026-10-17 will not render the
   sibling/tie rows or the per-row graded medians at all.
 - **The first real graded slab has now been identified end-to-end through
   Phase 2-lite** (#111). The graded bid path has also fired on organic traffic.
@@ -509,6 +518,27 @@ sane bid for that card.
   The API wants raw base64 and 400s, manufacturing a fake error cluster.
 
 ## Open items
+
+**SHIPPED 2026-11-01 (#115) — PRINT VARIANT is pills, not a dropdown.
+Extension-only, no `api/` change, no deploy; the extension needs a manual
+reload.** One `<button>` pill per printing, each showing that printing's own
+base-tier price (`baseConditionTier`, #114's NM-or-best-present rule — never
+a hardcoded `conditions.NM`, which is the bug #114 fixed in the disclosure
+rows), with a non-NM tier named on the pill (`$400.00 LP`). The vision read's
+printing keeps a quiet `detected` marker wherever the selection goes.
+Selection moves by toggling classes, never by re-rendering the pills, so a
+keyboard focus ring survives the click. `pillPrintingLabel` is deliberately
+NOT the row cell's `shortPrintingLabel`: a pill keeps holo-ness
+(`Reverse Holo`, `1st Ed Holo`) where the ~90px cell drops it. One printing
+is still plain text. Harness heights re-run for all 12 states, all under the
+728px budget: **+13px** for a one-row pill set, **+60px** for a two-row one;
+tightest is still `reprint-three-rows` at 724px (untouched), new
+second-tightest `many-printings` at 708px — **a five-printing product would
+wrap to three rows and is the first thing that would go over.** Two harness
+states added (`printing-no-nm`, `many-printings`) plus `tools/serve.js` +
+`.claude/launch.json`, because the harness cannot load its relative
+`../extension/` assets over `file://`. Full write-up: `docs/test-cases.md`
+#115.
 
 **DEPLOYED TO PRODUCTION 2026-11-01 (#114) — a Shadowless disclosure row said
 "no price" over three real prices.** Commit `4927dc7`, production
