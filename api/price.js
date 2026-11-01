@@ -26,7 +26,12 @@
 // a rewrite of it. TCGPLAYER_PRICE_HISTORY_TIMEOUT_MS (2500ms) and its
 // single retry live in identify.js and are untouched here.
 
-const { buildLiveVariantsForCandidate, pickDefaultVariantKey } = require("./identify.js");
+const {
+  buildLiveVariantsForCandidate,
+  pickDefaultVariantKey,
+  basePriceTierForConditions,
+  buildAltPrintings,
+} = require("./identify.js");
 
 function withCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -53,7 +58,19 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const { tcgPlayerId, tag, siblingTcgPlayerId, siblingTag, stampType, primaryPrinting, listingCount } = pricingLookup;
+  const {
+    tcgPlayerId,
+    tag,
+    siblingTcgPlayerId,
+    siblingTag,
+    stampType,
+    primaryPrinting,
+    listingCount,
+    // ADDED 2026-11-01 (Ninetales 012/102 Shadowless): set only by
+    // buildAmbiguityDisclosure's per-row pricingLookup. Absent on every other
+    // caller, so the single-match panel's default printing is unchanged.
+    preferCommonPrinting,
+  } = pricingLookup;
 
   // Same shape as the block this replaced in lookupCardPPT
   // (api/identify.js) — every dollar figure from here on is either
@@ -85,7 +102,9 @@ module.exports = async function handler(req, res) {
   // pass `tag` through so a tagged best-candidate printing (e.g.
   // Shadowless) is matched against its own tagged keys first, instead of
   // silently falling through to a merged-in sibling's untagged key.
-  const priceVariantUsed = priceVariants ? pickDefaultVariantKey(priceVariants, { stampType }, primaryPrinting, tag) : null;
+  const priceVariantUsed = priceVariants
+    ? pickDefaultVariantKey(priceVariants, { stampType }, primaryPrinting, tag, { preferCommonPrinting })
+    : null;
   const chosenVariant = priceVariantUsed && priceVariants ? priceVariants[priceVariantUsed] : null;
 
   let noPriceNote = null;
@@ -97,6 +116,17 @@ module.exports = async function handler(req, res) {
     priceVariants,
     priceVariantUsed,
     marketPrice: chosenVariant ? chosenVariant.basePrice : null,
+    // ADDED 2026-11-01 (Ninetales 012/102 Shadowless): WHICH condition
+    // `marketPrice` came from. It was previously unknowable to any caller,
+    // and the ambiguity rows paid for that: they read `conditionPrices.NM`
+    // directly, so a printing whose only live sales are LP/MP/HP — e.g.
+    // 107008's 1st Edition Holofoil — rendered "no price" while three real
+    // prices sat in the very same response. A row can now price off the same
+    // tier the headline uses and label it when it isn't NM.
+    marketPriceTier: chosenVariant ? basePriceTierForConditions(chosenVariant.conditions) : null,
+    // The other printings of this product that have a real price, each with
+    // its own tier. Lets a caller showing one printing name the one it isn't.
+    altPrintings: chosenVariant ? buildAltPrintings(priceVariants, priceVariantUsed) : [],
     conditionPrices: chosenVariant ? chosenVariant.conditions : null,
     // ADDED 2026-09-17 (break-even max bid): same shape as conditionPrices
     // above ({NM,LP,MP,HP,DMG} -> number, can be negative), computed

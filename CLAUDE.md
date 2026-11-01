@@ -500,6 +500,41 @@ sane bid for that card.
 
 ## Open items
 
+**FIXED LOCALLY, AWAITING PREVIEW/PROD APPROVAL (#114, 2026-11-01) — a
+Shadowless disclosure row said "no price" over three real prices.** Live scan
+`45b271ae`: Base Set Ninetales 012/102 disclosed two rows, 42352 at
+$38.54 / Bid $19.61 and 107008 (Shadowless) blank — while `/api/price` had
+already fetched 8 real SKUs for it. Two causes. (1) `fetchAndRenderSiblingPrices`
+read `conditionPrices.NM` **and only NM**, and the chosen printing was
+107008's `1st Edition Holofoil`, which has **no Near Mint SKU at all** (LP 400
+/ MP 350.50 / HP 338.88). Any disclosure row whose printing lacks a recent NM
+sale blanked; the single-match panel never had this bug. (2) PPT's
+`primaryPrinting` chose that printing — and **that one field is the entire
+difference from #109's Blastoise 106997**, which reads `Unlimited Holofoil`
+and so priced fine. `primaryPrinting` is whichever printing PPT last happened
+to price, and on `Base Set (Shadowless)` products it is often the rare 1st
+Edition one. The stamp read was no safer: primary read `"1st Edition"`, legacy
+read `"none"`.
+Fix: `pickDefaultVariantKey` takes `opts.preferCommonPrinting`, which ignores
+BOTH `primaryPrinting` and the stamp read and falls through to the **existing**
+non-1st preference order (it already prefers `unlimited holofoil`); set only
+by `buildAmbiguityDisclosure`, so the single-match path is byte-unchanged in
+behaviour. `/api/price` now reports **`marketPriceTier`** (which condition
+`marketPrice` came from — previously unknowable to any caller) and
+**`altPrintings`**; the row prices off that tier, labels it when it isn't NM,
+and shows `1st Ed $400.00 LP` alongside. Result over the real payloads:
+107008 → **$172.83 / Bid $87.89 / Slow**, and 42352 still exactly
+`$38.54 / Bid $19.61`. 183 local tests (168 before), TEST VALIDITY pinned to
+`53003bb`. **`extension/content.js` + `content.css` changed — reload the
+extension.** Full write-up: `docs/test-cases.md` #114 and
+`investigations/2026-11-01-ninetales-shadowless/findings.md`.
+**The Machoke 034/102 pair from #105 IS the same handling** (107031 has
+`primaryPrinting "1st Edition"`, `printingsAvailable ['1st Edition','Unlimited']`)
+and is covered by a test. #105's own separate recommendation — exclude
+opposite-Shadowless pairs from `sameSiblingGroup` so the `shadowlessSibling`
+dropdown merge handles them instead — is **untouched and still open**.
+
+
 **DEPLOYED TO PRODUCTION 2026-10-24 (#109) — Base Set Blastoise 2/102 was
 priced as a $13 Celebrations reprint.** Commits `11c04df` + `87bc426`,
 production `dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`, `sourceHash 5723ac8d…`

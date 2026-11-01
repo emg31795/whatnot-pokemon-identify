@@ -2163,6 +2163,13 @@ async function buildAmbiguityDisclosure(group, read, requestId, { prompt, reason
         stampType: read.stampType,
         primaryPrinting: c.prices?.primaryPrinting ?? null,
         listingCount: c.prices?.listings ?? null,
+        // ADDED (2026-11-01, Ninetales 012/102 Shadowless): a disclosure row
+        // defaults to the COMMON printing, not PPT's `primaryPrinting` and
+        // not the vision stamp read — see pickDefaultVariantKey's comment for
+        // why those two are the wrong signals on a row whose whole message is
+        // "we can't tell these printings apart". The rare printing is still
+        // reported, as one of /api/price's `altPrintings`.
+        preferCommonPrinting: true,
       },
     })),
   };
@@ -3067,6 +3074,50 @@ function computeBreakEvenMaxBid(salePrice) {
 // frontend/shape compatibility. `partial: true` is set whenever fewer
 // than all 5 tiers have real data, so the UI can caption this
 // distinctly from a printing with full coverage.
+// Which condition IS this printing's price. Prefer NM as the headline
+// "Market" price shown above the table (matches how every other part of this
+// tool has always defined "market price"); if TCGplayer's data happens not to
+// include NM for this printing, fall back to whichever tier IS present,
+// preferring the best-condition one available.
+//
+// EXTRACTED (2026-11-01): this rule used to be one inline expression inside
+// buildLivePriceVariantsFromTCGPlayer. api/price.js now needs the same answer
+// to report `marketPriceTier`, and an ambiguity row's alternate printings
+// need it per printing, so it lives in one place. Returns null for a
+// printing with no live condition at all — the caller decides what that
+// means; this never invents a tier.
+function basePriceTierForConditions(conditions) {
+  if (!conditions) return null;
+  if (conditions.NM != null) return "NM";
+  return CONDITION_TIERS.find((t) => conditions[t] != null) || null;
+}
+
+// Every OTHER printing of the same product that has a real live price, so a
+// caller showing one printing can say what it is not showing. Built purely
+// from variants already in hand — no fetch, no extra credit.
+//
+// ADDED (2026-11-01, Ninetales 012/102 Shadowless): the disclosure row now
+// defaults to the common printing, which on a `Base Set (Shadowless)` product
+// means the $172.83 Unlimited Holofoil rather than the $400 1st Edition one.
+// Defaulting to the cheaper, likelier printing is only honest if the other
+// figure is still on screen, so this is what puts it there. Each entry
+// carries its own tier because a rare printing very often has no NM sale at
+// all — 107008's 1st Edition Holofoil has only LP/MP/HP — and "$400" with no
+// "LP" beside it would read as a Near Mint price.
+function buildAltPrintings(priceVariants, chosenKey) {
+  if (!priceVariants) return [];
+  const out = [];
+  for (const [key, v] of Object.entries(priceVariants)) {
+    if (key === chosenKey) continue;
+    const tier = basePriceTierForConditions(v && v.conditions);
+    if (!tier) continue;
+    const price = v.conditions[tier];
+    if (price == null) continue;
+    out.push({ label: v.label || key, price, tier });
+  }
+  return out;
+}
+
 function buildLivePriceVariantsFromTCGPlayer(historyResult) {
   const byVariant = {};
   for (const sku of historyResult) {
@@ -3097,12 +3148,6 @@ function buildLivePriceVariantsFromTCGPlayer(historyResult) {
   for (const [label, byTier] of Object.entries(byVariant)) {
     const presentTiers = CONDITION_TIERS.filter((t) => byTier[t] != null);
     if (!presentTiers.length) continue;
-    // Prefer NM as the headline "Market" price shown above the table
-    // (matches how every other part of this tool has always defined
-    // "market price"); if TCGplayer's data happens not to include NM for
-    // this printing, fall back to whichever tier IS present, preferring
-    // the best-condition one available.
-    const basePriceTier = byTier.NM != null ? "NM" : presentTiers[0];
     const conditions = {};
     const conditionsBreakEven = {};
     for (const t of presentTiers) {
@@ -3113,6 +3158,7 @@ function buildLivePriceVariantsFromTCGPlayer(historyResult) {
       // known-good hand-verified example.
       conditionsBreakEven[t] = computeBreakEvenMaxBid(byTier[t].price);
     }
+    const basePriceTier = basePriceTierForConditions(conditions);
     // FIX (2026-09-20, Shiny Lotad SH4 report): sell-through used to be fed
     // ONLY the base-price tier's totalQuantitySold (e.g. NM alone), throwing
     // away up to 4/5 of TCGplayer's own real sold-count data for this
@@ -3332,9 +3378,32 @@ async function buildLiveVariantsForCandidate(candidate, tag) {
 // instead. Net effect: the panel's header named the Shadowless printing,
 // but the price pre-selected as default was actually the sibling's
 // (opposite Shadowless status). Now tries the tagged form first.
-function pickDefaultVariantKey(priceVariants, read, primaryPrinting, tag) {
+//
+// ADDED (2026-11-01, Ninetales 012/102 Shadowless — see
+// investigations/2026-11-01-ninetales-shadowless/findings.md): the `opts`
+// arg. `opts.preferCommonPrinting` makes this ignore BOTH `primaryPrinting`
+// and the vision stamp read and fall straight through to the non-1st
+// preference order below — which already prefers `unlimited holofoil` over
+// `1st edition holofoil`, so no new ordering is introduced. Set only on an
+// ambiguity-disclosure row (buildAmbiguityDisclosure), never on the
+// single-match panel, whose behaviour here is unchanged.
+//
+// Why a disclosure row wants the opposite default: PPT's `primaryPrinting`
+// is whichever printing PPT last happened to price, and on `Base Set
+// (Shadowless)` products it is frequently the rare 1st Edition one —
+// 107008 Ninetales reads `1st Edition Holofoil` while 106997 Blastoise reads
+// `Unlimited Holofoil`, which is the ONLY reason #109's Blastoise row priced
+// and this Ninetales row did not. On a row whose whole message is "we cannot
+// tell these printings apart", the common printing is both the far more
+// likely item and the conservative (under-bidding) direction, and the rare
+// one is still reported as a labelled alternate rather than hidden. The
+// stamp read is not a substitute: on this very scan the primary model read
+// "1st Edition" and the legacy model read "none".
+function pickDefaultVariantKey(priceVariants, read, primaryPrinting, tag, opts = {}) {
   const keys = Object.keys(priceVariants);
   if (!keys.length) return null;
+
+  const preferCommon = !!opts.preferCommonPrinting;
 
   // REVERTED (2026-08-27): a fix here on 2026-08-26 excluded "1st
   // Edition"-labeled variants whenever Gemini's stampType read was
@@ -3351,7 +3420,7 @@ function pickDefaultVariantKey(priceVariants, read, primaryPrinting, tag) {
   const lowerToActual = {};
   for (const k of keys) lowerToActual[k.toLowerCase()] = k;
 
-  if (primaryPrinting) {
+  if (primaryPrinting && !preferCommon) {
     if (tag) {
       const taggedKey = `${String(primaryPrinting).toLowerCase()} (${String(tag).toLowerCase()})`;
       if (lowerToActual[taggedKey]) return lowerToActual[taggedKey];
@@ -3361,7 +3430,7 @@ function pickDefaultVariantKey(priceVariants, read, primaryPrinting, tag) {
     }
   }
 
-  const is1st = String(read.stampType || "").toLowerCase() === "1st edition";
+  const is1st = !preferCommon && String(read.stampType || "").toLowerCase() === "1st edition";
   const preferenceOrder = is1st
     ? ["1st edition holofoil", "1st edition normal", "holofoil", "reverse holofoil", "normal", "unlimited holofoil", "unlimited"]
     : ["holofoil", "reverse holofoil", "normal", "unlimited holofoil", "unlimited", "1st edition holofoil", "1st edition normal"];
@@ -7082,6 +7151,8 @@ module.exports = handler;
 // properties to that same function value doesn't change that.
 module.exports.buildLiveVariantsForCandidate = buildLiveVariantsForCandidate;
 module.exports.pickDefaultVariantKey = pickDefaultVariantKey;
+module.exports.basePriceTierForConditions = basePriceTierForConditions;
+module.exports.buildAltPrintings = buildAltPrintings;
 
 // GRADED-SLAB HELPERS (2026-10-11, Phase 0) — exported for unit testing
 // only. Nothing requires these except the test harness; api/price.js does

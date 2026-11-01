@@ -34,6 +34,12 @@ const PRE_FIX_REF = "1960cd5";
 // never HEAD — these invert the moment the fix is committed.
 const DEX_PRE_FIX_REF = "eab9b6c";
 
+// Pinned commit immediately BEFORE the 2026-11-01 Ninetales Shadowless
+// disclosure-row fix, same reason as the two refs above: the TEST VALIDITY
+// case in that section replays against it and asserts the old printing
+// choice reproduces there. A SHA, never HEAD.
+const NINETALES_PRE_FIX_REF = "53003bb";
+
 function loadPreFixModule(tmpName, ref = PRE_FIX_REF) {
   const tmp = path.join(os.tmpdir(), `${tmpName}-${process.pid}.js`);
   const src = execFileSync("git", ["show", `${ref}:api/identify.js`], {
@@ -2509,6 +2515,293 @@ async function main() {
     assert.strictEqual(M.numbersMatch("003/025", "141/103").match, false);
     assert.strictEqual(M.numbersMatch("141/103", "141/103").match, true);
     assert.strictEqual(M.numbersMatch("2/102", "002/102").strength, "exact");
+  });
+
+  // ----------------------------------------------------------------------
+  // 2026-11-01 — the Ninetales 012/102 Shadowless disclosure row
+  // ----------------------------------------------------------------------
+  // Live scan 45b271ae: a two-row sibling-ambiguous disclosure showed
+  // Base Set 42352 at $38.54 / Bid $19.61 and Base Set (Shadowless) 107008
+  // as "no price" — while /api/price had already fetched 8 real SKUs for
+  // 107008 (`[tcgplayer-price] productId=107008 skus=8` in the logs).
+  // Full trace: investigations/2026-11-01-ninetales-shadowless/findings.md.
+
+  // Mocks the TCGplayer price-history endpoint by productId, so the whole
+  // /api/price chain can run with no network. Keyed on the id in the URL.
+  function installTcgMock(byProductId) {
+    const calls = [];
+    global.fetch = async (url) => {
+      const s = String(url);
+      const m = s.match(/price\/history\/(\d+)\/detailed/);
+      if (!m) throw new Error(`unexpected fetch in TCGplayer mock: ${s}`);
+      calls.push(m[1]);
+      const result = byProductId[m[1]];
+      if (!result) throw new Error(`no fixture for productId=${m[1]}`);
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    return calls;
+  }
+
+  // Runs api/price.js's handler over a pricingLookup and returns the JSON it
+  // would send. Uses the real handler, not a re-implementation of it.
+  async function callPriceApi(pricingLookup) {
+    const PRICE = path.join(__dirname, "..", "api", "price.js");
+    delete require.cache[require.resolve(PRICE)];
+    const handler = require(PRICE);
+    let body = null;
+    const res = {
+      setHeader() {},
+      status() { return this; },
+      json(payload) { body = payload; return this; },
+      end() { return this; },
+    };
+    await handler({ method: "POST", body: { requestId: "test", pricingLookup } }, res);
+    return body;
+  }
+
+  const NINETALES_TCG = {
+    "107008": F.TCG_NINETALES_107008_SHADOWLESS,
+    "42352": F.TCG_NINETALES_42352_BASE,
+  };
+
+  // The row's own pricingLookup, exactly as buildAmbiguityDisclosure builds
+  // it for 107008 (verified against the shape below by its own test).
+  function shadowlessRowLookup(extra = {}) {
+    return {
+      tcgPlayerId: "107008",
+      tag: null,
+      siblingTcgPlayerId: null,
+      siblingTag: null,
+      siblingSetName: null,
+      stampType: "1st Edition",
+      primaryPrinting: "1st Edition Holofoil",
+      listingCount: 58,
+      preferCommonPrinting: true,
+      ...extra,
+    };
+  }
+
+  await test("NINETALES: the 1st Edition printing genuinely has no NM SKU (why the row blanked)", () => {
+    // Asserted straight off the captured real payload: this is the fact the
+    // whole bug rests on, and it must stay visible if the fixture is ever
+    // refreshed from live TCGplayer data.
+    const firstEdTiers = F.TCG_NINETALES_107008_SHADOWLESS
+      .filter((s) => s.variant === "1st Edition Holofoil")
+      .map((s) => s.condition);
+    assert.deepStrictEqual(firstEdTiers.sort(), ["Heavily Played", "Lightly Played", "Moderately Played"]);
+    assert.ok(!firstEdTiers.includes("Near Mint"), "the printing the row chose has no NM price to read");
+    assert.ok(
+      F.TCG_NINETALES_107008_SHADOWLESS.some((s) => s.variant === "Unlimited Holofoil" && s.condition === "Near Mint"),
+      "but the OTHER printing of the same product does"
+    );
+  });
+
+  await test("NINETALES: a disclosure row prices off the common printing, not PPT's primaryPrinting", async () => {
+    installTcgMock(NINETALES_TCG);
+    const r = await callPriceApi(shadowlessRowLookup());
+    assert.strictEqual(r.pricingError, null);
+    assert.strictEqual(r.priceVariantUsed, "Unlimited Holofoil");
+    assert.strictEqual(r.marketPriceTier, "NM");
+    assert.strictEqual(r.marketPrice, 172.83);
+    assert.strictEqual(r.conditionPrices.NM, 172.83);
+    assert.strictEqual(r.noPriceNote, null, "a priced row must not also carry a no-price note");
+  });
+
+  await test("NINETALES: the row that used to blank now has a real price AND a real bid", async () => {
+    installTcgMock(NINETALES_TCG);
+    const r = await callPriceApi(shadowlessRowLookup());
+    const tier = r.marketPriceTier;
+    // This is exactly what extension/content.js's fillSiblingRow now reads.
+    assert.ok(r.conditionPrices[tier] != null, "price present at the reported tier");
+    assert.ok(r.conditionsSuggestedBid[tier] != null, "bid present at the reported tier");
+    assert.ok(r.conditionsSuggestedBid[tier] > 0, "not a Skip");
+  });
+
+  await test("NINETALES: marketPriceTier is ALWAYS a tier conditionPrices actually has", async () => {
+    // The invariant the frontend depends on. Checked on both rows, and on a
+    // printing chosen with no NM at all.
+    installTcgMock(NINETALES_TCG);
+    for (const lookup of [
+      shadowlessRowLookup(),
+      { tcgPlayerId: "42352", primaryPrinting: "Holofoil", stampType: "none", preferCommonPrinting: true },
+      // preferCommonPrinting OFF: picks 1st Edition Holofoil, which has no NM.
+      shadowlessRowLookup({ preferCommonPrinting: false }),
+    ]) {
+      const r = await callPriceApi(lookup);
+      assert.ok(r.marketPriceTier, `tier reported for ${r.priceVariantUsed}`);
+      assert.ok(
+        r.conditionPrices[r.marketPriceTier] != null,
+        `conditionPrices has ${r.marketPriceTier} for ${r.priceVariantUsed}`
+      );
+      assert.strictEqual(r.marketPrice, r.conditionPrices[r.marketPriceTier]);
+    }
+  });
+
+  await test("NINETALES: without preferCommonPrinting the 1st Edition printing is still reachable at LP", async () => {
+    // Proves the fix did not delete the old behaviour, it scoped it — and
+    // documents what the row used to show: a printing whose base tier is LP.
+    installTcgMock(NINETALES_TCG);
+    const r = await callPriceApi(shadowlessRowLookup({ preferCommonPrinting: false }));
+    assert.strictEqual(r.priceVariantUsed, "1st Edition Holofoil");
+    assert.strictEqual(r.marketPriceTier, "LP");
+    assert.strictEqual(r.marketPrice, 400);
+    assert.strictEqual(r.conditionPrices.NM, undefined, "this is the NM hole that produced 'no price'");
+  });
+
+  await test("NINETALES: altPrintings names the printing the row is NOT showing, with its own tier", async () => {
+    installTcgMock(NINETALES_TCG);
+    const r = await callPriceApi(shadowlessRowLookup());
+    assert.deepStrictEqual(r.altPrintings, [{ label: "1st Edition Holofoil", price: 400, tier: "LP" }]);
+  });
+
+  await test("NINETALES: a single-printing row has no altPrintings", async () => {
+    installTcgMock(NINETALES_TCG);
+    const r = await callPriceApi({
+      tcgPlayerId: "42352",
+      primaryPrinting: "Holofoil",
+      stampType: "1st Edition",
+      preferCommonPrinting: true,
+    });
+    assert.strictEqual(r.priceVariantUsed, "Holofoil");
+    assert.strictEqual(r.marketPriceTier, "NM");
+    assert.strictEqual(r.marketPrice, 38.54, "the row that already worked is unchanged");
+    assert.deepStrictEqual(r.altPrintings, []);
+  });
+
+  await test("NINETALES: the $19.61 bid the working row showed is reproduced exactly", async () => {
+    // Pins the whole pricing model against the one live figure we can check
+    // against a real panel: 42352 NM $38.54 -> Bid $19.61 (Normal tier).
+    installTcgMock(NINETALES_TCG);
+    const r = await callPriceApi({
+      tcgPlayerId: "42352",
+      primaryPrinting: "Holofoil",
+      stampType: "none",
+      preferCommonPrinting: true,
+    });
+    assert.strictEqual(r.sellThrough.tier, "Normal");
+    assert.strictEqual(r.conditionsSuggestedBid.NM, 19.61);
+  });
+
+  await test("NINETALES: the main single-match path's default printing is UNCHANGED", async () => {
+    // preferCommonPrinting is absent on every caller except a disclosure
+    // row, and absent must mean exactly the old behaviour: PPT's
+    // primaryPrinting first, stamp preference second.
+    installTcgMock(NINETALES_TCG);
+    const r = await callPriceApi({
+      tcgPlayerId: "107008",
+      primaryPrinting: "1st Edition Holofoil",
+      stampType: "1st Edition",
+    });
+    assert.strictEqual(r.priceVariantUsed, "1st Edition Holofoil");
+    const noPrimary = await callPriceApi({ tcgPlayerId: "107008", primaryPrinting: null, stampType: "1st Edition" });
+    assert.strictEqual(noPrimary.priceVariantUsed, "1st Edition Holofoil", "stamp preference still applies");
+  });
+
+  await test("NINETALES: pickDefaultVariantKey with the flag ignores BOTH primaryPrinting and the stamp read", () => {
+    const variants = { "Unlimited Holofoil": {}, "1st Edition Holofoil": {} };
+    assert.strictEqual(
+      M.pickDefaultVariantKey(variants, { stampType: "1st Edition" }, "1st Edition Holofoil", null, {
+        preferCommonPrinting: true,
+      }),
+      "Unlimited Holofoil"
+    );
+    // Both signals point at 1st Edition without the flag.
+    assert.strictEqual(
+      M.pickDefaultVariantKey(variants, { stampType: "1st Edition" }, "1st Edition Holofoil", null),
+      "1st Edition Holofoil"
+    );
+    assert.strictEqual(
+      M.pickDefaultVariantKey(variants, { stampType: "1st Edition" }, null, null),
+      "1st Edition Holofoil"
+    );
+  });
+
+  await test("NINETALES: the Machoke-shaped pair (bare 'Unlimited'/'1st Edition') resolves the same way", () => {
+    // #105's 107031 Machoke Shadowless has primaryPrinting "1st Edition" and
+    // printingsAvailable ['1st Edition','Unlimited'] — the same handling from
+    // the other direction, so the flag must cover the unsuffixed names too.
+    const variants = { Unlimited: {}, "1st Edition": {} };
+    assert.strictEqual(
+      M.pickDefaultVariantKey(variants, { stampType: "1st Edition" }, "1st Edition", null, {
+        preferCommonPrinting: true,
+      }),
+      "Unlimited"
+    );
+  });
+
+  await test("NINETALES: buildAltPrintings never invents a price and skips the chosen key", () => {
+    assert.deepStrictEqual(M.buildAltPrintings(null, "x"), []);
+    assert.deepStrictEqual(
+      M.buildAltPrintings({ A: { label: "A", conditions: { NM: 1 } } }, "A"),
+      [],
+      "the chosen printing is not listed as an alternate of itself"
+    );
+    assert.deepStrictEqual(
+      M.buildAltPrintings({ A: { label: "A", conditions: { NM: 1 } }, B: { label: "B", conditions: {} } }, "A"),
+      [],
+      "a printing with no live condition is omitted, not shown as $0"
+    );
+  });
+
+  await test("NINETALES: basePriceTierForConditions prefers NM, then the best present tier, else null", () => {
+    assert.strictEqual(M.basePriceTierForConditions({ NM: 1, LP: 2 }), "NM");
+    assert.strictEqual(M.basePriceTierForConditions({ LP: 2, MP: 3 }), "LP");
+    assert.strictEqual(M.basePriceTierForConditions({ DMG: 9 }), "DMG");
+    assert.strictEqual(M.basePriceTierForConditions({}), null);
+    assert.strictEqual(M.basePriceTierForConditions(null), null);
+  });
+
+  await test("NINETALES: every disclosure row carries preferCommonPrinting", async () => {
+    // Guards the wiring: the flag is useless if buildAmbiguityDisclosure
+    // stops setting it. Goes through the real sibling-cap path.
+    installPptMock({
+      Ninetales: F.padTo([F.BASE_NINETALES_12, F.BASE_NINETALES_12_SHADOWLESS], 30, "Ninetales"),
+      "Ninetales|offset=30": F.padTo([], 30, "NinetalesP2"),
+    });
+    const r = await M.lookupCardPPT(
+      {
+        found: true,
+        confidence: "High",
+        cardName: "Ninetales",
+        cardNumber: "12/102",
+        hp: "80",
+        subtype: null,
+        setName: "Base Set",
+        attackName: "Lure",
+        attackNameEnglish: null,
+        language: "English",
+        stampType: "1st Edition",
+      },
+      "ninetales-shadowless",
+      null
+    );
+    assert.ok(r.siblingAmbiguity, "the pair still discloses");
+    const ids = r.siblingAmbiguity.candidates.map((c) => c.tcgPlayerId).sort();
+    assert.deepStrictEqual(ids, ["107008", "42352"]);
+    for (const c of r.siblingAmbiguity.candidates) {
+      assert.strictEqual(c.pricingLookup.preferCommonPrinting, true, `row ${c.tcgPlayerId}`);
+    }
+    assert.strictEqual(r.pricingLookup, null, "still no single price — the disclosure is unchanged");
+  });
+
+  await test("TEST VALIDITY: the pre-fix pickDefaultVariantKey picks the NM-less 1st Edition printing", () => {
+    // Replays against the commit before this fix and asserts the old
+    // behaviour reproduces there, so this section cannot pass vacuously.
+    const { mod, cleanup } = loadPreFixModule("ninetales-prefix", NINETALES_PRE_FIX_REF);
+    try {
+      const variants = { "Unlimited Holofoil": {}, "1st Edition Holofoil": {} };
+      // The 5th arg simply does not exist on the old signature.
+      assert.strictEqual(
+        mod.pickDefaultVariantKey(variants, { stampType: "1st Edition" }, "1st Edition Holofoil", null, {
+          preferCommonPrinting: true,
+        }),
+        "1st Edition Holofoil"
+      );
+      assert.strictEqual(typeof mod.basePriceTierForConditions, "undefined");
+      assert.strictEqual(typeof mod.buildAltPrintings, "undefined");
+    } finally {
+      cleanup();
+    }
   });
 
   // ----------------------------------------------------------------------

@@ -13764,3 +13764,115 @@ condition table each got *shorter*, since the head no longer carries a
 `reprint-three-rows` is still the tallest at 724px (4px of headroom) and
 has no condition table, so it is untouched by this change. 168 local tests
 pass (backend-only suite, run as a regression guard).
+
+## #114 — 2026-11-01 — The Shadowless disclosure row said "no price" over three real prices
+
+Live production scan `45b271ae-d812-4164-af7e-c4af2dba9c5e` on
+`dpl_7FoFB9NLBQzo4en9eJtJFdYzEKZv`, 00:12:38Z. A Base Set Ninetales 012/102
+produced the expected two-row disclosure, and the Shadowless row was blank:
+
+| row | tcgPlayerId | set | shown |
+|---|---|---|---|
+| 1 | 42352 | Base Set | **$38.54 / Bid $19.61** |
+| 2 | 107008 | Base Set (Shadowless) | **"no price"** |
+
+Logs and the captured payloads:
+`investigations/2026-11-01-ninetales-shadowless/` (`runtime-logs.md`,
+`findings.md`, `tcgplayer-{107008,42352,106997}.json`,
+`ppt-{107008,106997}.json`).
+
+### The data was never missing
+
+Both rows fetched successfully — `[tcgplayer-price] productId=107008 skus=8`
+is in the logs. Live TCGplayer for 107008:
+
+| variant | NM | LP | MP | HP | DMG |
+|---|---|---|---|---|---|
+| Unlimited Holofoil | **172.83** | 82.35 | 41.56 | 31.36 | 23.40 |
+| **1st Edition Holofoil** | **none** | 400.00 | 350.50 | 338.88 | — |
+
+### Cause 1 — the row renderer read NM and only NM
+
+`fetchAndRenderSiblingPrices` took `priceData.conditionPrices.NM`, and
+`fillSiblingRow` printed `"no price"` whenever that was null. The chosen
+printing was 1st Edition Holofoil, which has **no Near Mint SKU at all**, so
+three genuine live prices were fetched, returned by `/api/price`, and then
+thrown away by the row.
+
+Not Shadowless-specific: **any** disclosure row whose chosen printing lacks a
+recent NM sale blanked. The single-match panel never had this bug — it already
+falls back to the best present tier (`basePriceTier` / `baseConditionTier`).
+
+### Cause 2 — PPT's `primaryPrinting` chose that printing
+
+| tcgPlayerId | card | `primaryPrinting` | NM at that printing? | outcome |
+|---|---|---|---|---|
+| 107008 | Ninetales 012/102 Shadowless | `1st Edition Holofoil` | **no** | blank |
+| 106997 | Blastoise 002/102 Shadowless | `Unlimited Holofoil` | yes | priced, #109 |
+
+**That single field is the entire difference from #109's Blastoise**, which
+priced fine at $896.06 through identical code. `primaryPrinting` is whichever
+printing PPT last happened to price; on `Base Set (Shadowless)` products it is
+often the rare 1st Edition one.
+
+The stamp read was no safer: the primary model read `stampType "1st Edition"`
+and the legacy model `"none"`, and `pickDefaultVariantKey`'s `is1st` branch
+would have picked the same NM-less printing on its own. Same false-negative
+direction CLAUDE.md's DO-NOT list warns about.
+
+### Machoke 034/102 (#105's open finding): yes, same handling
+
+107031 (`Base Set (Shadowless)`, Machoke) carries `primaryPrinting:
+"1st Edition"` and `printingsAvailable: ['1st Edition','Unlimited']` — the
+same mechanism with the unsuffixed printing names, so a Machoke row would
+default to 1st Edition for the same reason. Covered by a test. #105's own
+separate recommendation (exclude opposite-Shadowless pairs from
+`sameSiblingGroup` and let the `shadowlessSibling` dropdown merge handle them)
+is **untouched and still open** — this makes the rows honest while they are
+still disclosed.
+
+### Fix
+
+1. `pickDefaultVariantKey` gains an `opts` arg. `opts.preferCommonPrinting`
+   ignores PPT's `primaryPrinting` **and** the vision stamp read, falling
+   through to the existing non-1st preference order — which already prefers
+   `unlimited holofoil` over `1st edition holofoil`. **No new preference list,
+   and the single-match path is unchanged when the flag is absent.**
+2. `buildAmbiguityDisclosure` sets `preferCommonPrinting: true` on every row's
+   `pricingLookup`.
+3. `basePriceTierForConditions` extracted (one definition of the
+   NM-or-best-present rule) and `buildAltPrintings` added. `/api/price` now
+   returns **`marketPriceTier`** — which condition `marketPrice` came from,
+   previously unknowable to any caller — and **`altPrintings`**, every other
+   printing of the product that has a real price, with its own tier.
+4. `extension/content.js` prices the row off `marketPriceTier`, names the tier
+   when it isn't NM, and shows one line per alternate printing
+   (`1st Ed $400.00 LP`). **`extension/content.js` and `content.css` changed —
+   the extension needs a manual reload in `chrome://extensions`.**
+
+### Result, local, over the real captured payloads
+
+```
+row 42352   printing Holofoil            $38.54      Bid $19.61  Normal  alt (none)
+row 107008  printing Unlimited Holofoil  $172.83     Bid $87.89  Slow    alt 1st Edition Holofoil $400.00 LP
+```
+
+Row 42352 reproduces the live panel's `$38.54 / Bid $19.61` exactly, which is
+what confirms the harness is faithful. Nothing is invented: a product with no
+live price anywhere still reads "no price".
+
+### Tests — 183 pass, 0 fail (`node test/alakazam.test.js`)
+
+Up from 168. 15 new cases: the no-NM fact asserted off the captured payload;
+the row choosing the common printing; price **and** bid present at the
+reported tier; the `marketPriceTier` ∈ `conditionPrices` invariant the
+frontend depends on, checked on three printings including one with no NM;
+the old behaviour still reachable with the flag off (1st Edition at LP $400);
+`altPrintings` content and its empty case; the $19.61 reproduction; the
+single-match path pinned unchanged with the flag absent; the flag overriding
+both signals; the Machoke-shaped bare `Unlimited`/`1st Edition` pair;
+`buildAltPrintings` never inventing a price; `basePriceTierForConditions`'s
+three branches; `preferCommonPrinting` present on every row out of the real
+disclosure path; and a **TEST VALIDITY** replay against `53003bb`
+(`NINETALES_PRE_FIX_REF`) asserting the pre-fix code picks the NM-less 1st
+Edition printing and has neither new export.

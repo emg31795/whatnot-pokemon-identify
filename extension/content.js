@@ -945,9 +945,20 @@
           // Same staleness guard as fetchAndRenderPricing: never let a slow
           // response paint over a newer scan's panel.
           if (!lastResultData || lastResultData.requestId !== identifyData.requestId) return;
-          const nmPrice = priceData.conditionPrices ? priceData.conditionPrices.NM : null;
-          const nmBid = priceData.conditionsSuggestedBid ? priceData.conditionsSuggestedBid.NM : null;
-          fillSiblingRow(cand.tcgPlayerId, nmPrice, nmBid, priceData.pricingError);
+          // FIX (2026-11-01, Ninetales 012/102 Shadowless): this read
+          // `conditionPrices.NM` and nothing else, so a printing whose live
+          // sales are LP/MP/HP only rendered "no price" even though
+          // /api/price had returned three real prices for it. Price off the
+          // backend's own `marketPriceTier` — the same NM-or-best-present
+          // rule the main panel's headline uses — so a row blanks only when
+          // the product genuinely has no live price anywhere.
+          const tier = priceData.marketPriceTier || "NM";
+          const price = priceData.conditionPrices ? priceData.conditionPrices[tier] : null;
+          const bid = priceData.conditionsSuggestedBid ? priceData.conditionsSuggestedBid[tier] : null;
+          fillSiblingRow(cand.tcgPlayerId, price, bid, priceData.pricingError, {
+            tier,
+            altPrintings: priceData.altPrintings,
+          });
         })
         .catch((e) => {
           console.warn("[wnpk] sibling price fetch failed:", e);
@@ -957,21 +968,61 @@
     });
   }
 
-  function fillSiblingRow(tcgPlayerId, nmPrice, nmBid, errorText) {
+  function fillSiblingRow(tcgPlayerId, rowPrice, rowBid, errorText, meta = {}) {
     const cell = $(`#wnpk-sib-price-${tcgPlayerId}`);
     if (!cell) return;
-    if (errorText || nmPrice == null) {
+    if (errorText || rowPrice == null) {
       cell.innerHTML = `<span class="wnpk-row-thin">${escapeHtml(errorText || "no price")}</span>`;
       return;
     }
     // Same two-line shape as the graded cell in siblingPriceCellHtml.
     const bid =
-      nmBid == null
+      rowBid == null
         ? `<span class="wnpk-row-bid wnpk-bid-none">Bid —</span>`
-        : nmBid <= 0
+        : rowBid <= 0
         ? `<span class="wnpk-row-bid wnpk-bid-skip">Bid Skip</span>`
-        : `<span class="wnpk-row-bid">Bid $${nmBid.toFixed(2)}</span>`;
-    cell.innerHTML = `<span class="wnpk-row-nm">$${nmPrice.toFixed(2)}</span>${bid}`;
+        : `<span class="wnpk-row-bid">Bid $${rowBid.toFixed(2)}</span>`;
+    // The tier is named ONLY when it isn't NM. Every other price in the panel
+    // is NM unless it says otherwise, and a row quietly showing an LP figure
+    // under the same styling as an NM one would overstate the card.
+    const tier = meta.tier && meta.tier !== "NM" ? ` <span class="wnpk-row-tier">${escapeHtml(meta.tier)}</span>` : "";
+    cell.innerHTML = `<span class="wnpk-row-nm">$${rowPrice.toFixed(2)}${tier}</span>${bid}${altPrintingsHtml(
+      meta.altPrintings
+    )}`;
+  }
+
+  // ADDED 2026-11-01 (Ninetales 012/102 Shadowless): a disclosure row now
+  // defaults to the product's COMMON printing, which on a Base Set
+  // (Shadowless) product means Unlimited rather than 1st Edition. That is
+  // only honest if the printing being left out is still on screen, so each
+  // alternate printing with a real live price gets one line here, with its
+  // own condition tier — a rare printing often has no NM sale at all.
+  function altPrintingsHtml(alts) {
+    if (!Array.isArray(alts) || !alts.length) return "";
+    return alts
+      .map(
+        (a) =>
+          `<span class="wnpk-row-alt">${escapeHtml(shortPrintingLabel(a.label))} $${a.price.toFixed(2)}${
+            a.tier && a.tier !== "NM" ? " " + escapeHtml(a.tier) : ""
+          }</span>`
+      )
+      .join("");
+  }
+
+  // "1st Edition Holofoil" -> "1st Ed", for a right-aligned cell about 90px
+  // wide. The edition word is what separates the two printings of a
+  // Shadowless product (both are holo), so it is what survives; where
+  // holo-ness IS the distinction — "Holofoil" vs "Reverse Holofoil" — both
+  // keep it. Shortens only these known TCGplayer printing names; an
+  // unrecognized label is passed through whole rather than truncated into
+  // something that could be read as a different printing.
+  function shortPrintingLabel(label) {
+    return String(label == null ? "" : label)
+      .replace(/\b1st Edition(\s+Holofoil)?\b/i, "1st Ed")
+      .replace(/\bUnlimited(\s+Holofoil)?\b/i, "Unlimited")
+      .replace(/\bReverse Holofoil\b/i, "Rev Holo")
+      .replace(/\bHolofoil\b/i, "Holo")
+      .trim();
   }
 
   // HOISTED 2026-09-10 (identify/pricing decoupling) from inner functions

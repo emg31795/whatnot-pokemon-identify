@@ -697,6 +697,81 @@ const SHINING_CELEBI_717001 = {
   imageCdnUrl: "https://tcgplayer-cdn.tcgplayer.com/product/717001_in_800x800.jpg",
 };
 
+// ---------------------------------------------------------------------------
+// Ninetales 012/102 — the 2026-11-01 Shadowless disclosure-row pair
+// ---------------------------------------------------------------------------
+// Real TCGplayer price/history detailed?range=quarter payloads, captured
+// 2026-11-01 during the investigation
+// (investigations/2026-11-01-ninetales-shadowless/tcgplayer-*.json), reduced
+// to the fields buildLivePriceVariantsFromTCGPlayer actually reads. Prices
+// are left as TCGplayer's own strings, exactly as the API returns them.
+//
+// The whole point of these two: 107008's **1st Edition Holofoil has no Near
+// Mint SKU at all** (LP/MP/HP only), while its Unlimited Holofoil does. The
+// disclosure row read conditionPrices.NM and nothing else, so a row with
+// three real live prices rendered "no price".
+
+const TCG_NINETALES_107008_SHADOWLESS = [
+  { variant: "Unlimited Holofoil", condition: "Lightly Played", totalQuantitySold: "7", buckets: [{ marketPrice: "82.35" }] },
+  { variant: "Unlimited Holofoil", condition: "Moderately Played", totalQuantitySold: "22", buckets: [{ marketPrice: "41.56" }] },
+  { variant: "Unlimited Holofoil", condition: "Damaged", totalQuantitySold: "23", buckets: [{ marketPrice: "23.4" }] },
+  { variant: "Unlimited Holofoil", condition: "Near Mint", totalQuantitySold: "5", buckets: [{ marketPrice: "172.83" }] },
+  { variant: "Unlimited Holofoil", condition: "Heavily Played", totalQuantitySold: "21", buckets: [{ marketPrice: "31.36" }] },
+  { variant: "1st Edition Holofoil", condition: "Heavily Played", totalQuantitySold: "2", buckets: [{ marketPrice: "338.88" }] },
+  { variant: "1st Edition Holofoil", condition: "Lightly Played", totalQuantitySold: "0", buckets: [{ marketPrice: "400" }] },
+  { variant: "1st Edition Holofoil", condition: "Moderately Played", totalQuantitySold: "0", buckets: [{ marketPrice: "350.5" }] },
+];
+
+const TCG_NINETALES_42352_BASE = [
+  { variant: "Holofoil", condition: "Moderately Played", totalQuantitySold: "379", buckets: [{ marketPrice: "13.46" }] },
+  { variant: "Holofoil", condition: "Heavily Played", totalQuantitySold: "280", buckets: [{ marketPrice: "11.93" }] },
+  { variant: "Holofoil", condition: "Lightly Played", totalQuantitySold: "226", buckets: [{ marketPrice: "19.65" }] },
+  { variant: "Holofoil", condition: "Damaged", totalQuantitySold: "192", buckets: [{ marketPrice: "5.95" }] },
+  { variant: "Holofoil", condition: "Near Mint", totalQuantitySold: "83", buckets: [{ marketPrice: "38.54" }] },
+];
+
+// PPT catalog rows for the same pair. `primaryPrinting` is the ONLY field
+// that differs in kind from 106997 Blastoise (which reads "Unlimited
+// Holofoil" and therefore priced fine in #109) — it is what steered this row
+// to the printing with no NM sale.
+const BASE_NINETALES_12 = {
+  tcgPlayerId: "42352",
+  setName: "Base Set",
+  name: "Ninetales",
+  cardNumber: "012/102",
+  totalSetNumber: null,
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "80",
+  stage: "Stage 1",
+  attacks: ["[1] Lure  \r\n<br>Choose 1 of your opponent's Benched Pokemon and switch it with 1 of the Defending Pokemon."],
+  pokemonType: "Fire",
+  pokedexNumbers: [38],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/42352",
+  prices: { market: 36.51, low: 5.95, listings: 212, primaryPrinting: "Holofoil" },
+  printingsAvailable: ["Holofoil"],
+  externalCatalogId: "base1-12",
+};
+
+const BASE_NINETALES_12_SHADOWLESS = {
+  tcgPlayerId: "107008",
+  setName: "Base Set (Shadowless)",
+  name: "Ninetales",
+  cardNumber: "012/102",
+  totalSetNumber: null,
+  rarity: "Holo Rare",
+  cardType: "Pokemon",
+  hp: "80",
+  stage: "Stage 1",
+  attacks: ["[1] Lure  \r\n<br>Choose 1 of your opponent's Benched Pokemon and switch it with 1 of the Defending Pokemon."],
+  pokemonType: "Fire",
+  pokedexNumbers: [38],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/107008",
+  prices: { market: 800, low: 23, listings: 58, primaryPrinting: "1st Edition Holofoil" },
+  printingsAvailable: ["Unlimited Holofoil", "1st Edition Holofoil"],
+  externalCatalogId: "base1-12",
+};
+
 module.exports = {
   CHARIZARD_EX_125,
   CHARIZARD_EX_223,
@@ -730,6 +805,10 @@ module.exports = {
   CC_VENUSAUR_15,
   BASE_VENUSAUR_15,
   BASE_VENUSAUR_15_SHADOWLESS,
+  TCG_NINETALES_107008_SHADOWLESS,
+  TCG_NINETALES_42352_BASE,
+  BASE_NINETALES_12,
+  BASE_NINETALES_12_SHADOWLESS,
   LOGGED_FILLER,
   fillerRow,
   padTo,

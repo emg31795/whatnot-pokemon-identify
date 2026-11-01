@@ -728,6 +728,20 @@
   font-variant-numeric: tabular-nums;
 }
 #wnpk-root .wnpk-row-thin { font-size: 12px; color: #9aa0a6; }
+/* ADDED 2026-11-01: the condition tier beside a row price that isn't NM, and
+   the row's other priced printings. Both are deliberately quieter than the
+   row's own price — they qualify it, they don't compete with it. */
+#wnpk-root .wnpk-row-tier {
+  font-size: 11px;
+  font-weight: 600;
+  color: #b9bcc2;
+}
+#wnpk-root .wnpk-row-alt {
+  display: block;
+  font-size: 11px;
+  color: #9aa0a6;
+  font-variant-numeric: tabular-nums;
+}
 #wnpk-root .wnpk-rows-hint {
   font-size: 12.5px;
   line-height: 1.45;
