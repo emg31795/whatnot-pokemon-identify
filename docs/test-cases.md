@@ -13876,3 +13876,63 @@ three branches; `preferCommonPrinting` present on every row out of the real
 disclosure path; and a **TEST VALIDITY** replay against `53003bb`
 (`NINETALES_PRE_FIX_REF`) asserting the pre-fix code picks the NM-less 1st
 Edition printing and has neither new export.
+
+### Preview e2e — 6/6, zero preview runtime errors
+
+Preview **`dpl_HRgKTDYHzdZvzh2uYZh9A7KUGE3p`**
+(`whatnot-pokemon-identify-18flqxhh5-leasedraftai.vercel.app`), commit
+`1103201`. **`sourceHash 4d30cd1b72d6acfe5bb6249a10f6ba273f95da3f`** from live
+`GET /api/identify` == `shasum api/identify.js` on disk, byte-exact.
+`slabLabelProbe: "on"`.
+
+**Paced deliberately around #106.** A stream WAS live at deploy time — 8
+organic `/api/identify` scans in the preceding 12 minutes — so every
+price-path case ran through **`/api/price` only**, which hits TCGplayer's
+unauthenticated endpoint and spends **zero PPT credits**, and the single
+`/api/identify` scan waited until organic traffic dropped to 1 scan / 6 min
+with PPT's `x-ratelimit-minute-remaining` checked at **50/60** first. Calls
+spaced 2s. **No 429 produced.**
+
+Identify scan (real TCGplayer product image for 42352, raw base64, no `data:`
+prefix), requestId `5514172f`:
+
+```
+found true  Ninetales  matchConfidence Low  matchBasis sibling-ambiguous
+pricingLookup null   tcgplayerUrl null   (#107 behaviour intact)
+timingMs gemini 1516, lookup 835, total 2351
+  42352   Base Set              012/102  primaryPrinting=Holofoil             preferCommonPrinting=true
+  107008  Base Set (Shadowless) 012/102  primaryPrinting=1st Edition Holofoil preferCommonPrinting=true
+```
+
+Both rows then priced by feeding `/api/price` **the candidates' own
+`pricingLookup` objects verbatim from that response** — the real chain, not
+hand-built lookups:
+
+| row | printing chosen | renders | alt line |
+|---|---|---|---|
+| 42352 | Holofoil | **$38.54   Bid $19.61** | (none) |
+| 107008 | **Unlimited Holofoil** | **$172.83   Bid $87.89** | `1st Edition Holofoil $400.00 LP` |
+
+Row 42352 is bit-for-bit the figure the live production panel showed, which is
+what proves the working row did not move.
+
+Controls:
+
+| case | printing | tier | price | bid | velocity | alt |
+|---|---|---|---|---|---|---|
+| 106997 Blastoise Shadowless (#109) | Unlimited Holofoil | NM | $894.71 | $351.73 | Stagnant | 1st Ed Holofoil $1300 MP |
+| 107008 **without** the flag | 1st Edition Holofoil | LP | $400.00 | $155.86 | Stagnant | Unlimited Holofoil $172.83 NM |
+| 114004 Pikachu XY95 | Holofoil | NM | $204.03 | $104.36 | Slow | (none) |
+
+#109 is not regressed ($894.71 vs $896.06 is live drift on the same printing),
+and with the flag absent 107008 still resolves to PPT's `primaryPrinting`
+exactly as before — the fix is scoped to disclosure rows.
+
+`get_runtime_errors` over the window: **one** group, the known-benign PPT
+abort-retry on **production** `dpl_7FoFB9...` at 00:28:39Z (organic; that
+group's `first` is 2026-10-16). **Zero errors from the preview.**
+
+**Not deployed to production — awaiting approval.** Working copy of the
+investigation (logs, captured payloads, e2e record) is on disk at
+`investigations/2026-11-01-ninetales-shadowless/`, which `.gitignore`
+deliberately excludes.
