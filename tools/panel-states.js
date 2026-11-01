@@ -247,7 +247,13 @@ window.WNPK_STATES = {
       cardImageUrl: "https://tcgplayer-cdn.tcgplayer.com/product/107008_in_800x800.jpg",
       found: true, cardName: "Ninetales", setName: "Base Set (Shadowless)",
       cardLanguage: "English", confidence: "High", matchConfidence: "Medium",
-      matchBasis: "score-only", stampType: "none",
+      matchBasis: "score-only", stampType: "1st Edition",
+      // ADDED 2026-11-01 (1st-Edition guard): one of the two vision models
+      // read a 1st Edition stamp. The price stays on Unlimited Holofoil and
+      // the panel shows the "check left of the artwork" info note pointing
+      // at the 1st Ed pill. `many-printings` has a 1st Ed printing and NO
+      // flag, so it covers the suppressed case.
+      firstEditionStampSeen: true,
       tcgplayerUrl: "https://www.tcgplayer.com/product/107008",
       pricingLookup: { tcgPlayerId: "107008" },
       usage: { estCostUsd: 0.00093 },

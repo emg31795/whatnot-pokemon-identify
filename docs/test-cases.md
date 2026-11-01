@@ -14118,3 +14118,178 @@ node tools/serve.js
 manual reload in `chrome://extensions`.** An unreloaded extension keeps the
 old dropdown; nothing breaks, because this is a pure UI swap over the same
 `priceVariants` data, but no pill or per-printing price appears until reload.
+
+## #116 — 2026-11-01 — The panel defaulted to 1st Edition on WotC-era cards
+
+**Reported:** the panel picks 1st Edition on WotC-era cards most of the time
+when the card is actually Unlimited — an overbid risk. Confirmed, measured,
+fixed. Full investigation:
+`investigations/2026-11-01-first-edition-default/findings.md`.
+
+### Investigation (read-only, no PPT calls — a stream was live)
+
+Sources: one live stream's own runtime logs, saved to the investigation
+folder before the 1-hour Hobby retention window closed; the 278 real PPT
+rows already captured in `investigations/2026-10-24-blastoise-reprint/`;
+and a replay of the real exported `pickDefaultVariantKey`.
+
+**(a) PPT `primaryPrinting`, over 278 real rows**
+
+| | |
+|---|---|
+| rows offering BOTH a 1st Edition and a non-1st printing | 10 |
+| ...`primaryPrinting` names the **1st Edition** one | **8 = 80%** |
+| ...same, excluding Base Set (Shadowless) | **7/7 = 100%** |
+
+Team Rocket 3/3, Neo Genesis 2/2, Gym Challenge 1/1, Jungle 1/1,
+Base Set (Shadowless) 1/3. #114's observation that 106997 reads
+`Unlimited Holofoil` is the exception, not the rule.
+
+**(b) The vision stamp reads, over 34 paired primary/legacy reads**
+
+| | rate |
+|---|---|
+| primary model reads `stampType: "1st Edition"` | **6/34 = 18%** |
+| legacy model reads `stampType: "1st Edition"` | **6/34 = 18%** |
+| both agree on 1st Edition | 3/34 = 9% |
+| the two models **disagree** | **6/34 = 18%** |
+
+Nine scans had at least one model calling 1st Edition; on **6 of those 9
+(67%)** the other model said "none". The disagreements run both ways, so
+neither model is the reliable one.
+
+**Which signal drove the default:** `primaryPrinting`, checked first and
+unconditionally. Three distinct routes to a 1st Edition default were found,
+confirmed by replaying the real function:
+
+1. `primaryPrinting` exact-matches a 1st Edition key — the dominant route,
+   and the ONLY one that can fire on a non-holo WotC card, because plain
+   `"1st edition"` appears in **neither** preference order.
+2. The stamp read, **on holo products only**: `is1st` reorders the list to
+   start `["1st edition holofoil", …]`, so one model's read decides it
+   whenever `primaryPrinting` missed.
+3. **A fully tag-suffixed key set (`"… (Shadowless)"`) matches no preference
+   entry at all and fell through to `keys[0]` — raw object insertion order,
+   consulting no signal whatsoever.** A latent bug, not a judgement call.
+
+**Cost, from the same stream's logs:** 5 of 8 scans whose match had live
+variants hit a dual-printing product.
+
+| requestId | 1st Edition | Unlimited | overstatement |
+|---|---|---|---|
+| `a0602529` Brock's Vulpix | $16.98 | $8.01 | 2.1x |
+| `4c6140c6` Graveler | $4.41 | $0.85 | **5.2x** |
+| `cd69a0a7` Erika's Exeggcute | $6.67 | $1.61 | 4.1x |
+| `7fb7772d` Sabrina's Haunter | **$64.53** | **$25.21** | 2.6x |
+| `09e5995b` Brock's Vulpix | $16.98 | $8.01 | 2.1x |
+
+Median **2.6x**, max **5.2x**, direction **overbidding**.
+
+### The fix
+
+**`isFirstEditionPrintingKey`** (anchored prefix test, tolerant of the
+`" (Shadowless)"` tag suffix) filters the key set at the TOP of
+`pickDefaultVariantKey`, before `primaryPrinting`, before the stamp read and
+before the preference order. When a product offers both kinds, the 1st
+Edition keys are simply not candidates for the default. They stay in
+`priceVariants` with their real prices, on their own pill, and in
+`altPrintings`.
+
+It is **a guard, never a chooser**: with no ordinary printing to fall back on
+(a 1st-Edition-only product) the behaviour is unchanged. Filtering first also
+closes route 3, because the `keys[0]` fallback can no longer land on a 1st
+Edition printing.
+
+**`firstEditionStampSeen`** (new identify response field) is true when
+**either** model read a 1st Edition stamp — an OR, deliberately, because
+taking the primary read alone would miss a third of real stamp sightings
+given the 67% disagreement rate. An OR is the right shape precisely because
+this is a prompt and not a price: a false positive costs a glance, a false
+negative costs a missed 2-5x printing. The legacy stamp is captured by a
+`.then` recorder at promise creation, so response assembly awaits nothing
+and adds no latency; a read still in flight simply leaves the flag false.
+
+The extension renders it as an **info** warning above the pills:
+
+> ⓘ **Possible 1st Edition stamp — check left of the artwork**
+> *Why?* — A vision model read a 1st Edition stamp on this card, but the two
+> models disagree about the stamp on most cards, so the price shown is the
+> ordinary printing — the safer assumption. If you can see the stamp, the
+> "1st Ed Holo" pill is the one you want. It is priced at $400.00 LP — tap
+> that pill to switch.
+
+Suppressed when there is no 1st Edition pill to point at, and when every
+printing is 1st Edition. The `DETECTED` marker is unaffected: it tracks
+`priceVariantUsed`, which the guard now keeps off the 1st Ed pill, so a
+stamp read alone can never mark it.
+
+**`/api/price` now logs `DEFAULT PRINTING`** with the chosen key, all
+available keys, `primaryPrinting`, `stampType`, `tag` and
+`preferCommonPrinting`. The file previously logged nothing but the
+Shadowless-sibling merge, which is why the default printing — the one field
+that decides the price and the bid — had to be derived by replaying the
+function offline rather than read from logs.
+
+### Relationship to test #7 and the 2026-08-26 revert
+
+Test #7's Koffing (Team Rocket 58/82) was **physically confirmed 1st
+Edition** by the user while Gemini read the stamp as "none". That is why the
+2026-08-26 "force the default away from 1st Edition when the stamp reads
+none" fix was reverted the next day, and why CLAUDE.md still says **DO NOT
+auto-flip the default printing on a vision stamp read**.
+
+**That rule still stands and this change does not break it.** The reverted
+fix elevated the stamp read above `primaryPrinting`. This guard trusts
+*neither*: it is unconditional. On Koffing it reaches the same default the
+reverted fix would have, by a different route and for a different reason —
+and it underbids that card ($0.74 against the real $2.20), which is the
+acceptable direction, with the correct printing one pill click away and the
+note pointing at it. The trade is explicit: a confirmed-1st-Edition card is
+underpriced until one click, in exchange for removing a 2.6x median overbid
+on the far more common Unlimited card.
+
+### Tests — 190 pass, 0 fail (183 before)
+
+Three existing #114 tests asserted the behaviour this change inverts and were
+**rewritten, not deleted** — they now pin the new rule and keep their
+documentary value (the LP hole, the disclosure row, the flag's remaining job).
+
+| test | asserts |
+|---|---|
+| `GUARD: never auto-selects 1st Edition, whatever either signal says` | the full cross-product — 4 key shapes x 6 `primaryPrinting` x 4 `stampType` x 2 flag states = **192 combinations**, none returns a 1st Edition key |
+| `GUARD: the tagged Shadowless pair no longer falls through to keys[0]` | both insertion orders resolve to `Unlimited Holofoil (Shadowless)` |
+| `GUARD: a 1st-Edition-ONLY product is unchanged` | the guard never invents a printing |
+| `GUARD: BLASTOISE 106997` | `Unlimited Holofoil`, $894.71 NM, alt `1st Ed Holofoil $1300.00 MP` |
+| `GUARD: MACHOKE 107031` | bare-key pair, `primaryPrinting "1st Edition"` → `Unlimited` |
+| `GUARD: KOFFING (test #7)` | → `Unlimited` $0.74, 1st Ed pill present at test #7's real $2.20 |
+| `GUARD: a modern product with no 1st Edition printing` | completely unaffected, incl. the pre-existing Holofoil-over-Normal preference |
+| `NINETALES 107008: the SINGLE-MATCH path now defaults to Unlimited too` | 4 signal combinations, all → `Unlimited Holofoil` $172.83 / Bid $87.89 |
+| `NINETALES: the 1st Edition printing is still PRESENT at LP` | still in `priceVariants` at LP $400, still has the NM hole, still in `altPrintings` |
+
+**#114's disclosure path is unchanged** — same `priceVariantUsed`, same
+$172.83 / Bid $87.89, same `altPrintings`, all its own tests untouched and
+passing.
+
+Fixture provenance is stated per fixture in `test/fixtures.js`: 106997's two
+figures and Koffing's $2.20 are real observed numbers; 107031's prices and
+the modern control are shaped, and nothing asserts a shaped number against
+live data.
+
+### Harness heights — all 12 states, all under the 728px budget
+
+Only the state carrying the new note moves.
+
+| state | before | after | Δ |
+|---|---|---|---|
+| printing-no-nm | 577 | **661** | **+84** (the info note) |
+| every other state | — | unchanged | 0 |
+
+Tightest remains `reprint-three-rows` at 724px. **Second measurement note
+for the harness:** keep the browser pane VISIBLE while measuring — the loop
+awaits `requestAnimationFrame`, which never fires in a hidden pane, so the
+page sits at "measuring…" forever. This cost a confused minute here.
+
+**`extension/content.js` changed — the extension needs a manual reload in
+`chrome://extensions`.** The backend half is independently effective: an
+unreloaded extension still gets the corrected default printing and price, it
+just shows no 1st Edition note.

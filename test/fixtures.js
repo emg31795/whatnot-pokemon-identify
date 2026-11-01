@@ -772,7 +772,69 @@ const BASE_NINETALES_12_SHADOWLESS = {
   externalCatalogId: "base1-12",
 };
 
+// ---------------------------------------------------------------------------
+// 1st-Edition guard (2026-11-01) — the dual-printing products
+// ---------------------------------------------------------------------------
+// PROVENANCE, stated per fixture because it differs:
+//   * 106997 Blastoise — the two figures are REAL, observed on production in
+//     #114's own control run ("Unlimited Holofoil $894.71 Bid $351.73 |
+//     1st Ed Holofoil $1300.00 MP", CLAUDE.md). The surrounding condition
+//     rows are shaped, not captured.
+//   * 107031 Machoke — printingsAvailable/primaryPrinting are REAL (#105,
+//     recorded in CLAUDE.md). No price payload was ever captured for it, so
+//     every number here is SHAPED to exercise the bare "1st Edition" /
+//     "Unlimited" key pair.
+//   * Koffing 58/82 — $2.20 for the 1st Edition printing is the REAL figure
+//     from test #7 (2026-08-26). The Unlimited figure is SHAPED.
+// None of these assert a dollar amount against live data; they exist to pin
+// WHICH printing is selected.
+
+const TCG_BLASTOISE_106997_SHADOWLESS = [
+  { variant: "Unlimited Holofoil", condition: "Near Mint", totalQuantitySold: "11", buckets: [{ marketPrice: "894.71" }] },
+  { variant: "Unlimited Holofoil", condition: "Lightly Played", totalQuantitySold: "19", buckets: [{ marketPrice: "702.00" }] },
+  { variant: "Unlimited Holofoil", condition: "Moderately Played", totalQuantitySold: "24", buckets: [{ marketPrice: "540.10" }] },
+  { variant: "1st Edition Holofoil", condition: "Moderately Played", totalQuantitySold: "1", buckets: [{ marketPrice: "1300" }] },
+];
+
+// Bare "1st Edition" / "Unlimited" keys — the shape #105 recorded for
+// 107031, and the shape every non-holo WotC card uses. It matters on its own
+// because plain "1st edition" appears in NEITHER preference order, so before
+// the guard this pair was decided by primaryPrinting alone.
+const TCG_MACHOKE_107031_SHADOWLESS = [
+  { variant: "Unlimited", condition: "Near Mint", totalQuantitySold: "64", buckets: [{ marketPrice: "7.40" }] },
+  { variant: "Unlimited", condition: "Lightly Played", totalQuantitySold: "51", buckets: [{ marketPrice: "5.80" }] },
+  { variant: "1st Edition", condition: "Near Mint", totalQuantitySold: "4", buckets: [{ marketPrice: "44.00" }] },
+];
+
+// Test #7's Koffing, Team Rocket 58/82 — the card the user PHYSICALLY
+// CONFIRMED was 1st Edition while Gemini read the stamp as "none", which is
+// why the 2026-08-26 "force the default away from 1st Edition on a stamp
+// read" fix was reverted the next day. The guard reaches the same default
+// that reverted fix did, by a different route and for a different reason:
+// it trusts NEITHER signal, rather than trusting the stamp read over
+// primaryPrinting. On this card that means underbidding — the acceptable
+// direction — with the real printing one pill click away.
+const TCG_KOFFING_TEAMROCKET = [
+  { variant: "Unlimited", condition: "Near Mint", totalQuantitySold: "88", buckets: [{ marketPrice: "0.74" }] },
+  { variant: "Unlimited", condition: "Lightly Played", totalQuantitySold: "40", buckets: [{ marketPrice: "0.55" }] },
+  { variant: "1st Edition", condition: "Near Mint", totalQuantitySold: "9", buckets: [{ marketPrice: "2.20" }] },
+];
+
+// A modern product with no 1st Edition printing at all — the control. The
+// guard must be a complete no-op here, including the pre-existing (and
+// deliberately unchanged) preference for Holofoil over Normal.
+const TCG_MODERN_NO_FIRST_EDITION = [
+  { variant: "Normal", condition: "Near Mint", totalQuantitySold: "210", buckets: [{ marketPrice: "1.19" }] },
+  { variant: "Normal", condition: "Lightly Played", totalQuantitySold: "90", buckets: [{ marketPrice: "0.95" }] },
+  { variant: "Reverse Holofoil", condition: "Near Mint", totalQuantitySold: "47", buckets: [{ marketPrice: "14.59" }] },
+  { variant: "Reverse Holofoil", condition: "Lightly Played", totalQuantitySold: "21", buckets: [{ marketPrice: "11.02" }] },
+];
+
 module.exports = {
+  TCG_BLASTOISE_106997_SHADOWLESS,
+  TCG_MACHOKE_107031_SHADOWLESS,
+  TCG_KOFFING_TEAMROCKET,
+  TCG_MODERN_NO_FIRST_EDITION,
   CHARIZARD_EX_125,
   CHARIZARD_EX_223,
   CHARIZARD_EX_223_NO_MARKET,

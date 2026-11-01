@@ -107,6 +107,22 @@ module.exports = async function handler(req, res) {
     : null;
   const chosenVariant = priceVariantUsed && priceVariants ? priceVariants[priceVariantUsed] : null;
 
+  // ADDED 2026-11-01 (1st-Edition guard). Until now this file logged nothing
+  // but the Shadowless-sibling merge, so WHICH printing the panel defaulted
+  // to — the single field that decides the price and the bid — was invisible
+  // in the logs and had to be derived by replaying pickDefaultVariantKey
+  // offline. Every input to that decision is on one greppable line now.
+  if (priceVariants) {
+    console.log(
+      `[price] requestId=${requestId} DEFAULT PRINTING chose=${JSON.stringify(priceVariantUsed)}`,
+      `from=${JSON.stringify(Object.keys(priceVariants))}`,
+      `primaryPrinting=${JSON.stringify(primaryPrinting || null)}`,
+      `stampType=${JSON.stringify(stampType || null)}`,
+      `tag=${JSON.stringify(tag || null)}`,
+      `preferCommonPrinting=${!!preferCommonPrinting}`
+    );
+  }
+
   let noPriceNote = null;
   if (!chosenVariant && !pricingError) {
     noPriceNote = "TCGplayer doesn't have complete live condition pricing for this printing yet. Check the link below for current listings.";

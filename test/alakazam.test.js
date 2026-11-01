@@ -2637,15 +2637,21 @@ async function main() {
     }
   });
 
-  await test("NINETALES: without preferCommonPrinting the 1st Edition printing is still reachable at LP", async () => {
-    // Proves the fix did not delete the old behaviour, it scoped it — and
-    // documents what the row used to show: a printing whose base tier is LP.
+  await test("NINETALES: the 1st Edition printing is still PRESENT at LP, just never the default", async () => {
+    // CHANGED 2026-11-01 (1st-Edition guard). This used to assert that
+    // without preferCommonPrinting the DEFAULT was "1st Edition Holofoil" —
+    // the behaviour the guard deliberately removes on every path, not just
+    // the disclosure row. What must survive is the data: the printing is
+    // still in priceVariants at its real LP price, reachable from its own
+    // pill, and still has the NM hole that produced "no price" in #114.
     installTcgMock(NINETALES_TCG);
     const r = await callPriceApi(shadowlessRowLookup({ preferCommonPrinting: false }));
-    assert.strictEqual(r.priceVariantUsed, "1st Edition Holofoil");
-    assert.strictEqual(r.marketPriceTier, "LP");
-    assert.strictEqual(r.marketPrice, 400);
-    assert.strictEqual(r.conditionPrices.NM, undefined, "this is the NM hole that produced 'no price'");
+    assert.strictEqual(r.priceVariantUsed, "Unlimited Holofoil", "never auto-selected");
+    const firstEd = r.priceVariants["1st Edition Holofoil"];
+    assert.ok(firstEd, "the 1st Edition pill still exists");
+    assert.strictEqual(firstEd.conditions.LP, 400);
+    assert.strictEqual(firstEd.conditions.NM, undefined, "this is the NM hole that produced 'no price'");
+    assert.deepStrictEqual(r.altPrintings, [{ label: "1st Edition Holofoil", price: 400, tier: "LP" }]);
   });
 
   await test("NINETALES: altPrintings names the printing the row is NOT showing, with its own tier", async () => {
@@ -2682,19 +2688,31 @@ async function main() {
     assert.strictEqual(r.conditionsSuggestedBid.NM, 19.61);
   });
 
-  await test("NINETALES: the main single-match path's default printing is UNCHANGED", async () => {
-    // preferCommonPrinting is absent on every caller except a disclosure
-    // row, and absent must mean exactly the old behaviour: PPT's
-    // primaryPrinting first, stamp preference second.
+  await test("NINETALES 107008: the SINGLE-MATCH path now defaults to Unlimited too", async () => {
+    // CHANGED 2026-11-01 (1st-Edition guard). This test previously pinned
+    // the opposite: that the single-match path still honoured
+    // primaryPrinting and the stamp read, and so defaulted to 1st Edition.
+    // Both signals are now measured to point the wrong way on an ordinary
+    // card (80% of real dual-printing PPT rows name 1st Edition; the two
+    // vision models contradict each other on 67% of stamp sightings), and
+    // the error direction was overbidding.
     installTcgMock(NINETALES_TCG);
-    const r = await callPriceApi({
-      tcgPlayerId: "107008",
-      primaryPrinting: "1st Edition Holofoil",
-      stampType: "1st Edition",
-    });
-    assert.strictEqual(r.priceVariantUsed, "1st Edition Holofoil");
-    const noPrimary = await callPriceApi({ tcgPlayerId: "107008", primaryPrinting: null, stampType: "1st Edition" });
-    assert.strictEqual(noPrimary.priceVariantUsed, "1st Edition Holofoil", "stamp preference still applies");
+    for (const lookup of [
+      { tcgPlayerId: "107008", primaryPrinting: "1st Edition Holofoil", stampType: "1st Edition" },
+      { tcgPlayerId: "107008", primaryPrinting: "1st Edition Holofoil", stampType: "none" },
+      { tcgPlayerId: "107008", primaryPrinting: null, stampType: "1st Edition" },
+      { tcgPlayerId: "107008", primaryPrinting: "Unlimited Holofoil", stampType: "1st Edition" },
+    ]) {
+      const r = await callPriceApi(lookup);
+      assert.strictEqual(
+        r.priceVariantUsed,
+        "Unlimited Holofoil",
+        `primaryPrinting=${lookup.primaryPrinting} stampType=${lookup.stampType}`
+      );
+      assert.strictEqual(r.marketPriceTier, "NM");
+      assert.strictEqual(r.marketPrice, 172.83);
+      assert.strictEqual(r.conditionsSuggestedBid.NM, 87.89, "the #114 production figure, now on the main path too");
+    }
   });
 
   await test("NINETALES: pickDefaultVariantKey with the flag ignores BOTH primaryPrinting and the stamp read", () => {
@@ -2705,14 +2723,151 @@ async function main() {
       }),
       "Unlimited Holofoil"
     );
-    // Both signals point at 1st Edition without the flag.
+    // CHANGED 2026-11-01: both signals used to point at 1st Edition without
+    // the flag. The guard now overrides them on every path, so the flag is
+    // no longer what separates these two cases for a 1st-Edition pair — it
+    // still matters for choosing among ORDINARY printings, which is what
+    // the rest of the preference order does.
     assert.strictEqual(
       M.pickDefaultVariantKey(variants, { stampType: "1st Edition" }, "1st Edition Holofoil", null),
-      "1st Edition Holofoil"
+      "Unlimited Holofoil"
     );
     assert.strictEqual(
       M.pickDefaultVariantKey(variants, { stampType: "1st Edition" }, null, null),
+      "Unlimited Holofoil"
+    );
+  });
+
+  // =====================================================================
+  // THE 1ST-EDITION GUARD (2026-11-01)
+  // investigations/2026-11-01-first-edition-default/findings.md
+  //
+  // A 1st Edition printing is never pre-selected while the same product
+  // offers an ordinary one. Measured cause: PPT's `primaryPrinting` names
+  // the 1st Edition printing on 8 of 10 real dual-printing rows (7/7 outside
+  // Shadowless), and across 34 paired live vision reads each model called
+  // "1st Edition" on 18% of scans while the other model contradicted it on
+  // 67% of those. Both signals pointed at the rarer, pricier printing on an
+  // ordinary card; the error direction was overbidding at a median 2.6x.
+  // =====================================================================
+
+  await test("GUARD: never auto-selects 1st Edition, whatever either signal says", () => {
+    // The full cross-product, asserted as a property rather than case by
+    // case: for any product that has both kinds of printing, no combination
+    // of primaryPrinting and stampType may return a 1st Edition key.
+    const shapes = {
+      "bare pair (non-holo WotC)": { Unlimited: {}, "1st Edition": {} },
+      "holo pair": { "Unlimited Holofoil": {}, "1st Edition Holofoil": {} },
+      "tagged Shadowless pair": {
+        "1st Edition Holofoil (Shadowless)": {},
+        "Unlimited Holofoil (Shadowless)": {},
+      },
+      "three printings": { Normal: {}, "Reverse Holofoil": {}, "1st Edition": {} },
+    };
+    const primaries = [null, "1st Edition", "Unlimited", "1st Edition Holofoil", "Unlimited Holofoil", "Holofoil"];
+    const stamps = ["none", "1st Edition", "other", null];
+    let checked = 0;
+    for (const [name, variants] of Object.entries(shapes)) {
+      const tag = name.includes("Shadowless") ? "Shadowless" : null;
+      for (const pp of primaries) {
+        for (const st of stamps) {
+          for (const opts of [{}, { preferCommonPrinting: true }]) {
+            const got = M.pickDefaultVariantKey(variants, { stampType: st }, pp, tag, opts);
+            assert.ok(
+              got && !/^1st\s+edition\b/i.test(got),
+              `${name}: primaryPrinting=${pp} stampType=${st} prefer=${!!opts.preferCommonPrinting} -> ${got}`
+            );
+            checked++;
+          }
+        }
+      }
+    }
+    assert.strictEqual(checked, 4 * 6 * 4 * 2, "the whole cross-product really ran");
+  });
+
+  await test("GUARD: the tagged Shadowless pair no longer falls through to keys[0]", () => {
+    // The latent hole the preference order never covered: a fully tagged key
+    // set matches no preference entry, so the old code returned keys[0] —
+    // raw object insertion order, consulting no signal at all. Asserted in
+    // BOTH insertion orders, since that is precisely what used to decide it.
+    const firstEdFirst = { "1st Edition Holofoil (Shadowless)": {}, "Unlimited Holofoil (Shadowless)": {} };
+    const unlimitedFirst = { "Unlimited Holofoil (Shadowless)": {}, "1st Edition Holofoil (Shadowless)": {} };
+    for (const v of [firstEdFirst, unlimitedFirst]) {
+      assert.strictEqual(
+        M.pickDefaultVariantKey(v, { stampType: "none" }, null, "Shadowless"),
+        "Unlimited Holofoil (Shadowless)"
+      );
+    }
+  });
+
+  await test("GUARD: a 1st-Edition-ONLY product is unchanged — the guard never invents a printing", () => {
+    // It is a guard, not a chooser. With no ordinary printing to fall back
+    // on, the 1st Edition printing is all there is and must still be picked.
+    const only = { "1st Edition Holofoil": {} };
+    assert.strictEqual(M.pickDefaultVariantKey(only, { stampType: "none" }, null, null), "1st Edition Holofoil");
+    assert.strictEqual(
+      M.pickDefaultVariantKey(only, { stampType: "none" }, "1st Edition Holofoil", null),
       "1st Edition Holofoil"
+    );
+  });
+
+  await test("GUARD: BLASTOISE 106997 defaults to Unlimited Holofoil, 1st Ed stays on its own pill", async () => {
+    installTcgMock({ "106997": F.TCG_BLASTOISE_106997_SHADOWLESS });
+    const r = await callPriceApi({
+      tcgPlayerId: "106997",
+      primaryPrinting: "Unlimited Holofoil",
+      stampType: "1st Edition",
+    });
+    assert.strictEqual(r.priceVariantUsed, "Unlimited Holofoil");
+    assert.strictEqual(r.marketPrice, 894.71, "#114's production control figure, unchanged");
+    assert.strictEqual(r.marketPriceTier, "NM");
+    assert.deepStrictEqual(r.altPrintings, [{ label: "1st Edition Holofoil", price: 1300, tier: "MP" }]);
+  });
+
+  await test("GUARD: MACHOKE 107031 (bare keys, primaryPrinting '1st Edition') defaults to Unlimited", async () => {
+    // #105's pair, and the case the bare-key shape exists for: plain
+    // "1st edition" is in neither preference order, so before the guard this
+    // product was decided by primaryPrinting and nothing else.
+    installTcgMock({ "107031": F.TCG_MACHOKE_107031_SHADOWLESS });
+    const r = await callPriceApi({
+      tcgPlayerId: "107031",
+      primaryPrinting: "1st Edition",
+      stampType: "1st Edition",
+    });
+    assert.strictEqual(r.priceVariantUsed, "Unlimited");
+    assert.strictEqual(r.marketPrice, 7.4);
+    assert.deepStrictEqual(r.altPrintings, [{ label: "1st Edition", price: 44, tier: "NM" }]);
+  });
+
+  await test("GUARD: KOFFING (test #7, physically confirmed 1st Edition) now defaults to Unlimited", async () => {
+    // The strongest counter-case on record, kept deliberately: this card
+    // really WAS 1st Edition. The guard underbids it — $0.74 shown against
+    // the real $2.20 — which is the acceptable direction, and both the pill
+    // and the firstEditionStampSeen note recover it in one click. See the
+    // fixture comment for why this is not a re-run of the reverted
+    // 2026-08-26 fix.
+    installTcgMock({ "86495": F.TCG_KOFFING_TEAMROCKET });
+    const r = await callPriceApi({ tcgPlayerId: "86495", primaryPrinting: "1st Edition", stampType: "none" });
+    assert.strictEqual(r.priceVariantUsed, "Unlimited");
+    assert.strictEqual(r.marketPrice, 0.74);
+    assert.ok(r.priceVariants["1st Edition"], "the pill the user needs is present");
+    assert.strictEqual(r.priceVariants["1st Edition"].conditions.NM, 2.2, "at test #7's real figure");
+    assert.deepStrictEqual(r.altPrintings, [{ label: "1st Edition", price: 2.2, tier: "NM" }]);
+  });
+
+  await test("GUARD: a modern product with no 1st Edition printing is completely unaffected", async () => {
+    installTcgMock({ "90540": F.TCG_MODERN_NO_FIRST_EDITION });
+    for (const stampType of ["none", "1st Edition"]) {
+      for (const primaryPrinting of [null, "Normal", "Reverse Holofoil"]) {
+        const r = await callPriceApi({ tcgPlayerId: "90540", primaryPrinting, stampType });
+        const expected = primaryPrinting === "Normal" ? "Normal" : "Reverse Holofoil";
+        assert.strictEqual(r.priceVariantUsed, expected, `primaryPrinting=${primaryPrinting} stampType=${stampType}`);
+      }
+    }
+    // And the pre-existing Holofoil-over-Normal preference is untouched.
+    assert.strictEqual(
+      M.pickDefaultVariantKey({ Normal: {}, "Reverse Holofoil": {} }, { stampType: "none" }, null, null),
+      "Reverse Holofoil"
     );
   });
 

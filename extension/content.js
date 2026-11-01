@@ -1570,6 +1570,7 @@
           priceData.priceVariantUsed,
           identifyData && identifyData.matchConfidence
         )}</div>
+        ${firstEditionStampNoteHtml(priceData.priceVariants, identifyData)}
         ${variantPicker}
         ${conditionDetailsHtml(
           initialVariant ? initialVariant.conditions : priceData.conditionPrices,
@@ -1670,6 +1671,56 @@
       })
       .join("");
     return `<div class="wnpk-pills" id="wnpk-variant-pills" role="group" aria-labelledby="wnpk-variant-pills-label">${pills}</div>`;
+  }
+
+  // POSSIBLE 1ST EDITION (2026-11-01)
+  // -------------------------------------------------------------------
+  // The backend no longer pre-selects a 1st Edition printing while an
+  // ordinary one exists — PPT's `primaryPrinting` named the 1st Edition one
+  // on 8 of 10 real dual-printing rows, and the two vision models contradict
+  // each other on two thirds of the scans where either sees a stamp, so both
+  // signals were pointing at the rarer, pricier printing on an ordinary card
+  // and the error direction was OVERBIDDING (measured: median 2.6x, up to
+  // 5.2x). See investigations/2026-11-01-first-edition-default/findings.md.
+  //
+  // This note is what replaces that silent assertion: when EITHER model saw
+  // a stamp, say so, say where to look, and name what the 1st Edition pill
+  // is worth — then let the user decide by looking at the card. It changes
+  // no price, no bid and no confidence, and it is an `info`, not a `check`,
+  // because nothing here is wrong — there is simply a second printing worth
+  // two seconds of attention.
+  //
+  // Suppressed when there is no 1st Edition pill to point at, and when
+  // EVERY printing is 1st Edition (the price already is that printing, so
+  // there is nothing to switch to and nothing to warn about).
+  function firstEditionStampNoteHtml(priceVariants, identifyData) {
+    if (!identifyData || !identifyData.firstEditionStampSeen || !priceVariants) return "";
+    const keys = Object.keys(priceVariants);
+    const firstEd = keys.filter(isFirstEditionPrintingKey);
+    if (!firstEd.length || firstEd.length === keys.length) return "";
+
+    const v = priceVariants[firstEd[0]];
+    const tier = baseConditionTier(v && v.conditions);
+    const price = v && v.conditions ? v.conditions[tier] : null;
+    const worth =
+      price == null
+        ? "It has no live price right now."
+        : `It is priced at $${price.toFixed(2)}${tier === "NM" ? "" : " " + tier} — tap that pill to switch.`;
+    return warningsHtml([
+      WARN(
+        "info",
+        "Possible 1st Edition stamp — check left of the artwork",
+        `A vision model read a 1st Edition stamp on this card, but the two models disagree about the stamp on most cards, so the price shown is the ordinary printing — the safer assumption. If you can see the stamp, the "${pillPrintingLabel(
+          v && v.label
+        )}" pill is the one you want. ${worth}`
+      ),
+    ]);
+  }
+
+  // Mirrors api/identify.js's isFirstEditionPrintingKey: an anchored prefix
+  // test that tolerates the " (Shadowless)"-style tag suffix.
+  function isFirstEditionPrintingKey(key) {
+    return /^1st\s+edition\b/i.test(String(key == null ? "" : key).trim());
   }
 
   function setPillSelection(container, key) {

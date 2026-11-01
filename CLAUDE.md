@@ -142,8 +142,11 @@ tools/           Panel harness — the REAL content.js/content.css driven by
                  `node tools/serve.js`, then panel-harness.html (one state)
                  or panel-measure.html (heights for every state at 340px and
                  280px). Run measure TWICE — a card image not yet cached
-                 reads ~25px short. Excluded from deploys via .vercelignore.
-test/            Local suite, `node test/alakazam.test.js` (183 tests, no
+                 reads ~25px short — and keep the browser pane VISIBLE: the
+                 measure loop awaits requestAnimationFrame, which never
+                 fires in a hidden pane, so it just sits at "measuring…".
+                 Excluded from deploys via .vercelignore.
+test/            Local suite, `node test/alakazam.test.js` (190 tests, no
                  network — mocks global.fetch over real captured PPT rows).
                  Excluded from deploys via .vercelignore. Two tests replay
                  against the pinned pre-fix commit `PRE_FIX_REF` (`1960cd5`)
@@ -501,9 +504,15 @@ sane bid for that card.
   buries it further. `&`/`and` folding is correct *only* in the setName-rescue
   acceptance check, where it already is.
 - **DO NOT auto-flip the default printing on a vision stamp read.** Tried
-  2026-08-26, reverted the next day on a confirmed stamp false-negative. A
-  vision signal may inform a *warning*, never the default. Today's error
-  direction is underbidding (costs nothing); auto-flipping inverts it.
+  2026-08-26, reverted the next day on a confirmed stamp false-negative
+  (test #7's Koffing). A vision signal may inform a *warning*, never the
+  default. **Still true, and NOT what the 2026-11-01 1st-Edition guard
+  (#116) does** — the guard trusts *neither* the stamp read nor PPT's
+  `primaryPrinting`, and is unconditional: when a product offers both a
+  1st Edition and an ordinary printing, the ordinary one is pre-selected
+  no matter what either signal says. The thing the 2026-08-26 fix got
+  wrong was elevating the stamp read; that read is now used only for the
+  `firstEditionStampSeen` note, which is a prompt and changes no price.
 - **DO NOT loosen setName-rescue acceptance** because a hint looked bad. The
   gate is right; the hints are bad.
 - **DO NOT derive a completion-rate or regression-watch count from logs
@@ -518,6 +527,34 @@ sane bid for that card.
   The API wants raw base64 and 400s, manufacturing a fake error cluster.
 
 ## Open items
+
+**FIXED, AWAITING PRODUCTION APPROVAL (#116) — the panel defaulted to
+1st Edition on WotC-era cards, overbidding by a measured median 2.6x.**
+`pickDefaultVariantKey` now **never pre-selects a 1st Edition printing while
+the same product offers an ordinary one** (`isFirstEditionPrintingKey`
+filters the key set before any signal is consulted). Investigated read-only
+first: PPT's `primaryPrinting` names the 1st Edition printing on **8 of 10**
+real dual-printing rows on disk (**7/7** once Shadowless is set aside), and
+across **34 paired live vision reads** each model called `"1st Edition"` on
+**18%** of scans while the other model contradicted it on **6 of those 9
+(67%)**. `primaryPrinting` is checked FIRST and so drove the default; the
+stamp read was decisive only on holo keys; and a **fully tag-suffixed key set
+matched no preference entry and fell through to `keys[0]` — raw object
+insertion order**, which is how Shadowless products defaulted to 1st Edition
+with no signal involved at all. Live cost measured on one stream: 5 of 8
+scans hit a dual-printing product, median **2.6x** overstatement, max
+**5.2x** (Graveler $4.41 vs $0.85; Sabrina's Haunter $64.53 vs $25.21).
+The guard is a guard, never a chooser — a 1st-Edition-ONLY product is
+unchanged. New response field **`firstEditionStampSeen`** (primary OR legacy
+read) drives an extension info note *"Possible 1st Edition stamp — check left
+of the artwork"* that names the 1st Ed pill and its price and **changes no
+price, bid or confidence**. `/api/price` now logs `DEFAULT PRINTING` with
+every input to the decision — it previously logged nothing, which is why this
+had to be measured by replaying the function offline. 190 local tests (183
+before). **The #114 disclosure path is unchanged** (same default, same
+$172.83/$87.89, same `altPrintings`). Full write-up:
+`investigations/2026-11-01-first-edition-default/findings.md` and
+`docs/test-cases.md` #116.
 
 **SHIPPED 2026-11-01 (#115) — PRINT VARIANT is pills, not a dropdown.
 Extension-only, no `api/` change, no deploy; the extension needs a manual

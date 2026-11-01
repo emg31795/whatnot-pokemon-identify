@@ -3365,7 +3365,17 @@ async function buildLiveVariantsForCandidate(candidate, tag) {
   return tagged;
 }
 
-// Picks which variant is pre-selected in the dropdown.
+// Is this live-variant key a 1st Edition printing? Tolerates the
+// " (Shadowless)"-style tag suffix buildLiveVariantsForCandidate appends,
+// so a tagged key is recognised the same as a bare one. Deliberately an
+// anchored prefix test on the printing name: "1st Edition",
+// "1st Edition Holofoil" and "1st Edition Normal" all qualify, and nothing
+// else does.
+function isFirstEditionPrintingKey(key) {
+  return /^1st\s+edition\b/i.test(String(key || "").trim());
+}
+
+// Picks which variant is pre-selected as the panel's live printing.
 // FIX (2026-09-13, live scan — Clefairy Base Set (Shadowless)): added the
 // `tag` param. `primaryPrinting` always comes straight from PPT untagged
 // (e.g. "1st Edition Holofoil"), but by the time this function runs, the
@@ -3400,10 +3410,46 @@ async function buildLiveVariantsForCandidate(candidate, tag) {
 // stamp read is not a substitute: on this very scan the primary model read
 // "1st Edition" and the legacy model read "none".
 function pickDefaultVariantKey(priceVariants, read, primaryPrinting, tag, opts = {}) {
-  const keys = Object.keys(priceVariants);
-  if (!keys.length) return null;
+  const allKeys = Object.keys(priceVariants);
+  if (!allKeys.length) return null;
 
   const preferCommon = !!opts.preferCommonPrinting;
+
+  // THE 1ST-EDITION GUARD (2026-11-01, see
+  // investigations/2026-11-01-first-edition-default/findings.md).
+  //
+  // When a product offers BOTH a 1st Edition printing and an ordinary one,
+  // 1st Edition is never selected automatically. It stays in `priceVariants`
+  // with its own price and is one click away on its own pill — this changes
+  // which printing is PRE-selected, nothing else.
+  //
+  // Measured, not assumed. On the 278 real PPT rows on disk, 10 offer both
+  // printings and PPT's `primaryPrinting` names the 1st Edition one on
+  // **8 of 10 (80%)** — 7 of 7 once Shadowless products are set aside. That
+  // field is whichever printing PPT last happened to price, not a statement
+  // about the card in front of the camera, and it was checked FIRST here.
+  // The vision stamp read is no better: across 34 paired reads from one live
+  // stream each model called "1st Edition" on 18% of scans and the other
+  // model contradicted it on 6 of those 9 scans (67%).
+  //
+  // So both signals pointed at the rarer, pricier printing on an ordinary
+  // Unlimited card, and the resulting error direction is OVERBIDDING —
+  // measured on that stream at a median 2.6x and up to 5.2x (Graveler
+  // 1st Ed $4.41 vs Unlimited $0.85; Sabrina's Haunter $64.53 vs $25.21).
+  // Unlimited is also simply the more common card in a raw auction lot, so
+  // the prior and the conservative direction agree.
+  //
+  // This also closes a latent hole the preference list never covered: a
+  // fully tag-suffixed key set (e.g. "1st Edition Holofoil (Shadowless)")
+  // matches no entry in either preference order, so the old code fell
+  // through to `keys[0]` — raw object insertion order, consulting no signal
+  // at all. Filtering first means that fallback can no longer land on a
+  // 1st Edition printing either.
+  const commonKeys = allKeys.filter((k) => !isFirstEditionPrintingKey(k));
+  // Only a guard, never a chooser: with no ordinary printing to fall back
+  // on (a 1st-Edition-only product), the 1st Edition keys are all there is
+  // and behaviour is unchanged.
+  const keys = commonKeys.length ? commonKeys : allKeys;
 
   // REVERTED (2026-08-27): a fix here on 2026-08-26 excluded "1st
   // Edition"-labeled variants whenever Gemini's stampType read was
@@ -6556,6 +6602,7 @@ async function handler(req, res) {
   // LEGACY_GEMINI_SHADOW_MODEL isn't set, exactly like the shadow test
   // itself.
   let legacyReadPromise = null;
+  let legacyStampTypeSettled = null;
   if (LEGACY_GEMINI_SHADOW_MODEL) {
     const timedCurrentPromise = timePromise(geminiPromise, tStart);
     const tLegacyStart = Date.now();
@@ -6574,6 +6621,18 @@ async function handler(req, res) {
       : undefined;
     const legacyPromise = identifyWithGemini(imageBase64, geminiKey, LEGACY_GEMINI_SHADOW_MODEL, legacyShadowOptions);
     legacyReadPromise = legacyPromise;
+    // ADDED 2026-11-01 (1st-Edition guard): records the legacy read's stamp
+    // the moment it settles, so the response can say whether EITHER model
+    // saw a 1st Edition stamp without awaiting anything at assembly time.
+    // A read still in flight simply leaves this null — the note is a
+    // "go and look" prompt, never a price input, so a missed one costs
+    // nothing and waiting for it would cost latency on every scan.
+    legacyPromise.then(
+      (r) => {
+        legacyStampTypeSettled = (r && r.stampType) || null;
+      },
+      () => {}
+    );
     const timedLegacyPromise = timePromise(legacyPromise, tLegacyStart);
     const legacyShadowPromise = runLegacyModelShadowTest(timedCurrentPromise, timedLegacyPromise, requestId).catch((e) => {
       console.error(`[legacy-model-shadow-test] requestId=${requestId} shadow test itself threw:`, e && e.message);
@@ -7103,6 +7162,27 @@ async function handler(req, res) {
       cardLanguage: read.language,
       confidence: read.confidence,
       stampType: read.stampType,
+      // ADDED 2026-11-01 (1st-Edition guard, see
+      // investigations/2026-11-01-first-edition-default/findings.md): true
+      // when EITHER vision model read a 1st Edition stamp. Since the guard
+      // above, a 1st Edition printing is never pre-selected while an
+      // ordinary one exists, so this is the honest replacement for what the
+      // old default was silently asserting: a prompt to go and check the
+      // card, pointed at a pill that is already on screen with its own
+      // price. It changes NO price and no confidence.
+      //
+      // Deliberately an OR across both models rather than the primary
+      // alone. Measured on 34 paired live reads: each model called
+      // "1st Edition" on 18% of scans and they disagreed on 18% — of the 9
+      // scans where either model saw a stamp, 6 (67%) had the other model
+      // saying "none". Taking only the primary read would miss a third of
+      // the real stamps outright. An OR is the right shape precisely
+      // BECAUSE this is a prompt and not a price: a false positive costs a
+      // two-second glance at the card, a false negative costs a missed
+      // 2-5x printing.
+      firstEditionStampSeen:
+        String(read.stampType || "").toLowerCase() === "1st edition" ||
+        String(legacyStampTypeSettled || "").toLowerCase() === "1st edition",
       stampNote:
         read.stampType && read.stampType !== "none" && read.stampType !== "1st Edition"
           // CORRECTED (2026-10-05): the previous wording made two claims
