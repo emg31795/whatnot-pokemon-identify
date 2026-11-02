@@ -205,14 +205,26 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_4yqc1SzBpyyYV7YYcYhfCF66Wa6S`** (2026-11-01, the
-  1st-Edition guard, test #116), aliased to
+- Deployment **`dpl_GLFn11bPpz3Vb5yLMNM3c7967U36`** (2026-11-01, the
+  Japanese Vending Machine fixes, test #117), aliased to
   `whatnot-pokemon-identify.vercel.app`.
-- **`sourceHash 8141715b89fec21ddd5930434d298b0c19a00765`** == `shasum
-  api/identify.js` on disk at commit `b188005`, byte-exact, checked twice on
+- **`sourceHash a493786ac9bf7940119fd5773facccd0db7aaa25`** == `shasum
+  api/identify.js` on disk at commit `636c16d`, byte-exact, checked twice on
   the alias. `GET /api/identify` reports **`slabLabelProbe: "on"`**.
-- E2E verified on production 2026-11-01, **7/7**, zero runtime errors over
-  the 2h window. The six price cases ran through `/api/price` only, so they
+- E2E verified on production 2026-11-01, **6/6**, zero runtime errors over a
+  2h window. A stream was live (8 organic scans in the preceding 10 min), so
+  the four price cases ran through `/api/price` only (**zero PPT credits**)
+  and the two identify scans were spaced 10s. **617523 Growlithe** →
+  `Vending Machine cards Series 3 (Green)`, **Medium / `vending-scope`**,
+  priced, 2228ms — a card that could not be identified at all before;
+  `[vending-scope] requests=3 rows=1 distinct=1 ... ACCEPTED ... score=10
+  signals={"hp":true,"attackName":true}`. **617469 Rattata** unchanged at
+  **High / `score-only`**, lookup 281ms, **zero vending requests**. Controls
+  reproduce their #114/#116 figures exactly: **107008** $172.83 / Bid $87.89,
+  **114004** $204.03 / Bid $104.36, **106997** $894.71 / Bid $351.73; the
+  vending Growlithe prices at **$128.05 NM / Bid $64.25**.
+- Earlier e2e on production 2026-11-01 (#116), **7/7**, zero runtime errors.
+  The six price cases ran through `/api/price` only, so they
   cost **zero PPT credits** (the guard lives in `pickDefaultVariantKey`,
   which that endpoint calls) — **107008** `Unlimited Holofoil` $172.83 /
   Bid $87.89 (alt `1st Ed Holofoil $400.00 LP`); **106997** `Unlimited
@@ -259,7 +271,8 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
   sibling/tie rows or the per-row graded medians at all.
 - **The first real graded slab has now been identified end-to-end through
   Phase 2-lite** (#111). The graded bid path has also fired on organic traffic.
-- Earlier production: `dpl_9hLr9ZbJ9Jr6foJPi1Tv23fw84o4` (2026-11-01,
+- Earlier production: `dpl_4yqc1SzBpyyYV7YYcYhfCF66Wa6S` (2026-11-01,
+  `8141715b…`, `b188005`, #116); `dpl_9hLr9ZbJ9Jr6foJPi1Tv23fw84o4` (2026-11-01,
   `4d30cd1b…`, `4927dc7`, #114); `dpl_7FoFB9NLBQzo4en9eJtJFdYzEKZv` (2026-10-25,
   `02ff9590…`, `09f7a90`, #111/#112); `dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6` (2026-10-24,
   `b170c6e8…`, `882b400`, #110); `dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`
@@ -549,9 +562,12 @@ sane bid for that card.
 
 ## Open items
 
-**BUILT, AWAITING PREVIEW/PROD APPROVAL (#117) — Japanese Vending Machine
-cards.** Three fixes, 201 local tests (190 before), full before/after replay
-over all 22 saved Japanese scans: **11 improved, 0 regressed**.
+**DEPLOYED TO PRODUCTION 2026-11-01 (#117) — Japanese Vending Machine
+cards.** Commit `636c16d`, production `dpl_GLFn11bPpz3Vb5yLMNM3c7967U36`,
+`sourceHash a493786a…` byte-exact with disk (checked twice on the alias),
+production e2e 6/6 with zero runtime errors. Three fixes, 201 local tests
+(190 before), full before/after replay over all 22 saved Japanese scans:
+**11 improved, 0 regressed**.
 - **Fix 1 `vending-scope`** — retrieval, the actual blocker. A vending card's
   PPT `cardNumber` is the **empty string**, so the ordinary
   `search=<name>&language=japanese&limit=30` pool (sorted by number) drops it:

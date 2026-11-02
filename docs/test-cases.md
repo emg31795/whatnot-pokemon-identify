@@ -14351,3 +14351,122 @@ live scan of a dual-printing card that does not tie with a sibling.
 `chrome://extensions`.** The backend half is independently effective: an
 unreloaded extension already gets the corrected default printing and price
 and only misses the note.
+
+## #117 — 2026-11-01 — Japanese Vending Machine cards are identifiable
+
+**Feasibility check turned fix.** Production
+`dpl_GLFn11bPpz3Vb5yLMNM3c7967U36`, commit `636c16d`, **`sourceHash
+a493786ac9bf7940119fd5773facccd0db7aaa25`** byte-exact with disk, read twice
+on the alias. 201 local tests (190 before). Full investigation and the
+22-scan replay: `investigations/2026-11-01-vending-machine/`.
+
+### What was wrong
+
+A Rattata identified correctly mid-stream after several vending scans had
+not. The successful scans turned out to be a coincidence: `hp(6) +
+attackName(4) = 10`, exactly `HIGH_THRESHOLD`, with a unique top scorer.
+Remove one point and they fail. **2 of 17** vending-card scans cleared it.
+
+Three independent causes, measured:
+
+1. **Retrieval.** A vending card's PPT `cardNumber` is the **empty string**,
+   and the ordinary `search=<name>&language=japanese&limit=30` pool sorts by
+   number — so it falls off the bottom. Verified live: **56** Japanese
+   Growlithe rows exist and **617523 is not in the top 30**. Fatal before
+   scoring; no set-name alias could ever fix it.
+2. **`SV2a: Pokemon Card 151` numbers its cards by National Pokédex number.**
+   A vending "No. 058" therefore weak-matches SV2a's "058/165" for
+   `20 x 0.35 = 7` — the `score 7, tieCount 3` signature on five real scans
+   (Growlithe, Shellder, Metapod, Nidorina, Graveler), all landing on SV2a.
+   It also **pre-empted #108's dex classifier**, which only fires when the
+   number matched nothing.
+3. **PPT stores Japanese attacks in English only.** The model must reproduce
+   PPT's exact English string from Japanese on a video frame: `なかまのちから`
+   is "Strength in Numbers" (six model attempts, zero hits); `ふしぎなこな` is
+   "Mysterious Powder" (both models confidently said "Stun Spore").
+
+### The three fixes
+
+**Fix 1 — `vending-scope` retrieval.** `VENDING_SET_IDS = [24206, 24207,
+24208]`, hard-coded with provenance: a closed 1998-99 list, Series 1 (Blue)
+36 cards / Series 2 (Red) 36 / Series 3 (Green) 52. Triggers only on
+Japanese + `resultIsWeak` + an absent-or-dex-shaped number; **≤3 requests at
+`limit=5` (~15 credits**, against the 30 one ordinary search costs). Name
+filter, **exactly one distinct survivor**, capped Medium, logs
+`[vending-scope]`. **The weak-signal floor is deliberately NOT exempted** —
+hp alone is one signal, so the price is still withheld.
+
+**Fix 2 — `numberMatchCountsForRetrieval`.** A weak match on a dex-shaped
+read counts only if hp or attackName corroborates that same candidate.
+**The 2026-09-26 SV2a fix is preserved and tested both ways:** Lapras
+"No. 131" agrees on hp so it still matches and still prices; the identical
+row with hp changed is now reclassified. A non-dex-shaped weak match (a bare
+promo "052") is untouched.
+
+**Fix 3 — the legacy model's `attackNameEnglish` also scores.** 2/17 → 4/17.
+**Exact normalized equality, NOT `attackNamesFuzzyMatch`.** The replay caught
+the reason: "Gas Explosion" vs Pokemon Web Dark Weezing's "Mass Explosion"
+scores **0.846** against the 0.82 threshold, which promoted a wrong card
+from Low to **High**. The threshold is safe for one string; giving it a
+second roll of the dice finds collisions. Gated on `resultIsWeak` and
+re-scores the already-fetched pool — **no extra PPT call**, no added latency
+on a strong scan (asserted by an elapsed-time test against a never-settling
+legacy promise).
+
+### Replay — 22 saved scans, real pools, pre-fix module at `e0d097c`
+
+**11 improved, 0 regressed, 2 still wrong, 9 unchanged.**
+
+| scans | before | after |
+|---|---|---|
+| Growlithe `8c5df0ba`, Weezing `6b24f5a7` | withheld | **Vending, Medium, PRICED** |
+| Nidorina x3, Metapod, Shellder, Graveler, Growlithe `d0dd434b` | SV2a Low **PRICED** | withheld |
+| Ditto `88d06fd5` | SM12a Low **PRICED** | withheld |
+| Weezing `14f7f391` | Pokemon VS Low **PRICED** | withheld |
+| Rattata, Jynx | Vending **High** priced | **unchanged** |
+
+Nine confidently-wrong prices became honest withholds and two cards became
+identifiable, with nothing lost.
+
+**Credits per scan:** before min 30 / max 60 / avg 33; after min 0 / max 75
+/ avg 43 — **+15 on a scan that takes the vending path**, nothing otherwise.
+
+### Production e2e — 6/6, zero runtime errors over 2h
+
+A stream was live (8 organic scans in the preceding 10 minutes), so the four
+price cases ran through `/api/price` only (**zero PPT credits**) and the two
+identify scans were spaced 10s.
+
+| case | result |
+|---|---|
+| **617523 Growlithe** identify | `Vending Machine cards Series 3 (Green)`, **Medium / `vending-scope`**, priced, 2228ms |
+| **617469 Rattata** identify | Series 1 (Blue), **High / `score-only`**, lookup **281ms**, **zero vending requests** |
+| 107008 Ninetales | $172.83 / Bid $87.89 |
+| 114004 Pikachu XY95 | $204.03 / Bid $104.36 |
+| 106997 Blastoise | $894.71 / Bid $351.73 |
+| 617523 price | **$128.05 NM / Bid $64.25** |
+
+```
+[vending-scope] requests=3 rows=1 nameQualifiers=1 distinct=1
+  read={name:"Growlithe",number:"No. 058",hp:"50"}
+[vending-scope] ACCEPTED Growlithe (... tcgPlayerId=617523) score=10
+  signals={"hp":true,"attackName":true} — capped Medium, floor still applies
+```
+
+The three #114/#116 controls reproduce their recorded figures **exactly**,
+and Rattata's 281ms lookup with zero vending requests shows the scans that
+already worked pay nothing for this feature.
+
+### Known residual, not fixed
+
+Two Weezing scans read a bare `"110"` with no `"No."` prefix. That is not
+dex-shaped, so Fix 2 does not apply and they keep the weak SV2a match at
+Low+priced. Widening the shape test to bare numbers is exactly the loosening
+the DO NOT list warns against, and is deliberately not done.
+
+**The honest ceiling for this set:** a vending card has no collector number,
+so the 20-point signal is permanently unavailable. Best case is
+`hp 6 + attack 4 = 10` — High only when the translation lands and the
+survivor is unique, otherwise Medium with the price withheld by the floor.
+
+**No `extension/` change** — this reuses existing response shapes.
