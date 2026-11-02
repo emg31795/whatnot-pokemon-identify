@@ -830,7 +830,97 @@ const TCG_MODERN_NO_FIRST_EDITION = [
   { variant: "Reverse Holofoil", condition: "Lightly Played", totalQuantitySold: "21", buckets: [{ marketPrice: "11.02" }] },
 ];
 
+// ---------------------------------------------------------------------------
+// #117 — Japanese Vending Machine series (2026-11-01)
+// ---------------------------------------------------------------------------
+// REAL PPT rows, captured 2026-11-01 from `setId=2420{6,7,8}&language=japanese`
+// and the live `search=<name>&language=japanese&limit=30` pools, reduced to
+// the fields scoreCandidate/normalizePptCard read. Full payloads in
+// investigations/2026-11-01-vending-machine/.
+//
+// The defining property: a vending card's `cardNumber` is the EMPTY STRING,
+// so the 20-point number signal can never fire for it, and the ordinary
+// search pool (sorted by number) pushes it out of the top 30 entirely.
+
+const VENDING_GROWLITHE_617523 = {
+  tcgPlayerId: "617523",
+  setName: "Vending Machine cards Series 3 (Green)",
+  name: "Growlithe",
+  cardNumber: "",
+  totalSetNumber: null,
+  rarity: "Common",
+  cardType: "Pokemon",
+  hp: "50",
+  stage: "Basic",
+  attacks: ["[Colorless][Colorless] Errand-Running<br> Flip a coin. If heads, search your deck for a Trainer card."],
+  pokedexNumbers: [58],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/617523",
+  prices: { market: 137.5, primaryPrinting: "Normal", listings: 4 },
+  printingsAvailable: ["Normal"],
+};
+
+const VENDING_WEEZING_617562 = {
+  tcgPlayerId: "617562",
+  setName: "Vending Machine cards Series 3 (Green)",
+  name: "Weezing",
+  cardNumber: "",
+  totalSetNumber: null,
+  rarity: "Uncommon",
+  cardType: "Pokemon",
+  hp: "60",
+  stage: "Stage 1",
+  attacks: ["[Grass][Grass][Grass] Gas Explosion (40)<br> This Pokemon does 30 damage to itself."],
+  pokedexNumbers: [110],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/617562",
+  prices: { market: 30.0, primaryPrinting: "Normal" },
+  printingsAvailable: ["Normal"],
+};
+
+// The collision that made #117 Fix 2 necessary: SV2a numbers its cards by
+// NATIONAL POKEDEX NUMBER, so this row's "058/165" shares its numerator with
+// a vending Growlithe's printed "No. 058". hp and attack both disagree.
+const SV2A_GROWLITHE_058 = {
+  tcgPlayerId: "566757",
+  setName: "SV2a: Pokemon Card 151",
+  name: "Growlithe (Master Ball Pattern)",
+  cardNumber: "058/165",
+  totalSetNumber: null,
+  rarity: "Common",
+  cardType: "Pokemon",
+  hp: "80",
+  stage: "Basic",
+  attacks: ["[Fire] Vaporize (10)<br> Discard a Water Energy from your opponent's Active Pokemon."],
+  pokedexNumbers: [58],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/566757",
+  prices: { market: 4.2, primaryPrinting: "Holofoil" },
+  printingsAvailable: ["Holofoil"],
+};
+
+// The near-collision that forced #117 Fix 3 to require EXACT equality:
+// "Mass Explosion" vs the legacy model's "Gas Explosion" scores 0.846 on
+// attackNamesFuzzyMatch, over its 0.82 threshold.
+const WEB_DARK_WEEZING_613682 = {
+  tcgPlayerId: "613682",
+  setName: "Pokemon Web",
+  name: "Dark Weezing",
+  cardNumber: "021/048",
+  totalSetNumber: null,
+  rarity: "Uncommon",
+  cardType: "Pokemon",
+  hp: "60",
+  stage: "Stage 1",
+  attacks: ["[Grass][Colorless] Mass Explosion (20x)<br> Does 20 damage times the number of Koffings in play."],
+  pokedexNumbers: [110],
+  tcgPlayerUrl: "https://www.tcgplayer.com/product/613682",
+  prices: { market: 6.5, primaryPrinting: "Normal" },
+  printingsAvailable: ["Normal", "1st Edition", "Unlimited"],
+};
+
 module.exports = {
+  VENDING_GROWLITHE_617523,
+  VENDING_WEEZING_617562,
+  SV2A_GROWLITHE_058,
+  WEB_DARK_WEEZING_613682,
   TCG_BLASTOISE_106997_SHADOWLESS,
   TCG_MACHOKE_107031_SHADOWLESS,
   TCG_KOFFING_TEAMROCKET,

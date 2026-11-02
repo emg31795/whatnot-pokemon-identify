@@ -188,6 +188,29 @@ const SIBLING_CAP_LEGACY_TOTAL_WAIT_MS = 1200;
 // Snivy GX, Roaring Moon ex).
 const SIBLING_GRADED_MAX_LOOKUPS = 6;
 
+// #117 Fix 1 (2026-11-01) — the Japanese Vending Machine series.
+//
+// These three sets are a hard case for every other path in this file: a
+// vending card carries NO collector number at all (PPT stores
+// `cardNumber: ""`), so the 20-point number signal is permanently
+// unavailable, and the ordinary `search=<name>&language=japanese&limit=30`
+// pool sorts by card number — which puts an empty-string number at the
+// bottom. Verified live: 56 Japanese "Growlithe" rows exist and the vending
+// one (617523) is NOT among the 30 returned. No scoring, tie-break or
+// set-name alias can pick a card that was never fetched.
+//
+// Hard-coded because they are a closed, finished set list — three sets
+// released 1998-1999, 124 cards, which will never grow. Verified against
+// PPT 2026-11-01 (investigations/2026-11-01-vending-machine/):
+//   24206  Vending Machine cards Series 1 (Blue)   36 cards
+//   24207  Vending Machine cards Series 2 (Red)    36 cards
+//   24208  Vending Machine cards Series 3 (Green)  52 cards
+// `search=<name>&setId=<id>&limit=5` was verified to return exactly the
+// one right row (Growlithe + 24208 -> metadata.total 1, tcgPlayerId
+// 617523) for ~5 credits, vs the 30 an ordinary search costs.
+const VENDING_SET_IDS = [24206, 24207, 24208];
+const VENDING_SCOPE_LIMIT = 5;
+
 // PHASE 2-LITE (2026-10-11): hard cap on label-driven PPT searches per
 // scan. Each is a full limit=30 request (30 credits, ~3 rate-limit units),
 // and this path only runs on a slab that the ordinary lookup already
@@ -1504,6 +1527,41 @@ function parsePokedexNumberRead(raw) {
   return m ? String(Number(m[1])) : null;
 }
 
+// FIX 2 (2026-11-01, #117). Does this candidate's number match count as
+// RETRIEVAL having found the read number — i.e. "stop looking"?
+//
+// The problem it solves: `SV2a: Pokemon Card 151` numbers its cards by
+// NATIONAL POKEDEX NUMBER, so a Japanese vintage card printed "No. 058"
+// has a numerator identical to SV2a Growlithe's "058/165". The read has no
+// denominator, so numbersMatch returns a WEAK match — `match: true`, worth
+// 20 * 0.35 = 7 — which was enough to make `stillMissingAfterPage2` false
+// and therefore to stop #108's classifyPokedexNumberRead from ever
+// running. Five real vending scans in one hour (Growlithe, Shellder,
+// Metapod, Nidorina, Graveler) all landed on SV2a this way at the
+// tell-tale `score 7, tieCount 3`.
+//
+// The rule, deliberately narrow so the 2026-09-26 SV2a fix is preserved:
+// a weak match on a DEX-SHAPED read ("No. N") counts only if that SAME
+// candidate also corroborates on hp or attackName. SV2a Lapras "No. 131"
+// really IS 131/165 and agrees on hp/attack, so it still counts and is
+// still matched — on that card the collector number and the dex number
+// coincide, which is exactly why only retrieval can separate the two
+// cases (see #108's own note on NUMBER_LABEL_PATTERN).
+//
+// Everything else is untouched: a non-weak match always counts, and a
+// weak match on a read that is NOT dex-shaped (a bare promo number like
+// "052") counts exactly as it did before.
+function numberMatchCountsForRetrieval(read, candidate) {
+  const nm = numbersMatch(read.cardNumber, candidate.number);
+  if (!nm.match) return false;
+  if (nm.strength !== "weak") return true;
+  if (!parsePokedexNumberRead(read.cardNumber)) return true;
+  // Reuses scoreCandidate so the hp/attack comparisons are the SAME ones
+  // scoring uses — no second, drifting implementation of either.
+  const { detail } = scoreCandidate(candidate, read);
+  return !!(detail.hp || detail.attackName);
+}
+
 function classifyPokedexNumberRead(read, candidates, numberStillMissing, requestId) {
   if (!numberStillMissing) return null;
   const dex = parsePokedexNumberRead(read && read.cardNumber);
@@ -1967,8 +2025,43 @@ function scoreCandidate(candidate, read) {
   // this is a no-op for the English path — attackNameEnglish is null
   // there per the prompt). Compared via attackNamesFuzzyMatch, not exact
   // equality — see the comment above that function for why.
+  // FIX 3 (2026-11-01, #117 — Japanese Vending Machine cards). PPT stores
+  // a Japanese card's attacks in ENGLISH ONLY: there is no Japanese attack
+  // field to compare against, so the model has to reproduce PPT's exact
+  // English string from Japanese text on a video frame. Measured over 17
+  // real vending scans whose card IS in PPT's vending sets, the primary
+  // model's translation matched on only **2 (12%)** — and those 2 are
+  // exactly the 2 scans that identified correctly. The legacy shadow model
+  // is an INDEPENDENT translation of the same frame, and accepting either
+  // takes it to **4 (24%)**: it alone read "Errand-Running" for おつかい
+  // where the primary said "Errand", and "Gas Explosion" for ガスばくはつ.
+  //
+  // `legacyAttackNameEnglish` is attached upstream, and only on a weak
+  // result (see the LEGACY ATTACK RE-SCORE block in lookupCardPPT), so a
+  // strong scan neither waits for the legacy read nor changes behaviour.
+  // The legacy name must match EXACTLY once normalized — NOT through
+  // attackNamesFuzzyMatch, and not by token-subset. Measured reason, found
+  // in the #117 replay: the primary read's 0.82 Levenshtein threshold is
+  // safe for ONE string, but giving it a second roll of the dice finds
+  // collisions. The legacy model read "Gas Explosion" on two real Weezing
+  // scans and Pokemon Web Weezing 613682's attack is "Mass Explosion" —
+  // similarity 0.846, over the threshold. Fuzzy-matching the second string
+  // promoted that wrong card from Low to **High**, which is precisely the
+  // confidently-wrong outcome this project is built to avoid. Exact
+  // equality keeps both real wins (Growlithe "Errand-Running", the vending
+  // Weezing "Gas Explosion") and drops the collision.
+  //
+  // This can only ever ADD points, so it cannot manufacture a mismatch cap
+  // — and the attack-mismatch cap already consults the legacy read
+  // cross-model (test #101), so the precedent for trusting it here exists.
   const attackNameForCompare = read.attackNameEnglish || read.attackName;
-  if (attackNameForCompare && candidate.attackName && attackNamesFuzzyMatch(attackNameForCompare, candidate.attackName)) {
+  const attackMatched =
+    (attackNameForCompare && candidate.attackName && attackNamesFuzzyMatch(attackNameForCompare, candidate.attackName)) ||
+    (read.legacyAttackNameEnglish &&
+      candidate.attackName &&
+      normalizeAttackNameForMatch(read.legacyAttackNameEnglish) === normalizeAttackNameForMatch(candidate.attackName) &&
+      !!normalizeAttackNameForMatch(candidate.attackName));
+  if (attackMatched) {
     score += SCORE.attackName;
     detail.attackName = true;
   }
@@ -2536,11 +2629,18 @@ function normalizeNameForSearchQuery(name) {
     .trim();
 }
 
-async function fetchPokemonPriceTracker(name, { graded = false, language = "English", offset = null } = {}) {
-  const params = new URLSearchParams({ search: name, limit: "30" });
+async function fetchPokemonPriceTracker(
+  name,
+  { graded = false, language = "English", offset = null, setId = null, limit = 30 } = {}
+) {
+  const params = new URLSearchParams({ search: name, limit: String(limit) });
   if (graded) params.set("includeEbay", "true");
   if (String(language).toLowerCase() === "japanese") params.set("language", "japanese");
   if (offset) params.set("offset", String(offset));
+  // ADDED 2026-11-01 (#117 Fix 1): scopes the search to one PPT set. Only
+  // the vending-set rescue passes this, and it pairs it with limit=5, so
+  // every other caller builds a byte-identical query to before.
+  if (setId) params.set("setId", String(setId));
   const url = `${PPT_BASE_URL}?${params.toString()}`;
   const headers = { Authorization: `Bearer ${process.env.POKEMONPRICETRACKER_API_KEY}` };
 
@@ -3744,8 +3844,13 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
   // already succeeds. Needs a live rescan of the same Eevee (or any other
   // card that hit this gap) to confirm it actually surfaces the real
   // printing before trusting this broadly.
+  // CHANGED 2026-11-01 (#117 Fix 2): was
+  // `numbersMatch(read.cardNumber, c.number).match`. A weak, uncorroborated
+  // match on a dex-shaped read no longer counts as "found" — see
+  // numberMatchCountsForRetrieval for why, and for why SV2a Lapras
+  // "No. 131" is unaffected.
   const stillMissingAfterPage2 =
-    !!read.cardNumber && !candidates.some((c) => numbersMatch(read.cardNumber, c.number).match);
+    !!read.cardNumber && !candidates.some((c) => numberMatchCountsForRetrieval(read, c));
   // See classifyPokedexNumberRead: a last-resort reclassification, only
   // reachable once page 1 AND page 2 have both failed to match the number.
   // `read.cardNumber` is deliberately left in place so the downstream
@@ -4212,6 +4317,119 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
           );
         }
       }
+    }
+  }
+
+  // LEGACY ATTACK RE-SCORE (#117 Fix 3, 2026-11-01)
+  // -------------------------------------------------------------------
+  // Attaches the legacy shadow model's independent English attack
+  // translation and re-scores the pool we already have. Gated on
+  // `resultIsWeak` for the same reason the setName rescue is (see the
+  // WEAKNESS GATE comment above): a strong, untied match must never pay
+  // the latency of awaiting the legacy read, and must never be replaced.
+  //
+  // Costs NO PPT call — it re-scores `candidates`, already fetched. The
+  // legacy read is awaited through the existing capped helper, so a slow
+  // legacy model degrades to "no second translation" rather than to added
+  // latency. See scoreCandidate for the measurement (2/17 -> 4/17).
+  let legacyAttackRescored = false;
+  if (resultIsWeak && !setNameSearchRescued && legacyReadPromise) {
+    const legacyRead = await awaitLegacyReadCapped(legacyReadPromise, requestId, "the legacy attack re-score");
+    const legacyAttack = legacyRead && legacyRead.found ? legacyRead.attackNameEnglish : null;
+    const primaryAttack = read.attackNameEnglish || read.attackName;
+    // Only worth a re-score when it is genuinely a SECOND opinion.
+    if (legacyAttack && legacyAttack !== primaryAttack) {
+      read = { ...read, legacyAttackNameEnglish: legacyAttack };
+      const rescored = pickBestCandidate(candidates, read, `[lookup:legacy-attack][requestId=${requestId}]`);
+      if (rescored.best && rescored.bestScore > bestScore) {
+        console.log(
+          `[requestId=${requestId}]`,
+          `[lookup] LEGACY ATTACK RE-SCORE: legacy model read attackNameEnglish ${JSON.stringify(legacyAttack)}` +
+            ` (primary read ${JSON.stringify(primaryAttack)}) — best ${rescored.best.name} ${rescored.best.number}` +
+            ` score ${bestScore} -> ${rescored.bestScore}, tieCount ${tieCount} -> ${rescored.tieCount}`
+        );
+        ({ best, bestScore, tieCount, bestDetail, tiedCandidates } = rescored);
+        legacyAttackRescored = true;
+      }
+    }
+  }
+
+  // VENDING-SET SCOPED RETRIEVAL (#117 Fix 1, 2026-11-01)
+  // -------------------------------------------------------------------
+  // See VENDING_SET_IDS above for why this exists: the vending row is
+  // frequently not in the ordinary pool at all, so this is a RETRIEVAL
+  // fix, not a scoring one.
+  //
+  // Trigger, all required — narrow on purpose:
+  //   - the read is Japanese (these three sets are Japan-only);
+  //   - the result is weak by the same `resultIsWeak` definition every
+  //     other rescue uses, so a good match is never replaced;
+  //   - the read's number is absent OR dex-shaped. A vending card has no
+  //     collector number, so a read that produced a real "N/T" number is
+  //     by construction not looking at one of these cards.
+  // Cost: at most 3 requests at limit=5 (~15 credits), below the 30 a
+  // single ordinary search costs.
+  //
+  // Acceptance reuses the setName rescue's discipline exactly: the same
+  // name filter, EXACTLY ONE distinct survivor, capped Medium. The
+  // weak-signal floor is deliberately left untouched — with hp alone that
+  // is one signal, so the floor still withholds the price. That is the
+  // honest outcome and still a large improvement on today's behaviour of
+  // confidently pricing a wrong modern card.
+  let vendingScopeRescued = false;
+  const vendingNumberShape = !read.cardNumber || !!parsePokedexNumberRead(read.cardNumber);
+  if (
+    !setNameSearchRescued &&
+    resultIsWeak &&
+    String(read.language || "").toLowerCase() === "japanese" &&
+    vendingNumberShape
+  ) {
+    const vendingPool = [];
+    let vendingRequests = 0;
+    for (const setId of VENDING_SET_IDS) {
+      const scoped = await fetchPokemonPriceTracker(searchCardName, {
+        language: read.language,
+        setId,
+        limit: VENDING_SCOPE_LIMIT,
+      });
+      vendingRequests++;
+      if (scoped && scoped.error === "rate-limited") {
+        console.log(`[requestId=${requestId}]`, `[vending-scope] rate-limited after ${vendingRequests} request(s) — stopping`);
+        break;
+      }
+      const rows = scoped ? (Array.isArray(scoped.data) ? scoped.data : Array.isArray(scoped) ? scoped : []) : [];
+      for (const row of rows) vendingPool.push(row);
+    }
+    const vendingQualifiers = vendingPool
+      .map(normalizePptCard)
+      .filter((c) => normalizeNameForMatch(c.name).includes(wantedName));
+    const distinctVending = [...new Map(vendingQualifiers.map((c) => [candidateDedupKey(c), c])).values()];
+    console.log(
+      `[requestId=${requestId}]`,
+      `[vending-scope] requests=${vendingRequests} rows=${vendingPool.length}` +
+        ` nameQualifiers=${vendingQualifiers.length} distinct=${distinctVending.length}` +
+        ` read={name:${JSON.stringify(read.cardName)},number:${JSON.stringify(read.cardNumber)},hp:${JSON.stringify(read.hp)}}`
+    );
+    if (distinctVending.length === 1) {
+      const accepted = distinctVending[0];
+      const { score, detail } = scoreCandidate(accepted, read);
+      console.log(
+        `[requestId=${requestId}]`,
+        `[vending-scope] ACCEPTED ${accepted.name} (${accepted.setName}, tcgPlayerId=${accepted.tcgPlayerId})` +
+          ` score=${score} signals=${JSON.stringify(detail)} — capped Medium, weak-signal floor still applies`
+      );
+      best = accepted;
+      bestScore = Math.max(score, MATCH_FLOOR);
+      tieCount = 1;
+      bestDetail = detail;
+      tiedCandidates = [accepted];
+      candidates = candidates.concat(distinctVending);
+      vendingScopeRescued = true;
+    } else {
+      console.log(
+        `[requestId=${requestId}]`,
+        `[vending-scope] did not resolve to exactly one qualifying candidate (${distinctVending.length}) — keeping prior behavior`
+      );
     }
   }
 
@@ -4815,6 +5033,23 @@ async function lookupCardPPT(read, requestId, legacyReadPromise = null) {
           ? `, but its number (${best.number}) does NOT match the number we read (${read.cardNumber}) — only the set size matched, so the number was very likely misread`
           : " and number we had"
       }. This isn't a fully confirmed match; verify the exact set and printing before trusting this price.`;
+  }
+
+  // #117 Fix 1 (2026-11-01) — the vending-set scoped retrieval's own
+  // disclosure. Capped Medium for the same reason every other rescue is:
+  // this candidate was found by searching three hard-coded set ids rather
+  // than by matching what the card actually said, and a vending card
+  // carries NO collector number at all, so the strongest signal this
+  // pipeline has can never confirm it. Deliberately NOT exempted from the
+  // weak-signal floor below — with hp as the only corroborating signal the
+  // floor still withholds the price, which is the honest answer.
+  if (!ambiguousNote && vendingScopeRescued) {
+    matchConfidence = matchConfidence === "High" ? "Medium" : matchConfidence;
+    if (matchConfidence !== "Low") matchConfidence = "Medium";
+    matchBasis = "vending-scope";
+    ambiguousNote =
+      `This looks like a Japanese Vending Machine series card. Those carry no card number at all, so it was located by searching the three Vending Machine sets by name — exactly one card matched. ` +
+      `The set shown (${best.setName}) is the only printing of this name in those sets, but with no number to confirm it, verify the card against the set before trusting this price.`;
   }
 
   // ADDED 2026-10-07, paired with the SUB-FLOOR LEGACY-MODEL NUMBER RESCUE
@@ -7231,6 +7466,9 @@ module.exports = handler;
 // properties to that same function value doesn't change that.
 module.exports.buildLiveVariantsForCandidate = buildLiveVariantsForCandidate;
 module.exports.pickDefaultVariantKey = pickDefaultVariantKey;
+module.exports.numberMatchCountsForRetrieval = numberMatchCountsForRetrieval;
+module.exports.attackNamesFuzzyMatch = attackNamesFuzzyMatch;
+module.exports.VENDING_SET_IDS = VENDING_SET_IDS;
 module.exports.basePriceTierForConditions = basePriceTierForConditions;
 module.exports.buildAltPrintings = buildAltPrintings;
 

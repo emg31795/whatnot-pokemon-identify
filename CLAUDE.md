@@ -146,7 +146,7 @@ tools/           Panel harness — the REAL content.js/content.css driven by
                  measure loop awaits requestAnimationFrame, which never
                  fires in a hidden pane, so it just sits at "measuring…".
                  Excluded from deploys via .vercelignore.
-test/            Local suite, `node test/alakazam.test.js` (190 tests, no
+test/            Local suite, `node test/alakazam.test.js` (201 tests, no
                  network — mocks global.fetch over real captured PPT rows).
                  Excluded from deploys via .vercelignore. Two tests replay
                  against the pinned pre-fix commit `PRE_FIX_REF` (`1960cd5`)
@@ -290,7 +290,7 @@ card; coincidental, worth 0.35x). A *disagreeing* total is **not** a match.
 `matchBasis` (machine-readable reason code on the response): `score-only`,
 `tie`, `weak-number`, `legacy-number-rescue`, `setname-search`,
 `setname-narrowed`, `name-rescued-by-number`, `sibling-ambiguous`,
-`number-tie-ambiguous`, `anniversary-reprint-ambiguous`.
+`number-tie-ambiguous`, `anniversary-reprint-ambiguous`, `vending-scope`.
 
 **`number-tie-ambiguous`** (2026-10-18, test #106) — when `tieCount >= 2` and
 EVERY tied candidate matches the read number, the number cannot break the tie,
@@ -548,6 +548,41 @@ sane bid for that card.
   The API wants raw base64 and 400s, manufacturing a fake error cluster.
 
 ## Open items
+
+**BUILT, AWAITING PREVIEW/PROD APPROVAL (#117) — Japanese Vending Machine
+cards.** Three fixes, 201 local tests (190 before), full before/after replay
+over all 22 saved Japanese scans: **11 improved, 0 regressed**.
+- **Fix 1 `vending-scope`** — retrieval, the actual blocker. A vending card's
+  PPT `cardNumber` is the **empty string**, so the ordinary
+  `search=<name>&language=japanese&limit=30` pool (sorted by number) drops it:
+  verified live, 56 Japanese Growlithe rows exist and **617523 is not in the
+  top 30**. Hard-coded `VENDING_SET_IDS = [24206, 24207, 24208]` (Series 1
+  Blue 36 cards / Series 2 Red 36 / Series 3 Green 52 — a closed 1998-99 list).
+  Triggers only on Japanese + `resultIsWeak` + an absent-or-dex-shaped number;
+  ≤3 requests at `limit=5` (~15 credits, vs 30 for one ordinary search);
+  name filter, **exactly one distinct survivor**, capped Medium, logs
+  `[vending-scope]`. **The weak-signal floor is deliberately NOT exempted** —
+  hp alone is one signal, so the price is still withheld.
+- **Fix 2** — `numberMatchCountsForRetrieval`. `SV2a: Pokemon Card 151`
+  numbers its cards **by National Pokédex number**, so a vending card's
+  "No. 058" weak-matched SV2a's "058/165" (20 x 0.35 = 7), which both won the
+  scan and **pre-empted #108's dex classifier**. A weak match on a dex-shaped
+  read now counts only if hp or attackName corroborates that same candidate.
+  **The 2026-09-26 SV2a fix is preserved** — Lapras "No. 131" agrees on hp, so
+  it still matches; the same row with hp changed is now reclassified, and both
+  cases are tested.
+- **Fix 3** — the legacy model's `attackNameEnglish` also scores. PPT stores
+  Japanese attacks **in English only**, and the primary model's translation
+  matched on just **2 of 17** real scans; either model takes it to **4 of 17**.
+  **Exact normalized equality only, NOT `attackNamesFuzzyMatch`** — the replay
+  caught "Gas Explosion" vs Pokemon Web's "Mass Explosion" at **0.846**, over
+  the 0.82 threshold, promoting a wrong card from Low to **High**. Gated on
+  `resultIsWeak`, re-scores the already-fetched pool, **no extra PPT call**.
+**Residual, not fixed:** two Weezing scans read a bare `"110"` (no "No."
+prefix), which is not dex-shaped, so they keep the weak SV2a match and stay
+Low+priced. Widening the shape test to bare numbers would be exactly the
+loosening the DO NOT list warns about. Full write-up:
+`investigations/2026-11-01-vending-machine/findings.md` + `replay-output.txt`.
 
 **DEPLOYED TO PRODUCTION 2026-11-01 (#116) — the panel defaulted to
 1st Edition on WotC-era cards, overbidding by a measured median 2.6x.**

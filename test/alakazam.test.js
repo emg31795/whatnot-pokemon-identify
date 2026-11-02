@@ -90,11 +90,18 @@ function installPptMock(routes, opts = {}) {
     }
     const search = u.searchParams.get("search") || "";
     const offset = u.searchParams.get("offset") || "";
-    const key = offset ? `${search}|offset=${offset}` : search;
+    // #117 Fix 1: a vending-set scoped search keys as "<name>|setId=<id>",
+    // so a test can route each of the three sets independently and assert
+    // exactly how many were issued. An unrouted setId key falls through to
+    // the default empty-ish pool below, i.e. "this card is not in that set".
+    const setId = u.searchParams.get("setId") || "";
+    const key = setId ? `${search}|setId=${setId}` : offset ? `${search}|offset=${offset}` : search;
     calls.push(key);
     if (opts.onCall) opts.onCall(key);
     const rows = Object.prototype.hasOwnProperty.call(routes, key)
       ? routes[key]
+      : setId
+      ? []
       : F.padTo([], 4, "Unrelated");
     return { ok: true, status: 200, json: async () => ({ data: rows }) };
   };
@@ -1563,12 +1570,18 @@ async function main() {
     // skipped.
     const calls = installPptMock({ "Meganium": MEGA_PAGE1, "Meganium|offset=30": [F.MEGANIUM_NEO_JP] });
     await M.lookupCardPPT({ ...MEGA_READ }, "dex-searches", null);
+    // CHANGED 2026-11-01 (#117 Fix 1): a Japanese scan with a dex-shaped
+    // number and a weak result now also pays the three vending-set scoped
+    // searches. They are limit=5 (~5 credits each) against the 30 an
+    // ordinary search costs, they carry NO number, and Meganium is not in
+    // any vending set so they return nothing and change no outcome.
     assert.deepStrictEqual(
       calls,
-      ["Meganium", "Meganium|offset=30"],
-      `expected page1 + page2 only, got ${JSON.stringify(calls)}`
+      ["Meganium", "Meganium|offset=30", "Meganium|setId=24206", "Meganium|setId=24207", "Meganium|setId=24208"],
+      `expected page1 + page2 + the 3 vending-scope searches, got ${JSON.stringify(calls)}`
     );
     assert.ok(!calls.some((c) => /154/.test(c)), "no query may carry the Pokedex number");
+    assert.strictEqual(calls.filter((c) => /setId=/.test(c)).length, 3, "at most 3 vending requests");
   });
 
   await test("DEX TEST VALIDITY: the pre-fix module really did fire those searches", async () => {
@@ -1616,6 +1629,204 @@ async function main() {
     assert.ok(r.pricingLookup, "the SV2a Lapras must still price");
     assert.match(String(r.tcgplayerUrl), /517994/);
     assert.ok(!/Pokédex number/.test(String(r.ambiguousNote || "")), "no dex wording");
+  });
+
+  // =====================================================================
+  // #117 — Japanese Vending Machine series (2026-11-01)
+  // investigations/2026-11-01-vending-machine/findings.md
+  // =====================================================================
+
+  await test("#117 FIX 2: SV2a Lapras \"No. 131\" still matches — hp corroborates the weak number", async () => {
+    // The guard rail on Fix 2. This is the 2026-09-26 NUMBER_LABEL_PATTERN
+    // case: SV2a prints "No. XXX" as a REAL collector number that happens to
+    // equal the Pokedex number. The weak match is kept because hp agrees.
+    const { out: r, log } = await captureLog(() => {
+      installPptMock({ "Lapras": [F.LAPRAS_SV2A_131] });
+      return M.lookupCardPPT(
+        { ...BASE_READ, cardName: "Lapras", cardNumber: "No. 131", hp: "140", language: "Japanese" },
+        "117-lapras-corroborated", null
+      );
+    });
+    assert.ok(!/\[dex-number\]/.test(log), "must NOT be classified as a Pokedex read");
+    assert.ok(r.pricingLookup, "must still price");
+    assert.match(String(r.tcgplayerUrl), /517994/);
+  });
+
+  await test("#117 FIX 2: the SAME Lapras row with NO hp/attack agreement IS reclassified", async () => {
+    // Proves the new rule is doing the work rather than the old one passing
+    // by accident: identical row, identical "No. 131" read, hp changed so
+    // nothing corroborates the weak number. Now a Pokedex read.
+    const { log } = await captureLog(() => {
+      installPptMock({ "Lapras": [F.LAPRAS_SV2A_131] });
+      return M.lookupCardPPT(
+        { ...BASE_READ, cardName: "Lapras", cardNumber: "No. 131", hp: "50", attackName: null,
+          attackNameEnglish: null, language: "Japanese" },
+        "117-lapras-uncorroborated", null
+      );
+    });
+    assert.ok(/\[dex-number\]/.test(log), "an uncorroborated weak dex match must reclassify");
+  });
+
+  await test("#117 FIX 2: a vending read no longer lands on SV2a: Pokemon Card 151", async () => {
+    // The real failure: SV2a numbers by National Pokedex number, so a
+    // vending Growlithe's printed "No. 058" weak-matches SV2a's "058/165"
+    // (20 * 0.35 = 7) — the score-7/tie-3 signature on five real scans.
+    // hp (50 vs 80) and attack ("Fetch" vs "Vaporize") both disagree.
+    const { out: r, log } = await captureLog(() => {
+      installPptMock({ "Growlithe": [F.SV2A_GROWLITHE_058] });
+      return M.lookupCardPPT(
+        { ...BASE_READ, cardName: "Growlithe", cardNumber: "No.058", hp: "50",
+          attackName: "おつかい", attackNameEnglish: "Fetch", language: "Japanese" },
+        "117-growlithe-sv2a", null
+      );
+    });
+    assert.ok(/\[dex-number\]/.test(log), "must be classified as a Pokedex read");
+    assert.ok(!r.pricingLookup, "and must NOT price the SV2a card");
+  });
+
+  await test("#117 FIX 2: a weak match on a NON-dex-shaped read is untouched", async () => {
+    // Scope check. A bare promo numerator like "052" is not dex-shaped, so
+    // the corroboration rule must not apply to it — that population keeps
+    // exactly its pre-#117 behaviour.
+    assert.strictEqual(
+      M.numberMatchCountsForRetrieval({ cardNumber: "052", hp: "60" }, { number: "52/108", hp: "90" }),
+      true
+    );
+    // ...while the same shape written as a dex read, uncorroborated, does not.
+    assert.strictEqual(
+      M.numberMatchCountsForRetrieval({ cardNumber: "No. 052", hp: "60" }, { number: "52/108", hp: "90" }),
+      false
+    );
+    // ...and a NON-weak match always counts, dex-shaped or not.
+    assert.strictEqual(
+      M.numberMatchCountsForRetrieval({ cardNumber: "No. 052", hp: "60" }, { number: "52/108", hp: "60" }),
+      true
+    );
+  });
+
+  await test("#117 FIX 1: the vending-set scoped search finds a card the ordinary pool cannot", async () => {
+    // Verified live: 56 Japanese "Growlithe" rows exist and 617523 is NOT in
+    // the top 30 the ordinary search returns, because its cardNumber is the
+    // empty string and the pool sorts by number. Only retrieval can fix it.
+    const calls = installPptMock({
+      "Growlithe": [F.SV2A_GROWLITHE_058],
+      "Growlithe|setId=24208": [F.VENDING_GROWLITHE_617523],
+    });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Growlithe", cardNumber: "No.058", hp: "50",
+        attackName: "おつかい", attackNameEnglish: "Errand-Running", language: "Japanese" },
+      "117-vending-found", null
+    );
+    assert.strictEqual(r.setName, "Vending Machine cards Series 3 (Green)");
+    assert.match(String(r.tcgplayerUrl), /617523/);
+    assert.strictEqual(r.matchBasis, "vending-scope");
+    assert.strictEqual(r.matchConfidence, "Medium", "capped Medium, never High");
+    assert.strictEqual(calls.filter((c) => /setId=/.test(c)).length, 3, "at most 3 vending requests");
+  });
+
+  await test("#117 FIX 1: two qualifying vending rows means NO rescue", async () => {
+    // Same exactly-one-survivor discipline as the setName rescue. Two
+    // distinct vending cards of one name cannot be told apart, so nothing
+    // happens and the prior behaviour stands.
+    const twin = { ...F.VENDING_GROWLITHE_617523, tcgPlayerId: "999999", setName: "Vending Machine cards Series 1 (Blue)" };
+    installPptMock({
+      "Growlithe": [F.SV2A_GROWLITHE_058],
+      "Growlithe|setId=24206": [twin],
+      "Growlithe|setId=24208": [F.VENDING_GROWLITHE_617523],
+    });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Growlithe", cardNumber: "No.058", hp: "50",
+        attackName: "おつかい", attackNameEnglish: "Errand-Running", language: "Japanese" },
+      "117-vending-ambiguous", null
+    );
+    assert.notStrictEqual(r.matchBasis, "vending-scope");
+  });
+
+  await test("#117 FIX 1: never fires on English, and never on a real N/T number", async () => {
+    // Both halves of the trigger, asserted by the absence of any setId call.
+    const english = installPptMock({ "Growlithe": [F.SV2A_GROWLITHE_058] });
+    await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Growlithe", cardNumber: "No.058", hp: "50", language: "English" },
+      "117-vending-english", null
+    );
+    assert.strictEqual(english.filter((c) => /setId=/.test(c)).length, 0, "English must not pay for vending searches");
+
+    const numbered = installPptMock({ "Growlithe": [F.SV2A_GROWLITHE_058] });
+    await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Growlithe", cardNumber: "15/088", hp: "50", language: "Japanese" },
+      "117-vending-numbered", null
+    );
+    assert.strictEqual(numbered.filter((c) => /setId=/.test(c)).length, 0, "a real N/T number is not a vending shape");
+  });
+
+  await test("#117 FIX 1: the weak-signal floor still withholds on hp alone", async () => {
+    // Deliberately NOT exempted from the floor. hp is one signal, and the
+    // card carries no number at all, so the price is withheld even though
+    // the card was correctly located. The honest outcome.
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Growlithe", cardNumber: "No.058", hp: "50",
+        attackName: "おつかい", attackNameEnglish: "Fetch", language: "Japanese" },
+      "117-vending-floor", null,
+    );
+    assert.ok(!r.pricingLookup, "one corroborating signal must not price");
+  });
+
+  await test("#117 FIX 3: the legacy model's English attack scores when the primary's misses", async () => {
+    // Real scan 8c5df0ba: primary read "Errand", legacy read
+    // "Errand-Running", PPT's string is "Errand-Running".
+    installPptMock({
+      "Growlithe": [F.SV2A_GROWLITHE_058],
+      "Growlithe|setId=24208": [F.VENDING_GROWLITHE_617523],
+    });
+    const legacy = Promise.resolve({ found: true, cardNumber: null, attackNameEnglish: "Errand-Running", hp: "50" });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Growlithe", cardNumber: null, hp: "50",
+        attackName: "おつかい", attackNameEnglish: "Errand", language: "Japanese" },
+      "117-legacy-attack", legacy
+    );
+    assert.match(String(r.tcgplayerUrl), /617523/);
+    assert.ok(r.pricingLookup, "hp + the legacy attack is two signals, so it prices");
+  });
+
+  await test("#117 FIX 3: the legacy attack must match EXACTLY — no fuzzy second roll", async () => {
+    // The false positive found in the replay and the reason this half is
+    // exact-only: "Gas Explosion" vs Pokemon Web's "Mass Explosion" scores
+    // 0.846 against attackNamesFuzzyMatch's 0.82 threshold, which promoted
+    // a wrong card from Low to High.
+    assert.strictEqual(M.attackNamesFuzzyMatch("Gas Explosion", "Mass Explosion"), true,
+      "the fuzzy comparator really does collide on this pair");
+    installPptMock({ "Weezing": [F.WEB_DARK_WEEZING_613682] });
+    const legacy = Promise.resolve({ found: true, cardNumber: null, attackNameEnglish: "Gas Explosion", hp: "60" });
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardName: "Weezing", cardNumber: "110", hp: "60",
+        attackName: "ポイズンガス", attackNameEnglish: "Poison Gas", language: "Japanese" },
+      "117-legacy-exact", legacy
+    );
+    assert.notStrictEqual(r.matchConfidence, "High", "the legacy attack must not promote this to High");
+  });
+
+  await test("#117 FIX 3: a strong untied result never waits for the legacy read", async () => {
+    // The re-score is gated on resultIsWeak, so a High/untied scan must not
+    // consult the legacy promise at all. A promise that never settles would
+    // hang the scan if it did.
+    // No sibling in the pool on purpose: the sibling-disagreement cap has
+    // its own legacy wait (two-stage, up to 1200ms) and would otherwise be
+    // what this test measured.
+    installPptMock({ "Alakazam": F.padTo([F.ALAKAZAM_33, ...F.LOGGED_FILLER.map(F.fillerRow)], 30, "Alakazam") });
+    const never = new Promise(() => {});
+    const t0 = Date.now();
+    // A fully clean read of this exact card: number, hp and attack all
+    // agree, so neither the attack-mismatch cap nor the sibling cap (both
+    // of which have legacy waits of their own) can fire.
+    const r = await M.lookupCardPPT(
+      { ...BASE_READ, cardNumber: "033/165", hp: "100", attackName: "Syncroblast", setName: "Expedition Base Set" },
+      "117-no-wait", never
+    );
+    const elapsed = Date.now() - t0;
+    assert.strictEqual(r.matchConfidence, "High", "this really is the strong path");
+    // The re-score's await is capped at LEGACY_NUMBER_RESCUE_TIMEOUT_MS
+    // (500ms), so a strong scan that consulted it would show up here.
+    assert.ok(elapsed < 400, `a strong result must not await the legacy read (took ${elapsed}ms)`);
   });
 
   await test("DEX/SV2a: Victreebel \"No.071\" is unchanged", async () => {
