@@ -14293,3 +14293,61 @@ page sits at "measuring…" forever. This cost a confused minute here.
 `chrome://extensions`.** The backend half is independently effective: an
 unreloaded extension still gets the corrected default printing and price, it
 just shows no 1st Edition note.
+
+### #116 production deploy — 2026-11-01
+
+Production **`dpl_4yqc1SzBpyyYV7YYcYhfCF66Wa6S`**, target `production`,
+status Ready, aliased to `whatnot-pokemon-identify.vercel.app`. Commit
+`b188005`. **`sourceHash 8141715b89fec21ddd5930434d298b0c19a00765`** from
+live `GET /api/identify` == `shasum api/identify.js` on disk, **byte-exact,
+read twice on the alias**. `slabLabelProbe: "on"`.
+
+Organic traffic had dropped to 2 scans in the preceding 8 minutes (it was 18
+in 12 minutes during the investigation), but the same pacing discipline was
+kept: **all six price cases through `/api/price` only — zero PPT credits** —
+spaced 2s, plus **one** `/api/identify` scan.
+
+| # | case | chose | price | bid NM | altPrintings |
+|---|---|---|---|---|---|
+| a | 107008 Ninetales Shadowless, single-match (`primaryPrinting` + stamp both say 1st Ed) | **Unlimited Holofoil** | $172.83 | $87.89 | 1st Ed Holofoil $400.00 LP |
+| b | 106997 Blastoise Shadowless | **Unlimited Holofoil** | **$894.71** | **$351.73** | 1st Ed Holofoil $1300.00 MP |
+| c | **107031 Machoke**, bare keys, `primaryPrinting "1st Edition"` | **Unlimited** | **$5.11** | **$2.81** | **1st Edition $51.84** |
+| d | 42352 Ninetales Base — single-printing control | Holofoil | $36.21 | $18.19 | *(none)* |
+| e | 114004 Pikachu XY95 — modern control | Holofoil | **$204.03** | **$104.36** | *(none)* |
+| f | 107008 **disclosure row** (#114 path) | **Unlimited Holofoil** | **$172.83** | **$87.89** | 1st Ed Holofoil $400.00 LP |
+| g | `/api/identify` Machoke scan | High / Low / `sibling-ambiguous`, 1730ms, rows 42376 + 107031 | — | — | **`firstEditionStampSeen: true`** |
+
+**7/7.** (b), (e) and (f) reproduce #114's own recorded production figures
+**exactly** — $894.71/$351.73, $204.03/$104.36 and $172.83/$87.89 — so the
+disclosure path and both controls are confirmed untouched. (d)'s $36.21
+differs from #114's $38.54 because the live NM market moved; its behaviour
+(single printing, no alternates, no guard involvement) is unchanged.
+
+**(c) is the measured payoff.** 107031's live figures are **Unlimited $5.11
+against 1st Edition $51.84 — a 10.1x gap** — and its `primaryPrinting` is
+`"1st Edition"`, so that card was being priced at $51.84 with a bid to match
+until this build.
+
+`get_runtime_errors` over a **2-hour** window covering the preview e2e, the
+deploy and the production e2e: **no runtime errors at all**, from any
+deployment.
+
+The new log line is live and confirmed on production for all six price
+calls:
+
+```
+[price] requestId=prod-116-c DEFAULT PRINTING chose="Unlimited"
+  from=["Unlimited","1st Edition"] primaryPrinting="1st Edition"
+  stampType="1st Edition" tag=null preferCommonPrinting=false
+```
+
+**Still not observed end-to-end:** the 1st Edition note rendering on a
+**single-match** panel. Both production identify scans of the Machoke image
+resolved to the Shadowless sibling disclosure, which shows rows rather than
+the note. The note is covered by the harness and the local suite; it needs a
+live scan of a dual-printing card that does not tie with a sibling.
+
+**`extension/content.js` changed — reload the extension in
+`chrome://extensions`.** The backend half is independently effective: an
+unreloaded extension already gets the corrected default printing and price
+and only misses the note.

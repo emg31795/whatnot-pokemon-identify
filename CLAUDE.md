@@ -205,13 +205,30 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 
 ## Current production
 
-- Deployment **`dpl_9hLr9ZbJ9Jr6foJPi1Tv23fw84o4`** (2026-11-01, the
-  disclosure-row base-tier + common-printing fix, test #114), aliased to
+- Deployment **`dpl_4yqc1SzBpyyYV7YYcYhfCF66Wa6S`** (2026-11-01, the
+  1st-Edition guard, test #116), aliased to
   `whatnot-pokemon-identify.vercel.app`.
-- **`sourceHash 4d30cd1b72d6acfe5bb6249a10f6ba273f95da3f`** == `shasum
-  api/identify.js` on disk at commit `4927dc7`, byte-exact, checked twice on
+- **`sourceHash 8141715b89fec21ddd5930434d298b0c19a00765`** == `shasum
+  api/identify.js` on disk at commit `b188005`, byte-exact, checked twice on
   the alias. `GET /api/identify` reports **`slabLabelProbe: "on"`**.
-- E2E verified on production 2026-11-01, **7/7**: **Ninetales 012/102**
+- E2E verified on production 2026-11-01, **7/7**, zero runtime errors over
+  the 2h window. The six price cases ran through `/api/price` only, so they
+  cost **zero PPT credits** (the guard lives in `pickDefaultVariantKey`,
+  which that endpoint calls) — **107008** `Unlimited Holofoil` $172.83 /
+  Bid $87.89 (alt `1st Ed Holofoil $400.00 LP`); **106997** `Unlimited
+  Holofoil` **$894.71 / Bid $351.73** (alt `$1300.00 MP`); **107031 Machoke**
+  `Unlimited` **$5.11 / Bid $2.81** against alt `1st Edition $51.84` — a
+  **10.1x** gap on a card whose `primaryPrinting` is `"1st Edition"`, i.e.
+  the one that priced at $51.84 before this build; controls **42352**
+  $36.21 single-printing and **114004** $204.03 / Bid $104.36; and the
+  **#114 disclosure row unchanged** at $172.83 / Bid $87.89. One
+  `/api/identify` scan: Machoke, High/Low/`sibling-ambiguous`, 1730ms,
+  **`firstEditionStampSeen: true`**.
+- **`[price] DEFAULT PRINTING` is live** — every input to the default-printing
+  decision (chosen key, all keys, `primaryPrinting`, `stampType`, `tag`,
+  `preferCommonPrinting`) on one greppable line. Confirmed on production for
+  all six calls.
+- Earlier e2e on production 2026-11-01 (#114), **7/7**: **Ninetales 012/102**
   Low / `sibling-ambiguous` / two rows, 1849ms, with the Shadowless row now
   **$172.83 / Bid $87.89** (alt `1st Edition Holofoil $400.00 LP`) and the
   Base Set row unchanged at **$38.54 / Bid $19.61**; controls **106997**
@@ -228,18 +245,22 @@ Whatnot tabs until they're hard-refreshed (known, unfixed; see history.md).
 - E2E payloads are real TCGplayer product scans (`imageCdnUrl`) plus, for the
   slab, PSA's own cert photo cropped to the slab front. Cleaner than a
   livestream frame, so reads are easier than reality.
-- **`extension/content.js` and `content.css` last changed 2026-11-01 (#115,
-  extension-only, no deploy)** — reload the extension. #115 replaced the
-  PRINT VARIANT `<select>` with per-printing pills, each showing its own
-  base-tier price; an extension not reloaded since then keeps the dropdown
-  (nothing breaks — same `priceVariants` data). One not reloaded since the
+- **`extension/content.js` last changed 2026-11-01 (#116)** — reload the
+  extension. #116 added the "Possible 1st Edition stamp" info note; the
+  backend half of #116 is independently effective, so an unreloaded
+  extension still gets the corrected default printing and price, it just
+  shows no note. #115 (same day) replaced the PRINT VARIANT `<select>` with
+  per-printing pills, each showing its own base-tier price; an extension not
+  reloaded since then keeps the dropdown (nothing breaks — same
+  `priceVariants` data). One not reloaded since the
   #114 build also shows no condition-tier label and no alt-printing line
   (it still gets #114's price — the backend half is independently effective,
   measured); one not reloaded since 2026-10-17 will not render the
   sibling/tie rows or the per-row graded medians at all.
 - **The first real graded slab has now been identified end-to-end through
   Phase 2-lite** (#111). The graded bid path has also fired on organic traffic.
-- Earlier production: `dpl_7FoFB9NLBQzo4en9eJtJFdYzEKZv` (2026-10-25,
+- Earlier production: `dpl_9hLr9ZbJ9Jr6foJPi1Tv23fw84o4` (2026-11-01,
+  `4d30cd1b…`, `4927dc7`, #114); `dpl_7FoFB9NLBQzo4en9eJtJFdYzEKZv` (2026-10-25,
   `02ff9590…`, `09f7a90`, #111/#112); `dpl_7wxvxxSE9Sw1PN66LWQcQQmZxWh6` (2026-10-24,
   `b170c6e8…`, `882b400`, #110); `dpl_AXU1YDAzmw4sBp78BjY2Dyip8USz`
   (2026-10-24, `5723ac8d…`, `87bc426`, #109);
@@ -528,8 +549,11 @@ sane bid for that card.
 
 ## Open items
 
-**FIXED, AWAITING PRODUCTION APPROVAL (#116) — the panel defaulted to
+**DEPLOYED TO PRODUCTION 2026-11-01 (#116) — the panel defaulted to
 1st Edition on WotC-era cards, overbidding by a measured median 2.6x.**
+Commit `b188005`, production `dpl_4yqc1SzBpyyYV7YYcYhfCF66Wa6S`,
+`sourceHash 8141715b…` byte-exact with disk (checked twice on the alias),
+production e2e 7/7 with zero runtime errors.
 `pickDefaultVariantKey` now **never pre-selects a 1st Edition printing while
 the same product offers an ordinary one** (`isFirstEditionPrintingKey`
 filters the key set before any signal is consulted). Investigated read-only
